@@ -1,0 +1,23 @@
+# Example only. No real credentials or production node data.
+proxies:
+  - name: example-node
+    type: anytls
+    server: 203.0.113.10
+    port: 443
+    password: REPLACE_WITH_YOUR_PASSWORD
+    udp: true
+    sni: vpn.example.org
+    ca: /absolute/path/to/trusted-ca.pem
+    skip-cert-verify: false
+    idle-session-check-interval: 30
+    idle-session-timeout: 30
+    min-idle-session: 0
+
+proxy-groups:
+  - name: 节点选择
+    type: select
+    proxies: [example-node, DIRECT]
+    selected: example-node
+rules:
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - MATCH,节点选择

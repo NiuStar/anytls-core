@@ -1,0 +1,23 @@
+# Credentials, deployment state and local configuration
+config.yaml
+config.yaml.selected
+runtime.json
+password.txt
+*.pem
+*.key
+.env
+.env.*
+service/
+backup*/
+
+# Binaries, local datasets and tooling caches
+dist/
+release/
+*.test
+*.tar.gz
+*.zip
+anytls-macos
+anytls-core
+migration-audit/
+__pycache__/
+.DS_Store
