@@ -114,7 +114,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn(self.url(self.source_name), self.calls)
 
     def test_check_download_no_config_no_process(self):
-        args = types.SimpleNamespace(version=TAG, check_download=True)
+        args = types.SimpleNamespace(version=TAG, check_download=True, arch="arm64")
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), home=self.home)
         self.assertTrue(result["download_verified"])
@@ -400,6 +400,15 @@ class InstallerTests(unittest.TestCase):
         args = types.SimpleNamespace(version=TAG, check_download=True, arch="amd64")
         with contextlib.redirect_stdout(io.StringIO()):
             result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), system="Linux", machine="x86_64", home=self.home)
+        self.assertEqual(result["platform"], "darwin-amd64")
+        self.assertFalse(result["executed"])
+        self.assertFalse(self.app.exists())
+
+    def test_intel_check_download_native_default_never_spawns(self):
+        self.use_intel_fixture()
+        args = types.SimpleNamespace(version=TAG, check_download=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("check-download spawned a process"), system="Darwin", machine="x86_64", home=self.home)
         self.assertEqual(result["platform"], "darwin-amd64")
         self.assertFalse(result["executed"])
         self.assertFalse(self.app.exists())

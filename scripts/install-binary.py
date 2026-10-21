@@ -390,8 +390,10 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         check_link(app / "anytls-macos", home / ".local/bin/anytls")
         app.mkdir(mode=0o700, parents=True, exist_ok=True)
     else:
-        # Preserve the historical arm64 default for off-Mac archive verification.
-        arch = requested_arch or (detect_arch(system, machine or platform.machine(), runner) if system == "Darwin" else "arm64")
+        # Verification is process-free, including no sysctl probe. On translated
+        # Python this checks its process architecture; --arch can select either.
+        # Actual installation separately detects Apple Silicon through Rosetta.
+        arch = requested_arch or ("amd64" if system == "Darwin" and (machine or platform.machine()) in ("x86_64", "amd64") else "arm64")
     # Check-only never creates app/config/link and never executes downloaded code.
     with tempfile.TemporaryDirectory(prefix="anytls-binary-", dir=None if args.check_download else app) as temp:
         work = Path(temp)
