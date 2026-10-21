@@ -3,6 +3,7 @@
 const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 const messages = {
+ HELPER_CONFIG_MISMATCH:'助手绑定的配置与当前控制台不一致。请确认 VPN 状态，并在当前安装目录重新执行 anytls helper install。', HELPER_UNAVAILABLE:'特权助手未安装或不可用。请在这台 Mac 的终端运行 anytls helper install，一次系统授权后即可自动控制。', FORBIDDEN:'特权助手拒绝当前用户，请用安装助手时授权的账户操作。', PREFLIGHT_FAILED:'配置预检失败，未停止现有 VPN。请检查节点、证书和规则。', STOP_FAILED:'停止或路由恢复检查失败，未继续启动。', START_FAILED:'新配置启动失败，请检查 VPN 状态和连接配置。', STATE_FAILED:'助手无法确认服务状态。', BUSY:'助手正在执行另一项操作，请等待。', SERVICE_ACTION_FAILED:'服务操作未完成，请检查助手状态。',
  AUTH_REQUIRED:'登录已过期，请重新登录。', INVALID_CREDENTIALS:'账户或应用专用密码不正确。', LOGIN_THROTTLED:'尝试次数过多，请一分钟后重试。', SESSION_LIMIT:'登录会话已达上限，请退出其他会话或轮换密码。',
  INVALID_ORIGIN:'请求来源不匹配，请直接使用本机地址打开控制台。', CSRF_REQUIRED:'登录校验已失效，请重新登录。', CONFIG_CONFLICT:'配置已被其他编辑器修改。请复制你的修改，重新读取后合并。', IF_MATCH_REQUIRED:'请先读取原始配置，再保存。', CONFIG_VALIDATION_FAILED:'配置校验失败：请检查 YAML、节点类型、组选择、规则顺序及引用文件。文件未保存。', CONFIG_UNAVAILABLE:'无法读取应用目录下的配置文件。', CONFIG_INVALID:'配置无法解析，请在本机检查 YAML。', GROUP_SELECTION_REJECTED:'不能保存这个选择，请检查分组成员与循环引用。', NODE_SELECTION_REJECTED:'节点不可选，请补全 AnyTLS 节点参数。', ACTION_BUSY:'另一项操作正在执行，请等待完成。', INVALID_INPUT:'输入格式不正确。', UPDATE_UNAVAILABLE:'更新功能不可用：当前程序未提供有效更新结果，或网络/版本校验失败。', SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE:'操作未完成：管理员授权被取消、缺少图形会话或服务操作失败。请在终端检查服务；网页不会接收系统密码。', SERVICE_STATE_NOT_CONFIRMED:'操作后未能确认真实服务状态，请在本机检查。'
 };
@@ -36,7 +37,7 @@ function savedFeedback(data) {
  const applied=result==='APPLIED';
  const failed=data.changed && !applied && result!=='SAVED_STOPPED';
  const text=!data.changed?'配置未变化，没有重新连接。':applied?'配置已保存并自动生效。':result==='SAVED_STOPPED'?'配置已保存；VPN 未运行，下次启动时生效。':'配置已保存，但自动应用未完成。请检查系统授权或配置；当前连接状态以概览为准。';
- notice(text,Boolean(failed));
+ notice(text+(data.apply_error&&messages[data.apply_error]?' '+messages[data.apply_error]:''),Boolean(failed));
 }
 async function refreshAfterSave(refresh) {
  const savedNotice=$('notice').textContent;
@@ -69,6 +70,7 @@ async function status() {
   $('header-status').classList.toggle('amber',unavailable);
   $('connection-detail').textContent=unavailable?'无法读取服务管理器。请在本机终端检查状态。':'状态来自本机服务管理器；尚未执行网络连通性验证。';
   $('pending').hidden=!state.pendingReload;$('version').textContent=state.version;
+  $('helper-detail').textContent='正在检查特权助手…';try{const helper=await api('/helper/status');$('helper-detail').textContent=helper.available?'已连接受限特权助手，系统操作无需反复授权。':helper.code==='HELPER_CONFIG_MISMATCH'?messages.HELPER_CONFIG_MISMATCH:'请在本机终端运行 anytls helper install，完成一次系统授权。';}catch{$('helper-detail').textContent='无法连接助手，请在终端检查 anytls helper status。';}
   $('pending-detail').textContent=state.pendingReload?'配置尚未确认生效。网页保存会自动尝试应用；失败后可重试，外部文件更改请手动重载。':state.pendingKnown?'本次控制台操作后未检测到配置更改。':'尚未确认当前快照与磁盘配置是否一致；必要时明确重载。';
  } catch(e){if(csrf){serviceState=null;renderServiceButtons();$('header-status').textContent='读取失败';notice(e.message,true);}}
  finally{polling=false;}

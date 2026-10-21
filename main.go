@@ -70,6 +70,22 @@ func execute(args []string) error {
 			}
 			fmt.Println(currentVersion())
 			return nil
+		case "helper":
+			return controlHelperCommand(args[1:])
+		case "helper-serve":
+			if len(args) != 1 {
+				return errors.New("invalid helper-serve command")
+			}
+			return controlHelperServe()
+		case "helper-install-root":
+			if len(args) != 3 {
+				return errors.New("invalid helper-install-root command")
+			}
+			uid, err := strconv.Atoi(args[1])
+			if err != nil || uid <= 0 {
+				return errors.New("invalid helper user")
+			}
+			return controlHelperInstallRoot(uid, args[2])
 		case "webui":
 			return webuiCommand(args[1:])
 		case "password":

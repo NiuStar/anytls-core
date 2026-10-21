@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -376,6 +375,8 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 		etag := `"` + shaHex(b) + `"`
 		rw.Header().Set("ETag", etag)
 		webJSON(rw, 200, map[string]string{"yaml": string(b), "etag": etag})
+	case "/api/v1/helper/status":
+		webControlStatus(rw, r)
 	case "/api/v1/version":
 		webJSON(rw, 200, map[string]string{"version": currentVersion()})
 	case "/api/v1/update-check":
@@ -397,6 +398,7 @@ func (w *webConsole) saved() { w.metaMu.Lock(); w.pending = true; w.metaMu.Unloc
 // successful disk write is never reported as a failed save if apply fails.
 func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, changed bool, etag string, consent bool) {
 	status, applied := "NO_CHANGE", false
+	applyError := ""
 	if changed {
 		w.saved()
 		loaded, running, err := w.state()
@@ -415,6 +417,9 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				err = w.serviceAction(ctx, "reload", consent)
 				cancel()
+				if err != nil {
+					applyError = webControlFailureCode(err)
+				}
 				if err == nil {
 					loaded, running, err = w.state()
 					after := w.fingerprint()
@@ -430,6 +435,9 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 	}
 	pending, known := w.pendingState()
 	result := map[string]any{"ok": true, "saved": true, "changed": changed, "applied": applied, "apply_status": status, "pendingReload": pending, "pendingKnown": known}
+	if applyError != "" {
+		result["apply_error"] = applyError
+	}
 	if etag != "" {
 		rw.Header().Set("ETag", etag)
 		result["etag"] = etag
@@ -614,7 +622,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
 		if err := w.serviceAction(ctx, action, in.ConfirmInsecure); err != nil {
-			webError(rw, 503, "SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE")
+			webError(rw, 503, webControlFailureCode(err))
 			return
 		}
 		// Read actual launchd state. Do not infer ready/TUN health from the child exit.
@@ -685,23 +693,14 @@ func webValidateConfig(path string, b []byte) error {
 	return applyRoutingBytes(path, b, nodes, node{}, cfg, true)
 }
 
-// Only trusted self path and fixed command/boolean enter the native prompt.
-// argv carries these strings into AppleScript, never interpolated source text.
+// WebUI never elevates through its SSH/GUI session. The root-owned helper
+// authenticates the caller and executes only registered fixed operations.
 func webServiceAction(ctx context.Context, action string, insecure bool) error {
-	if runtime.GOOS != "darwin" {
-		return errors.New("native authorization requires macOS GUI")
+	_, config, _, err := servicePaths()
+	if err != nil {
+		return &webControlError{Code: "HELPER_UNAVAILABLE"}
 	}
-	if action != "start" && action != "stop" && action != "reload" {
-		return errors.New("invalid service action")
-	}
-	if action == "stop" && insecure {
-		return errors.New("insecure consent is not a stop argument")
-	}
-	binary, _, _, err := servicePaths()
-	if err != nil || !filepath.IsAbs(binary) {
-		return errors.New("self executable unavailable")
-	}
-	return webServiceWithCommand(ctx, action, insecure, binary, exec.CommandContext)
+	return webControlAction(ctx, config, action, insecure, controlHelperRequest)
 }
 
 // Per-call command seam keeps tests on owned, non-root helper subprocesses.
