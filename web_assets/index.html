@@ -1,16 +1,61 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AnyTLS · 本机控制台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>AnyTLS · 本机控制台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
-<section id="login-view" class="login-shell"><div class="login-card"><div class="wordmark">ANYTLS <span>LOCAL CONSOLE</span></div><h1>连接，从本机开始。</h1><p class="muted">仅限这台 Mac。账户与系统管理员密码完全独立。</p><form id="login-form"><label for="username">账户</label><input id="username" name="username" value="admin" autocomplete="username" required><label for="password">应用专用密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="128"><button class="primary" type="submit">登录控制台</button></form><p class="hint">在终端运行 <code>anytls password</code> 查看密码。<br>忘记密码？运行 <code>anytls password reset</code>，现有登录会失效。</p><p id="login-error" class="error" role="alert"></p></div><div class="login-footer">回环连接 · 不使用云端账户 · 不收集系统密码</div></section>
+<section id="login-view" class="login-shell">
+  <div class="login-card">
+    <div class="app-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 9h10a6 6 0 0 1 0 12H8M8 9v12m0-6h16"/><circle cx="8" cy="9" r="3"/><circle cx="8" cy="21" r="3"/><circle cx="24" cy="15" r="3"/></svg></div>
+    <div class="wordmark">AnyTLS <span>本机控制台</span></div>
+    <h1>登录 AnyTLS</h1><p class="muted">使用应用专用密码，不使用系统管理员密码。</p>
+    <form id="login-form"><label for="username">账户</label><input id="username" name="username" value="admin" autocomplete="username" required><label for="password">应用专用密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="128"><button class="primary" type="submit">登录</button></form>
+    <p class="hint">在终端运行 <code>anytls password</code> 查看密码。<br>忘记密码？运行 <code>anytls password reset</code>，现有登录会失效。</p><p id="login-error" class="error" role="alert"></p>
+  </div><div class="login-footer">仅本机访问 · 不使用云端账户 · 不收集系统密码</div>
+</section>
 <div id="console-view" hidden>
-<button id="drawer-shade" class="shade" aria-label="关闭导航" hidden></button>
-<aside id="sidebar"><div class="wordmark">ANYTLS<span>本机控制台</span></div><div class="nav-label">工作空间</div><nav aria-label="主导航"><button data-view="overview" class="active">连接概览</button><button data-view="nodes">代理节点</button><button data-view="groups">策略分组</button><button data-view="config">配置与规则</button><button data-view="update">版本与更新</button></nav><div class="sidebar-foot"><span class="local-dot"></span> 仅本机 · HTTP<br><small>127.0.0.1 / localhost</small><button id="logout">退出登录</button></div></aside>
-<main><header><div><button id="drawer-toggle" class="icon-button" aria-label="打开导航" aria-expanded="false">☰</button><span class="breadcrumb">工作空间 / </span><strong id="page-title">连接概览</strong></div><span id="header-status" class="pill">正在读取</span></header><div class="content"><div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-<div id="tls-risk" class="note">TLS 风险提示：配置为 skip-cert-verify 的节点不会验证服务器证书，可能遭受中间人攻击。网页直接遵循节点配置，不再要求额外勾选；未配置跳验的节点仍按原策略验证证书。首次安装特权助手需系统授权，之后由受限助手执行固定操作。</div>
-<section id="view-overview" class="view"><div class="eyebrow">CONNECTION / 本机服务</div><h1>你的连接，一目了然。</h1><p class="muted">查看真实服务状态。运行中保存配置会自动应用，期间会短暂重连；未启动时仅保存。</p><div class="connection-panel"><div class="connection-symbol" aria-hidden="true">↗</div><div><span class="eyebrow">当前服务</span><h2 id="connection-state">正在读取状态</h2><p id="connection-detail" class="muted">状态来自本机服务管理器，不等同于网络健康检查。</p></div><span id="pending" class="pill amber" hidden>配置尚未生效</span></div><div class="action-bar"><button class="primary" data-service="start" hidden disabled>启动 VPN</button><button data-service="stop" hidden disabled>停止 VPN</button><button data-service="reload" hidden disabled>重试应用配置</button></div><div class="info-grid"><article><span class="eyebrow">运行入口版本</span><strong id="version">—</strong><p>升级不自动重启服务，运行快照可能仍为旧版。</p></article><article><span class="eyebrow">配置生效方式</span><strong>保存 → 自动应用</strong><p id="pending-detail">跨控制台启动前的更改无法自动确认；不会伪造已同步状态。</p></article><article><span class="eyebrow">权限边界</span><strong>一次授权，受限控制</strong><p id="helper-detail">请在本机终端运行 anytls helper install，安装受限特权助手。网页不接收系统密码。</p></article></div><div class="note">没有流量、延迟或出口数据时不显示估算值。服务运行不代表已验证 VPN 连通性。</div></section>
-<section id="view-nodes" class="view" hidden><div class="eyebrow">NODES / 代理节点</div><h1>让每个节点各就其位。</h1><p class="muted">普通列表只显示是否已配置密码。节点表单可修改既有节点，新增与高级参数可在原始 YAML 中编辑。</p><button id="refresh-nodes">刷新节点</button><div id="nodes-list" class="stack"></div></section>
-<section id="view-groups" class="view" hidden><div class="eyebrow">POLICY / 策略分组</div><h1>按你的规则，选择出口。</h1><p class="muted">保存选择后自动应用到运行中的 VPN，无需另点重载；会短暂重连，未运行时仅保存。</p><div id="groups-list" class="stack"></div></section>
-<section id="view-config" class="view" hidden><div class="eyebrow">CONFIGURATION / 配置与规则</div><h1>每一次修改，都明确生效。</h1><p class="muted">显式打开配置会显示节点密码，仅限本机登录用户。保存前执行真实语法、分组与规则校验，保留未知字段。</p><div class="action-bar"><button id="load-rules">查看规则列表</button></div><ol id="rules-list" class="rules-list"></ol><div class="action-bar"><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div><label for="yaml-editor">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="点击上方按钮后读取配置" disabled></textarea><div id="editor-info" class="hint">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></section>
-<section id="view-update" class="view" hidden><div class="eyebrow">RELEASE / 版本与更新</div><h1>更新工具，不覆盖配置。</h1><p class="muted">仅检查官方稳定版本。升级在当前用户下运行，备份程序，不自动重启 VPN。</p><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div><pre id="update-result">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">升级后当前控制台进程仍运行旧版。请退出并重新运行 <code>anytls webui</code>；服务需另行重载。</div></section>
-</div><footer>AnyTLS 本机控制台 <span>回环 HTTP 无 TLS · 不要转发端口</span></footer></main></div>
+  <button id="drawer-shade" class="shade" aria-label="关闭导航" hidden></button>
+  <aside id="sidebar">
+    <div class="brand"><div class="app-mark small" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 9h10a6 6 0 0 1 0 12H8M8 9v12m0-6h16"/><circle cx="8" cy="9" r="3"/><circle cx="8" cy="21" r="3"/><circle cx="24" cy="15" r="3"/></svg></div><div class="wordmark">AnyTLS<span>本机控制台</span></div></div>
+    <div class="nav-label">控制台</div>
+    <nav aria-label="主导航">
+      <button data-view="overview" class="active" aria-current="page"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M3 8h14M8 8v9"/></svg><span>概览</span></button>
+      <button data-view="nodes"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="2"/><circle cx="15" cy="10" r="2"/><circle cx="5" cy="15" r="2"/><path d="m7 6 6 3m-6 5 6-3M5 7v6"/></svg><span>代理节点</span></button>
+      <button data-view="groups"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="2" width="6" height="5" rx="1"/><rect x="2" y="13" width="6" height="5" rx="1"/><rect x="12" y="13" width="6" height="5" rx="1"/><path d="M10 7v3H5v3m5-3h5v3"/></svg><span>策略组</span></button>
+      <button data-view="config"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h12"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="10" r="2"/><circle cx="8" cy="15" r="2"/></svg><span>配置与规则</span></button>
+      <button data-view="update"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a7 7 0 1 0 1 6M16 3v4h-4M10 6v5l3 2"/></svg><span>版本更新</span></button>
+    </nav>
+    <div class="sidebar-foot"><div class="device"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="11" rx="2"/><path d="M7 18h6m-3-4v4"/></svg><div><strong>当前设备</strong><small id="sidebar-state">正在读取服务状态</small></div></div><div class="local-badge">本机 HTTP <span>127.0.0.1</span></div><button id="logout">退出登录</button></div>
+  </aside>
+  <main>
+    <header><div class="header-location"><button id="drawer-toggle" class="icon-button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg></button><span class="breadcrumb">AnyTLS <span>/</span></span><strong id="page-title">概览</strong></div><span id="header-status" class="pill">正在读取</span></header>
+    <div class="content">
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <details id="tls-risk" class="risk-note"><summary>TLS 风险：跳过证书校验的节点可能遭受中间人攻击<span class="risk-more">查看说明</span></summary><p>配置为 skip-cert-verify 的节点不会验证服务器证书，可能遭受中间人攻击。网页直接遵循节点配置，不再要求额外勾选；未配置跳验的节点仍按原策略验证证书。首次安装特权助手需系统授权，之后由受限助手执行固定操作。</p></details>
+      <section id="view-overview" class="view">
+        <div class="page-heading"><h1>连接概览</h1><p class="muted">管理本机 VPN 服务与配置。</p></div>
+        <div class="connection-panel" data-state="unknown"><div class="connection-main"><div class="connection-symbol" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 5v11M10 8a11 11 0 1 0 12 0"/></svg></div><div class="connection-copy"><span class="eyebrow">本机服务</span><h2 id="connection-state">正在读取状态</h2><p id="connection-detail" class="muted">状态来自本机服务管理器，不等同于网络健康检查。</p></div><span id="pending" class="pill amber" hidden>配置尚未生效</span></div><div class="connection-bottom"><span class="hint">运行中保存会自动应用，期间短暂重连；未启动时仅保存。</span><div class="action-bar"><button class="primary" data-service="start" hidden disabled>启动 VPN</button><button data-service="stop" hidden disabled>停止 VPN</button><button data-service="reload" hidden disabled>重试应用配置</button></div></div></div>
+        <div class="info-grid">
+          <article><h3>版本</h3><dl><dt>控制台运行入口</dt><dd id="version" class="mono">—</dd></dl><p>升级不自动重启服务，运行快照可能仍为旧版。</p></article>
+          <article><h3>配置</h3><dl><dt>生效方式</dt><dd>保存后自动应用</dd></dl><p id="pending-detail">跨控制台启动前的更改无法自动确认；不会伪造已同步状态。</p></article>
+          <article><h3>特权助手</h3><dl><dt>系统授权</dt><dd>一次授权 · 受限控制</dd></dl><p id="helper-detail">请在本机终端运行 anytls helper install，安装受限特权助手。网页不接收系统密码。</p></article>
+        </div><p class="footnote">服务运行不代表 VPN 连通性已验证。此处不展示未测量的流量、延迟或出口数据。</p>
+      </section>
+      <section id="view-nodes" class="view" hidden>
+        <div class="page-heading"><h1>代理节点</h1><p class="muted">选择启动节点或编辑参数。保存到运行中的 VPN 会短暂重连。</p></div>
+        <div class="list-toolbar"><div class="search-field"><label for="nodes-search">搜索节点</label><input id="nodes-search" type="search" placeholder="名称、类型或服务器" autocomplete="off"></div><span id="nodes-count" class="hint" aria-live="polite">尚未读取</span><button id="refresh-nodes">刷新节点</button></div><div id="nodes-list" class="stack"></div><p class="footnote">列表只显示密码是否已配置。新增节点与高级参数请在原始 YAML 中编辑。</p>
+      </section>
+      <section id="view-groups" class="view" hidden>
+        <div class="page-heading"><h1>策略组</h1><p class="muted">选择配置出口后点击保存。运行中自动应用，未运行时仅保存。</p></div><div class="section-label">磁盘配置 <span id="groups-count" class="hint">尚未读取</span></div><div id="groups-list" class="stack group-grid"></div><p class="footnote">配置出口由磁盘配置解析，不代表当前运行快照或网络连通性。</p>
+      </section>
+      <section id="view-config" class="view" hidden>
+        <div class="page-heading"><h1>配置与规则</h1><p class="muted">保存前校验语法、分组与规则，保留未知字段。</p></div>
+        <div class="panel rules-panel"><div class="panel-toolbar"><h3>分流规则</h3><button id="load-rules">查看规则列表</button></div><ol id="rules-list" class="rules-list"></ol></div>
+        <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开后显示节点密码，仅限本机登录用户。</span></div><div class="action-bar"><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
+      </section>
+      <section id="view-update" class="view" hidden>
+        <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>
+        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">用户级安装 · 备份程序 · 不自动重启 VPN</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">升级后当前控制台进程仍运行旧版。请退出并重新运行 <code>anytls webui</code>；服务需另行重载。</div></div>
+      </section>
+    </div><footer>AnyTLS 本机控制台 <span>回环 HTTP 无 TLS · 不要转发端口</span></footer>
+  </main>
+</div>
 </body></html>
