@@ -27,6 +27,10 @@ jobs:
       - name: Real Box patch regression
         run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -count=1 -v -run=^TestUpstreamStartPreservesCleanupErrors$ ./internal/engine
       - run: python3 scripts/tests/test-go-patched.py
+      - name: Installer safety and preservation regressions
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_test.py
+          bash -n install.sh
       - run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - run: python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - run: mkdir -p dist

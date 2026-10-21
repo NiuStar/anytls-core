@@ -62,14 +62,30 @@ func execute(args []string) error {
 	if len(args) == 0 {
 		args = []string{"select"}
 	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "version", "--version", "-version":
+			if len(args) != 1 {
+				return errors.New("usage: anytls version")
+			}
+			fmt.Println(currentVersion())
+			return nil
+		case "webui":
+			return webuiCommand(args[1:])
+		case "password":
+			return passwordCommand(args[1:])
+		case "update":
+			return updateCommand(args[1:])
+		case "reload":
+			if len(args) != 1 {
+				return errors.New("usage: anytls reload")
+			}
+			return reloadCommand()
+		}
+	}
 	if len(args) == 1 && args[0] == "config" {
-		loaded, _, err := serviceState()
-		if err != nil {
-			return err
-		}
-		if loaded {
-			return errors.New("stop AnyTLS before changing nodes")
-		}
+		// Edits affect the next run, not the currently staged service snapshot.
+		// Apply a saved choice explicitly with reload.
 		args = []string{"select"}
 	}
 	if len(args) == 1 && args[0] == "status" {
@@ -126,6 +142,12 @@ func execute(args []string) error {
 		}
 		return sudoSubcommand("service-stop", false)
 	}
+	if len(args) > 0 && args[0] == "service-reload" {
+		if len(args) == 1 || (len(args) == 2 && args[1] == "-allow-insecure") {
+			return serviceReload(len(args) == 2)
+		}
+		return errors.New("invalid service-reload command")
+	}
 	if len(args) > 0 && (args[0] == "service-start" || args[0] == "service-stop") {
 		if args[0] == "service-stop" && len(args) == 1 {
 			return serviceStop()
@@ -136,7 +158,7 @@ func execute(args []string) error {
 		return errors.New("invalid service command")
 	}
 	if len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
-		fmt.Println("Commands: config (choose node), start (system TUN), stop, status, list, check, run; config uses ↑/↓ and Enter/Space")
+		fmt.Println("Commands: config, start, stop, reload, status, webui, password [reset], update [--check], version, list, check, run; saved choices apply with reload")
 		return nil
 	}
 	fs := flag.NewFlagSet("anytls-macos", flag.ContinueOnError)
