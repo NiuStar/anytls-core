@@ -48,6 +48,25 @@
       </section>
       <section id="view-config" class="view" hidden>
         <div class="page-heading"><h1>配置与规则</h1><p class="muted">保存前校验语法、分组与规则，保留未知字段。</p></div>
+        <section class="panel import-panel" aria-labelledby="import-heading">
+          <div class="panel-toolbar"><div><h3 id="import-heading">导入配置</h3><span class="hint">先预览，再备份并替换。运行中的 VPN 会自动重连。</span></div></div>
+          <div class="import-body">
+            <p class="hint import-format">仅支持本工具兼容的 Clash / Mihomo YAML（AnyTLS 节点与 select 策略组），并非完整兼容；暂不支持 URI 或 Base64 订阅。</p>
+            <div class="import-tabs" role="tablist" aria-label="导入来源"><button id="import-tab-local" role="tab" aria-selected="true" aria-controls="import-local" type="button">文件 / 粘贴 YAML</button><button id="import-tab-url" role="tab" aria-selected="false" aria-controls="import-url-panel" tabindex="-1" type="button">HTTPS 订阅</button></div>
+            <div id="import-local" role="tabpanel" aria-labelledby="import-tab-local">
+              <label for="import-file">配置文件</label><input id="import-file" type="file" accept=".yaml,.yml" aria-describedby="import-file-help"><p id="import-file-help" class="hint">最大 4 MiB；服务器仍会校验大小与内容。选中文件优先于粘贴内容。</p>
+              <label for="import-yaml">或粘贴 YAML</label><textarea id="import-yaml" spellcheck="false" autocomplete="off" placeholder="粘贴要导入的配置，不会自动读取现有密码"></textarea>
+              <p class="hint">文件与粘贴导入默认保留已保存的订阅。</p>
+            </div>
+            <div id="import-url-panel" role="tabpanel" aria-labelledby="import-tab-url" hidden>
+              <label for="subscription-url">订阅 URL</label><input id="subscription-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" aria-describedby="subscription-help"><p id="subscription-help" class="hint">URL 可能含令牌，请勿在共享屏幕输入。仅在确认导入成功后保存；不会存入浏览器本地存储。</p>
+              <div class="subscription-row"><span id="subscription-status" class="hint" role="status">尚未读取订阅状态</span><button id="refresh-subscription" type="button" disabled>刷新已保存订阅</button></div>
+            </div>
+            <div class="import-actions"><button id="preview-import" type="button">预览导入</button><span id="import-source-status" class="hint" role="status" aria-live="polite"></span></div>
+            <div id="import-preview" class="import-preview" hidden aria-live="polite"><h3>导入预览</h3><dl id="import-summary"></dl><p id="import-warning" class="import-warning"></p><p class="hint">将替换当前配置，先自动备份；运行中的 VPN 会短暂断网并自动重连。请确认后继续。</p></div>
+            <div class="import-confirm"><button id="commit-import" class="primary" type="button" disabled>备份并导入</button></div>
+          </div>
+        </section>
         <div class="panel rules-panel"><div class="panel-toolbar"><h3>分流规则</h3><button id="load-rules">查看规则列表</button></div><ol id="rules-list" class="rules-list"></ol></div>
         <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开后显示节点密码，仅限本机登录用户。</span></div><div class="action-bar"><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
       </section>

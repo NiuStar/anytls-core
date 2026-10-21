@@ -4,6 +4,8 @@ config.yaml.selected
 runtime.json
 password.txt
 webui.password
+subscription.json
+import-backups/
 *.pem
 *.key
 .env

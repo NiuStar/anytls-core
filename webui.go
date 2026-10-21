@@ -47,10 +47,12 @@ type webConsole struct {
 	state                    func() (bool, bool, error)
 	serviceAction            func(context.Context, string, bool) error
 	updateAction             func(context.Context, bool) (json.RawMessage, error)
+	importPending            *webImportCandidate // guarded by actionMu
+	importFetch              func(context.Context, string) ([]byte, error)
 }
 
 func newWebConsole(config, password string, port int) *webConsole {
-	w := &webConsole{configPath: config, passwordPath: password, port: port, sessions: make(map[string]webSession), now: time.Now, state: serviceState, serviceAction: webServiceAction, updateAction: webUpdateAction}
+	w := &webConsole{configPath: config, passwordPath: password, port: port, sessions: make(map[string]webSession), now: time.Now, state: serviceState, serviceAction: webServiceAction, updateAction: webUpdateAction, importFetch: webImportSecureFetch}
 	w.baseline = w.fingerprint()
 	return w
 }
@@ -110,7 +112,7 @@ func webDecode(rw http.ResponseWriter, r *http.Request, dst any) error {
 	}
 	// JSON escaping can expand the 4MiB config by up to six times.
 	limit := int64(16 << 10)
-	if r.URL.Path == "/api/v1/config" && r.Method == "PUT" {
+	if (r.URL.Path == "/api/v1/config" && r.Method == "PUT") || (r.URL.Path == "/api/v1/import/preview" && r.Method == "POST") {
 		limit = 24 << 20
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(rw, r.Body, limit))
@@ -306,6 +308,8 @@ func (w *webConsole) pendingState() (bool, bool) {
 }
 func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSession) {
 	switch r.URL.Path {
+	case "/api/v1/subscription":
+		w.getSubscription(rw)
 	case "/api/v1/session":
 		webJSON(rw, 200, map[string]any{"csrf": session.csrf, "username": "admin"})
 	case "/api/v1/status":
@@ -447,6 +451,10 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/api/v1/import/preview" && r.Method == "POST":
+		w.importPreview(rw, r)
+	case r.URL.Path == "/api/v1/import/commit" && r.Method == "POST":
+		w.importCommit(rw, r)
 	case r.URL.Path == "/api/v1/config" && r.Method == "PUT":
 		var in struct {
 			YAML            string `json:"yaml"`
