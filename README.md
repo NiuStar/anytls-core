@@ -1,6 +1,6 @@
 # anytls-core
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前开发候选：**v2026-10-21-02**（尚未发布）；正式源码 Release：**v2026-10-21-01**。
+Go 编写的 macOS AnyTLS VPN 客户端。当前版本：**v2026-10-21-02**。源码发行与验证边界见 [版本说明](docs/releases/v2026-10-21-02.md)。
 
 默认发布构建内嵌精简 sing-box 核心，无需独立 sing-box 可执行文件。保留外部核心构建模式用于对照和回退。本项目不是 SagerNet 官方应用。
 
@@ -9,7 +9,7 @@ Go 编写的 macOS AnyTLS VPN 客户端。当前开发候选：**v2026-10-21-02*
 - `anytls start / stop / status`：launchd 管理系统 TUN，本机 sudo 授权。
 - `anytls config`：终端策略组与节点选择，方向键、回车／空格确认；运行时可保存，`anytls reload` 受控重连后生效。
 - `anytls webui`：普通用户启动本机管理页 `http://127.0.0.1:18089`，账户 `admin`；`anytls password` 查看应用密码，`anytls password reset` 轮换并撤销旧会话。
-- `anytls update --check` / `anytls update`：检查／源码升级，保留配置与程序备份；不自动重启 VPN 或 WebUI。安装说明见 [安装与升级](docs/install-update.md)。新候选尚未发 Release，下方在线安装链目前不能安装此候选。
+- `anytls update --check` / `anytls update`：检查／源码升级，保留配置与程序备份；不自动重启 VPN 或 WebUI。安装说明见 [安装与升级](docs/install-update.md)。
 - AnyTLS TCP／UDP、Chrome uTLS、gVisor mixed 网络栈。
 - 显式 select 策略组、有序分流、SHA-256 固定本地 JSON 规则集。
 - 节点服务器 IPv4 `/32`、IPv6 `/128` 物理接口旁路。
