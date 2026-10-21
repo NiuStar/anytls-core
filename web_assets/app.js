@@ -3,8 +3,8 @@
 const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 const messages = {
- IMPORT_URL_UNSAFE:'订阅地址不安全：仅允许 HTTPS 443 和公网地址，不能访问本机、内网或元数据服务。', IMPORT_TOO_LARGE:'导入内容为空或超过配置大小限制（4 MiB）。', IMPORT_REMOTE_FILE_REFERENCE:'远程订阅不能指定本机 CA／规则文件，也不接受 YAML anchor、alias 或 merge。请先下载审阅，再按本机配置导入。', IMPORT_NO_SELECTABLE_NODES:'没有完整可选的 AnyTLS 节点，请检查服务器、端口和密码。', IMPORT_CONFIRMATION_REQUIRED:'请重新预览并明确确认替换配置。', IMPORT_WRITE_FAILED_ROLLED_BACK:'导入写入失败，已核对恢复原配置、选择与订阅。请检查目录权限后重新预览。', IMPORT_STATE_UNCERTAIN:'严重警告：导入恢复未能确认，配置与运行状态未知。请检查本机配置及 import-backups 备份，不要继续覆盖。', SUBSCRIPTION_NOT_CONFIGURED:'尚未保存订阅，请输入 HTTPS 订阅地址并预览导入。', SELECTION_UNAVAILABLE:'启动节点选择文件不可读取，请在本机检查权限或文件类型。',
- IMPORT_FORMAT_UNSUPPORTED:'格式不支持：仅接受本工具兼容的 Clash / Mihomo YAML（AnyTLS / select），暂不支持 URI 或 Base64。', IMPORT_INVALID:'导入配置无效或超过 4 MiB，请检查 YAML、节点与规则。', IMPORT_FETCH_FAILED:'订阅获取失败，请检查 HTTPS 地址与网络后重试。', IMPORT_SOURCE_REJECTED:'订阅来源被拒绝，请使用允许访问的 HTTPS 地址。', IMPORT_CONFLICT:'当前配置已更改，请重新预览后导入。', IMPORT_PREVIEW_EXPIRED:'预览已过期，请重新预览。', IMPORT_BACKUP_FAILED:'备份失败，未继续导入。请检查应用目录权限。', IMPORT_WRITE_FAILED:'配置写入未完成，请重新读取配置并确认当前状态。', IMPORT_ROLLBACK_FAILED:'严重警告：导入回退失败，配置与运行状态未知。请在本机检查配置、备份和 VPN；不要继续覆盖保存。', SUBSCRIPTION_UNAVAILABLE:'已保存订阅不可用，请重新输入 HTTPS 订阅地址。',
+ IMPORT_URL_UNSAFE:'订阅地址不安全：仅允许 HTTPS 443 和公网地址，不能访问本机、内网或元数据服务。', IMPORT_TOO_LARGE:'导入内容为空或超过配置大小限制（4 MiB）。', IMPORT_REMOTE_FILE_REFERENCE:'订阅包含不能使用的本机文件引用，请检查 CA 或规则的实际路径字段；provider 缓存路径不会读取本机文件。', CONFIG_CONVERSION_UNSUPPORTED:'配置无法完整转换，未生成可导入或导出的预览。请查看下方不支持项。', IMPORT_NO_SELECTABLE_NODES:'没有完整可选的 AnyTLS 节点，请检查服务器、端口和密码。', IMPORT_CONFIRMATION_REQUIRED:'请重新预览并明确确认替换配置。', IMPORT_WRITE_FAILED_ROLLED_BACK:'导入写入失败，已核对恢复原配置、选择与订阅。请检查目录权限后重新预览。', IMPORT_STATE_UNCERTAIN:'严重警告：导入恢复未能确认，配置与运行状态未知。请检查本机配置及 import-backups 备份，不要继续覆盖。', SUBSCRIPTION_NOT_CONFIGURED:'尚未保存订阅，请输入 HTTPS 订阅地址并预览导入。', SELECTION_UNAVAILABLE:'启动节点选择文件不可读取，请在本机检查权限或文件类型。',
+ IMPORT_FORMAT_UNSUPPORTED:'格式不支持：请提供 Clash / Mihomo 或 AnyTLS 原生 YAML；暂不支持 URI 或 Base64。', IMPORT_INVALID:'导入配置无效或超过 4 MiB，请检查 YAML、节点与规则。', IMPORT_FETCH_FAILED:'订阅获取失败，请检查 HTTPS 地址与网络后重试。', IMPORT_SOURCE_REJECTED:'订阅来源被拒绝，请使用允许访问的 HTTPS 地址。', IMPORT_CONFLICT:'当前配置已更改，请重新预览后导入。', IMPORT_PREVIEW_EXPIRED:'预览已过期，请重新预览。', IMPORT_BACKUP_FAILED:'备份失败，未继续导入。请检查应用目录权限。', IMPORT_WRITE_FAILED:'配置写入未完成，请重新读取配置并确认当前状态。', IMPORT_ROLLBACK_FAILED:'严重警告：导入回退失败，配置与运行状态未知。请在本机检查配置、备份和 VPN；不要继续覆盖保存。', SUBSCRIPTION_UNAVAILABLE:'已保存订阅不可用，请重新输入 HTTPS 订阅地址。',
  HELPER_CONFIG_MISMATCH:'助手绑定的配置与当前控制台不一致。请确认 VPN 状态，并在当前安装目录重新执行 anytls helper install。', HELPER_UNAVAILABLE:'特权助手未安装或不可用。请在这台 Mac 的终端运行 anytls helper install，一次系统授权后即可自动控制。', FORBIDDEN:'特权助手拒绝当前用户，请用安装助手时授权的账户操作。', PREFLIGHT_FAILED:'配置预检失败，未停止现有 VPN。请检查节点、证书和规则。', STOP_FAILED:'停止或路由恢复检查失败，未继续启动。', START_FAILED:'新配置启动失败，请检查 VPN 状态和连接配置。', STATE_FAILED:'助手无法确认服务状态。', BUSY:'助手正在执行另一项操作，请等待。', SERVICE_ACTION_FAILED:'服务操作未完成，请检查助手状态。',
  AUTH_REQUIRED:'登录已过期，请重新登录。', INVALID_CREDENTIALS:'账户或应用专用密码不正确。', LOGIN_THROTTLED:'尝试次数过多，请一分钟后重试。', SESSION_LIMIT:'登录会话已达上限，请退出其他会话或轮换密码。',
  INVALID_ORIGIN:'请求来源不匹配，请直接使用本机地址打开控制台。', CSRF_REQUIRED:'登录校验已失效，请重新登录。', CONFIG_CONFLICT:'配置已被其他编辑器修改。请复制你的修改，重新读取后合并。', IF_MATCH_REQUIRED:'请先读取原始配置，再保存。', CONFIG_VALIDATION_FAILED:'配置校验失败：请检查 YAML、节点类型、组选择、规则顺序及引用文件。文件未保存。', CONFIG_UNAVAILABLE:'无法读取应用目录下的配置文件。', CONFIG_INVALID:'配置无法解析，请在本机检查 YAML。', GROUP_SELECTION_REJECTED:'不能保存这个选择，请检查分组成员与循环引用。', NODE_SELECTION_REJECTED:'节点不可选，请补全 AnyTLS 节点参数。', ACTION_BUSY:'另一项操作正在执行，请等待完成。', INVALID_INPUT:'输入格式不正确。', UPDATE_UNAVAILABLE:'更新功能不可用：当前程序未提供有效更新结果，或网络/版本校验失败。', SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE:'操作未完成：管理员授权被取消、缺少图形会话或服务操作失败。请在终端检查服务；网页不会接收系统密码。', SERVICE_STATE_NOT_CONFIRMED:'操作后未能确认真实服务状态，请在本机检查。'
@@ -17,7 +17,7 @@ async function api(path, options = {}) {
  let data; try { data = await response.json(); } catch { throw new Error('服务器未返回有效数据。'); }
  if (!response.ok) {
   if (response.status === 401 && path !== '/login') showLogin();
-  const error=new Error(messages[data.error] || '操作失败（'+response.status+'）。请检查本机配置或命令行状态。'); error.code=data.error; throw error;
+  const error=new Error(messages[data.error] || '操作失败（'+response.status+'）。请检查本机配置或命令行状态。'); error.code=data.error; error.details=data; throw error;
  }
  return data;
 }
@@ -131,13 +131,16 @@ const importLimit=4*1024*1024;
 function renderImportButtons(){
  for(const id of ['import-yaml','subscription-url','import-file']) $(id).disabled=importCommitting;
  if(importCommitting) $('yaml-editor').disabled=true;
- $('commit-import').disabled=busy||!importPreview;
+ const valid=Boolean(importPreview&&importPreview.token&&importPreview.generation===importGeneration);
+ $('commit-import').disabled=busy||!valid;
+ $('export-converted').disabled=busy||!valid;
  $('preview-import').disabled=busy;
  $('refresh-subscription').disabled=busy||!subscriptionConfigured;
  for(const id of ['import-tab-local','import-tab-url']) $(id).disabled=busy;
 }
 function invalidateImport(){
  importGeneration++;importPreview=null;$('import-preview').hidden=true;$('import-summary').replaceChildren();$('import-warning').textContent='';
+ $('import-format-label').textContent='';$('conversion-warnings').replaceChildren();$('conversion-issues').replaceChildren();$('conversion-report').hidden=true;
  $('import-source-status').textContent='';renderImportButtons();
 }
 function clearImportSecrets(){
@@ -168,8 +171,20 @@ for(const name of ['local','url']){
 for(const id of ['import-yaml','subscription-url']) $(id).addEventListener('input',invalidateImport);
 $('import-file').addEventListener('change',()=>{invalidateImport();const file=$('import-file').files[0];if(file&&(!/\.ya?ml$/i.test(file.name)||file.size>importLimit))$('import-source-status').textContent='请选择不超过 4 MiB 的 .yaml / .yml 文件。';});
 function readImportFile(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=reader.onabort=()=>reject(new Error('文件读取失败，请重新选择。'));reader.readAsText(file);});}
+function conversionReport(value){
+ if(!value||!['clash','native'].includes(value.format)||typeof value.converted!=='boolean'||!['warnings','issues'].every(key=>Array.isArray(value[key])&&value[key].every(item=>typeof item==='string')))throw new Error('转换报告不完整，请重新预览。');
+ return {format:value.format,converted:value.converted,warnings:[...value.warnings],issues:[...value.issues]};
+}
+function renderConversion(report){
+ $('import-format-label').textContent=report.format==='clash'?'Clash / Mihomo → AnyTLS 配置':'AnyTLS 原生配置 · 不需转换';
+ for(const key of ['warnings','issues']){
+  $('conversion-'+key).replaceChildren(...report[key].map(text=>element('li',text)));
+  $('conversion-'+key+'-section').hidden=!report[key].length;
+ }
+ $('conversion-report').hidden=false;
+}
 function previewImport(useSaved=false){return operation('预览导入',async()=>{
- invalidateImport();const generation=importGeneration;let body;
+ invalidateImport();const generation=importGeneration,session=csrf;let body;
  if(useSaved)body={use_saved:true};
  else if(importMode==='url'){
   const url=$('subscription-url').value.trim();let parsed;try{parsed=new URL(url);}catch{throw new Error('请输入有效的 HTTPS 订阅 URL。');}
@@ -183,10 +198,20 @@ function previewImport(useSaved=false){return operation('预览导入',async()=>
   if(new TextEncoder().encode(yaml).length>importLimit)throw new Error('配置超过 4 MiB，未发送。服务器仍会独立校验大小。');body={yaml};
  }
  if(generation!==importGeneration||!csrf)return;
- const data=await api('/import/preview',{method:'POST',body});
- if(generation!==importGeneration||!csrf){notice('输入已改变，已丢弃旧预览。请重新预览。');return;}
+ let data;try{data=await api('/import/preview',{method:'POST',body});}
+ catch(error){
+  if(generation!==importGeneration||csrf!==session||!csrf){notice('输入已改变，已丢弃旧预览。请重新预览。');return;}
+  if(error.code==='CONFIG_CONVERSION_UNSUPPORTED'){
+   const report=conversionReport(error.details.conversion);renderConversion(report);$('import-preview').hidden=false;
+   $('import-source-status').textContent='转换受阻，尚未保存；不能导入或导出。';
+  }
+  throw error;
+ }
+ if(generation!==importGeneration||csrf!==session||!csrf){notice('输入已改变，已丢弃旧预览。请重新预览。');return;}
+ const conversion=conversionReport(data.conversion);renderConversion(conversion);
+ if(conversion.issues.length||(conversion.format==='clash'&&!conversion.converted)){ $('import-preview').hidden=false;throw new Error(messages.CONFIG_CONVERSION_UNSUPPORTED);}
  if(typeof data.token!=='string'||!data.token||typeof data.etag!=='string'||!data.etag||!['nodes','groups','rules'].every(key=>Number.isInteger(data[key])&&data[key]>=0))throw new Error('预览响应不完整，请重试。');
- importPreview={token:data.token,etag:data.etag,generation};
+ importPreview={token:data.token,etag:data.etag,generation,conversion};
  const summary=$('import-summary');
  for(const [title,value] of [['节点',data.nodes],['策略组',data.groups],['规则',data.rules],['启动节点',data.selected||'未选择'],...(data.source_host?[['来源主机',data.source_host]]:[])])summary.append(element('dt',title),element('dd',String(value)));
  $('import-warning').textContent=data.warning||'';$('import-warning').hidden=!data.warning;$('import-preview').hidden=false;
@@ -196,17 +221,38 @@ $('preview-import').onclick=()=>previewImport();
 $('refresh-subscription').onclick=()=>previewImport(true);
 $('commit-import').onclick=()=>operation('备份并导入',async()=>{
  const preview=importPreview;if(!preview||preview.generation!==importGeneration)throw new Error('请先重新预览。');
+ const acceptConversion=preview.conversion.warnings.length>0;
+ if(acceptConversion&&!confirm('转换包含上方列出的差异（例如自动测速或故障切换改为手动选择）。确认接受全部转换差异并备份导入？')){notice('已取消导入；预览仍可导出，尚未应用。');return;}
  // Consume each token once locally, including ambiguous network failures.
  importCommitting=true;const editorWasDisabled=$('yaml-editor').disabled;
  try {
  importPreview=null;renderImportButtons();let data;
- try{data=await api('/import/commit',{method:'POST',headers:{'If-Match':preview.etag},body:{token:preview.token,confirm_replace:true,confirm_insecure:true}});}
+ try{data=await api('/import/commit',{method:'POST',headers:{'If-Match':preview.etag},body:{token:preview.token,confirm_replace:true,confirm_insecure:true,...(acceptConversion?{accept_conversion:true}:{})}});}
  catch(error){invalidateImport();if(error.code==='IMPORT_ROLLBACK_FAILED'||error.code==='IMPORT_STATE_UNCERTAIN'){clearConfigDraft();serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('connection-detail').textContent=messages[error.code];$('editor-info').textContent=messages[error.code];}throw error;}
  clearImportSecrets();clearConfigDraft();$('editor-info').textContent='导入完成；原始编辑草稿已清空。需要编辑时请重新打开配置。';
  if(data.changed){nodesLoaded=false;$('nodes-list').replaceChildren();$('groups-list').replaceChildren();$('rules-list').replaceChildren();$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';}
  savedFeedback(data);await refreshAfterSave(loadSubscription);
  } finally {importCommitting=false;if(etag&&!editorWasDisabled) $('yaml-editor').disabled=false;renderImportButtons();}
 });
+function downloadConfig(data){
+ if(typeof data.yaml!=='string'||!data.yaml.trim()||data.format!=='anytls-native')throw new Error('导出响应不完整，未下载文件。');
+ const url=URL.createObjectURL(new Blob([data.yaml],{type:'application/yaml'}));
+ const anchor=document.createElement('a');anchor.href=url;anchor.download='anytls-config.yaml';
+ try{document.body.append(anchor);anchor.click();}finally{anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),0);}
+}
+$('export-converted').onclick=()=>{
+ if(busy||!importPreview||!confirm('导出文件包含节点密码，请妥善保管，不要公开分享。导出不会保存或应用配置。继续？'))return;
+ return operation('导出转换后配置',async()=>{
+  const preview=importPreview,session=csrf;if(!preview||preview.generation!==importGeneration)throw new Error('请先重新预览。');
+  const data=await api('/import/export',{method:'POST',headers:{'If-Match':preview.etag},body:{token:preview.token}});
+  if(csrf!==session||!csrf||importPreview!==preview||preview.generation!==importGeneration)throw new Error('输入或会话已改变，未下载旧预览。请重新预览。');
+  downloadConfig(data);notice('已导出 AnyTLS 配置（含节点密码）；尚未保存或应用，预览仍可导入。');
+ });
+};
+$('export-current').onclick=()=>{
+ if(busy||!confirm('导出文件包含节点密码，请妥善保管，不要公开分享。将导出磁盘上的当前配置，不含未保存的编辑。继续？'))return;
+ return operation('导出当前配置',async()=>{const session=csrf,data=await api('/config/export');if(csrf!==session||!csrf)throw new Error('会话已改变，未下载配置。');const report=conversionReport(data.conversion);if(report.issues.length)throw new Error(messages.CONFIG_CONVERSION_UNSUPPORTED);if(report.warnings.length){renderConversion(report);$('import-preview').hidden=false;}downloadConfig(data);notice('已导出磁盘上的当前 AnyTLS 配置（含节点密码），未更改或应用配置。'+(report.warnings.length?' 转换差异：'+report.warnings.join('；'):''));});
+};
 $('check-update').onclick=()=>operation('检查新版本',async()=>{const data=await api('/update-check');$('update-result').textContent=JSON.stringify(data,null,2);updateAvailable=data.available===true;$('run-update').disabled=!updateAvailable;});
 $('run-update').onclick=()=>{if(!confirm('将检查并安装官方更新、保留现有配置，不自动重启服务。继续？'))return;operation('安装更新',async()=>{const data=await api('/update',{method:'POST',body:{confirm:true}});$('update-result').textContent=JSON.stringify(data,null,2);});};
 (async()=>{try{await enterConsole(await api('/session'));}catch{showLogin();}})();

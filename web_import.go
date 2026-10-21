@@ -25,6 +25,7 @@ type webImportFile struct {
 	exists bool
 }
 type webImportCandidate struct {
+	conversion                              webConversionReport
 	token, csrf, etag, selected, sourceURL  string
 	expires                                 time.Time
 	data                                    []byte
@@ -240,10 +241,9 @@ func (w *webConsole) getSubscription(rw http.ResponseWriter) {
 	webJSON(rw, 200, map[string]any{"configured": raw != "", "host": host})
 }
 
-// Reject unsupported behavior rather than silently dropping a Clash feature.
-// Unknown extension fields remain byte-for-byte intact. Remote aliases/merges
-// fail closed so indirect ca/path keys cannot bypass the local-file boundary.
-func webImportFormat(b []byte, remote bool) error {
+// Validate the converted native schema. Clash templates and provider paths
+// are interpreted by the converter rather than rejected by a generic AST scan.
+func webImportFormat(b []byte, _ bool) error {
 	if len(b) == 0 || int64(len(b)) > snapshotConfigLimit {
 		return errors.New("IMPORT_TOO_LARGE")
 	}
@@ -255,29 +255,6 @@ func webImportFormat(b []byte, remote bool) error {
 	var extra yaml.Node
 	if d.Decode(&extra) != io.EOF {
 		return errors.New("IMPORT_FORMAT_UNSUPPORTED")
-	}
-	var walk func(*yaml.Node) error
-	walk = func(n *yaml.Node) error {
-		if remote && (n.Kind == yaml.AliasNode || n.Tag == "!!merge" || n.Anchor != "") {
-			return errors.New("IMPORT_REMOTE_FILE_REFERENCE")
-		}
-		if n.Kind == yaml.MappingNode {
-			for i := 0; i < len(n.Content); i += 2 {
-				k, v := n.Content[i], n.Content[i+1]
-				if remote && (k.Value == "ca" || k.Value == "path") && (v.Kind != yaml.ScalarNode || strings.TrimSpace(v.Value) != "") {
-					return errors.New("IMPORT_REMOTE_FILE_REFERENCE")
-				}
-			}
-		}
-		for _, c := range n.Content {
-			if e := walk(c); e != nil {
-				return e
-			}
-		}
-		return nil
-	}
-	if e := walk(&doc); e != nil {
-		return e
 	}
 	for i := 0; i < len(doc.Content[0].Content); i += 2 {
 		if doc.Content[0].Content[i].Value == "proxy-providers" || doc.Content[0].Content[i].Value == "rule-providers" {
@@ -401,7 +378,23 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if e = webImportFormat(b, raw != ""); e != nil {
+	fetch := w.importFetch
+	if fetch == nil {
+		fetch = webImportSecureFetch
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	converted, conversion, convertErr := webConvertConfiguration(ctx, b, raw != "", fetch)
+	if convertErr != nil {
+		webError(rw, 422, "CONFIG_CONVERSION_INVALID")
+		return
+	}
+	if len(conversion.Issues) > 0 {
+		webJSON(rw, 422, map[string]any{"error": "CONFIG_CONVERSION_UNSUPPORTED", "conversion": conversion})
+		return
+	}
+	b = converted
+	if e = webImportFormat(b, false); e != nil {
 		webError(rw, 422, e.Error())
 		return
 	}
@@ -446,7 +439,7 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := `"` + shaHex(old.data) + `"`
-	w.importPending = &webImportCandidate{token: token, csrf: r.Header.Get("X-CSRF-Token"), etag: etag, selected: selected, sourceURL: raw, expires: w.now().Add(10 * time.Minute), data: bytes.Clone(b), oldConfig: old, oldSelected: sel, oldSubscription: sub}
+	w.importPending = &webImportCandidate{conversion: conversion, token: token, csrf: r.Header.Get("X-CSRF-Token"), etag: etag, selected: selected, sourceURL: raw, expires: w.now().Add(10 * time.Minute), data: bytes.Clone(b), oldConfig: old, oldSelected: sel, oldSubscription: sub}
 	var doc struct {
 		Groups []proxyGroup `yaml:"proxy-groups"`
 		Rules  []string     `yaml:"rules"`
@@ -462,7 +455,7 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 	if raw == "" && saved != "" {
 		warning += " Existing subscription is kept unchanged; this local import does not refresh it."
 	}
-	out := map[string]any{"token": token, "etag": etag, "nodes": len(nodes), "groups": len(doc.Groups), "rules": len(doc.Rules), "selected": selected, "warning": warning}
+	out := map[string]any{"conversion": conversion, "token": token, "etag": etag, "nodes": len(nodes), "groups": len(doc.Groups), "rules": len(doc.Rules), "selected": selected, "warning": warning}
 	if host != "" {
 		out["source_host"] = host
 	}
@@ -519,9 +512,10 @@ func webImportRollback(files []webImportFile) bool {
 }
 func (w *webConsole) importCommit(rw http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Token           string `json:"token"`
-		ConfirmReplace  bool   `json:"confirm_replace"`
-		ConfirmInsecure bool   `json:"confirm_insecure"`
+		Token            string `json:"token"`
+		ConfirmReplace   bool   `json:"confirm_replace"`
+		ConfirmInsecure  bool   `json:"confirm_insecure"`
+		AcceptConversion bool   `json:"accept_conversion"`
 	}
 	if webDecode(rw, r, &in) != nil || !in.ConfirmReplace || !in.ConfirmInsecure {
 		webError(rw, 400, "IMPORT_CONFIRMATION_REQUIRED")
@@ -530,6 +524,10 @@ func (w *webConsole) importCommit(rw http.ResponseWriter, r *http.Request) {
 	p := w.importPending
 	if p == nil || !w.now().Before(p.expires) || !webEqual(in.Token, p.token) || !webEqual(r.Header.Get("X-CSRF-Token"), p.csrf) {
 		webError(rw, 409, "IMPORT_PREVIEW_EXPIRED")
+		return
+	}
+	if len(p.conversion.Warnings) > 0 && !in.AcceptConversion {
+		webError(rw, 400, "CONVERSION_CONFIRMATION_REQUIRED")
 		return
 	}
 	if r.Header.Get("If-Match") == "" {

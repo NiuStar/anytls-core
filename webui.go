@@ -308,6 +308,8 @@ func (w *webConsole) pendingState() (bool, bool) {
 }
 func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSession) {
 	switch r.URL.Path {
+	case "/api/v1/config/export":
+		w.exportCurrent(rw, r)
 	case "/api/v1/subscription":
 		w.getSubscription(rw)
 	case "/api/v1/session":
@@ -451,6 +453,8 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/api/v1/import/export" && r.Method == "POST":
+		w.exportConverted(rw, r)
 	case r.URL.Path == "/api/v1/import/preview" && r.Method == "POST":
 		w.importPreview(rw, r)
 	case r.URL.Path == "/api/v1/import/commit" && r.Method == "POST":

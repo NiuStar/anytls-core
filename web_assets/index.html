@@ -51,7 +51,8 @@
         <section class="panel import-panel" aria-labelledby="import-heading">
           <div class="panel-toolbar"><div><h3 id="import-heading">导入配置</h3><span class="hint">先预览，再备份并替换。运行中的 VPN 会自动重连。</span></div></div>
           <div class="import-body">
-            <p class="hint import-format">仅支持本工具兼容的 Clash / Mihomo YAML（AnyTLS 节点与 select 策略组），并非完整兼容；暂不支持 URI 或 Base64 订阅。</p>
+            <p class="hint import-format">自动识别 Clash / Mihomo YAML 并转换为 AnyTLS 配置，原生 YAML 不需转换。alias / merge 自动展开；HTTP provider 转为内联内容，缓存路径不会读取本机文件。不支持的协议或规则会明确列出，不会静默丢弃，也不会将其他协议节点变成 AnyTLS。暂不支持 URI 或 Base64 订阅。</p>
+            <p class="hint import-format">自动测速、故障切换等策略如需降为手动 select，会在预览中列出差异；导入时再明确确认。预览和导出均不会应用配置。</p>
             <div class="import-tabs" role="tablist" aria-label="导入来源"><button id="import-tab-local" role="tab" aria-selected="true" aria-controls="import-local" type="button">文件 / 粘贴 YAML</button><button id="import-tab-url" role="tab" aria-selected="false" aria-controls="import-url-panel" tabindex="-1" type="button">HTTPS 订阅</button></div>
             <div id="import-local" role="tabpanel" aria-labelledby="import-tab-local">
               <label for="import-file">配置文件</label><input id="import-file" type="file" accept=".yaml,.yml" aria-describedby="import-file-help"><p id="import-file-help" class="hint">最大 4 MiB；服务器仍会校验大小与内容。选中文件优先于粘贴内容。</p>
@@ -63,12 +64,12 @@
               <div class="subscription-row"><span id="subscription-status" class="hint" role="status">尚未读取订阅状态</span><button id="refresh-subscription" type="button" disabled>刷新已保存订阅</button></div>
             </div>
             <div class="import-actions"><button id="preview-import" type="button">预览导入</button><span id="import-source-status" class="hint" role="status" aria-live="polite"></span></div>
-            <div id="import-preview" class="import-preview" hidden aria-live="polite"><h3>导入预览</h3><dl id="import-summary"></dl><p id="import-warning" class="import-warning"></p><p class="hint">将替换当前配置，先自动备份；运行中的 VPN 会短暂断网并自动重连。请确认后继续。</p></div>
-            <div class="import-confirm"><button id="commit-import" class="primary" type="button" disabled>备份并导入</button></div>
+            <div id="import-preview" class="import-preview" hidden aria-live="polite"><h3>导入预览 <span id="import-format-label" class="badge"></span></h3><dl id="import-summary"></dl><p id="import-warning" class="import-warning" hidden></p><div id="conversion-report" hidden><section id="conversion-warnings-section" hidden><h4>转换差异 · 导入前需确认</h4><ul id="conversion-warnings" class="import-warning"></ul></section><section id="conversion-issues-section" hidden><h4>无法转换 · 已阻止导入与导出</h4><ul id="conversion-issues" class="conversion-issues"></ul></section></div><p class="hint">仅导出不会保存或应用。选择导入才会备份并替换当前配置；运行中的 VPN 会短暂断网并自动重连。</p></div>
+            <div class="import-confirm"><button id="commit-import" class="primary" type="button" disabled>备份并导入</button><button id="export-converted" type="button" disabled>导出转换后配置</button><span class="hint">含节点密码 · 导出不应用</span></div>
           </div>
         </section>
         <div class="panel rules-panel"><div class="panel-toolbar"><h3>分流规则</h3><button id="load-rules">查看规则列表</button></div><ol id="rules-list" class="rules-list"></ol></div>
-        <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开后显示节点密码，仅限本机登录用户。</span></div><div class="action-bar"><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
+        <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开或导出后包含节点密码，仅限本机登录用户。导出当前磁盘配置，不包含未保存草稿。</span></div><div class="action-bar"><button id="export-current" type="button">导出当前配置</button><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
       </section>
       <section id="view-update" class="view" hidden>
         <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>

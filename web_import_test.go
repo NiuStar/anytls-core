@@ -256,8 +256,9 @@ func TestWebImportFormatsRemotePathsAndInvalidUntouched(t *testing.T) {
 		}
 	}
 	for _, suffix := range []string{"extra: {ca: /etc/passwd}\n", "extra: {path: /etc/passwd}\n", "x: &x {path: /etc/passwd}\ny: *x\n", "x: &x {foo: bar}\ny: {<<: *x}\n"} {
-		if webImportFormat([]byte(webImportYAML+suffix), true) == nil {
-			t.Fatal("remote file/alias accepted")
+		converted, report, err := webConvertConfiguration(context.Background(), []byte(webImportYAML+suffix), true, nil)
+		if err != nil || len(report.Issues) != 0 || webImportFormat(converted, false) != nil {
+			t.Fatal("inert path metadata or template was blanket-rejected", err, report)
 		}
 	}
 }
