@@ -392,11 +392,57 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 	}
 }
 func (w *webConsole) saved() { w.metaMu.Lock(); w.pending = true; w.metaMu.Unlock() }
+
+// Called only after save readback, while ServeHTTP still owns actionMu. A
+// successful disk write is never reported as a failed save if apply fails.
+func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, changed bool, etag string, consent bool) {
+	status, applied := "NO_CHANGE", false
+	if changed {
+		w.saved()
+		loaded, running, err := w.state()
+		switch {
+		case err != nil || (running && !loaded):
+			status = "STATE_UNAVAILABLE"
+		case !running:
+			// Loaded-but-stopped is stopped too. Saving never starts a VPN.
+			status = "SAVED_STOPPED"
+		default:
+			status = "APPLY_FAILED"
+			before := w.fingerprint()
+			if before != "" {
+				// Own and synchronously join the helper despite HTTP disconnects.
+				// No detached worker or supervisor; the action lock remains held.
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				err = w.serviceAction(ctx, "reload", consent)
+				cancel()
+				if err == nil {
+					loaded, running, err = w.state()
+					after := w.fingerprint()
+					if err == nil && loaded && running && after == before {
+						w.metaMu.Lock()
+						w.baseline, w.pending, w.pendingKnown = before, false, true
+						w.metaMu.Unlock()
+						status, applied = "APPLIED", true
+					}
+				}
+			}
+		}
+	}
+	pending, known := w.pendingState()
+	result := map[string]any{"ok": true, "saved": true, "changed": changed, "applied": applied, "apply_status": status, "pendingReload": pending, "pendingKnown": known}
+	if etag != "" {
+		rw.Header().Set("ETag", etag)
+		result["etag"] = etag
+	}
+	webJSON(rw, 200, result)
+}
+
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/api/v1/config" && r.Method == "PUT":
 		var in struct {
-			YAML string `json:"yaml"`
+			YAML            string `json:"yaml"`
+			ConfirmInsecure bool   `json:"confirm_insecure"`
 		}
 		if webDecode(rw, r, &in) != nil {
 			webError(rw, 400, "INVALID_INPUT")
@@ -442,9 +488,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		etag = `"` + shaHex(readback) + `"`
-		rw.Header().Set("ETag", etag)
-		pending, _ := w.pendingState()
-		webJSON(rw, 200, map[string]any{"ok": true, "changed": changed, "etag": etag, "pendingReload": pending})
+		w.finishConfigSave(rw, r, changed, etag, in.ConfirmInsecure)
 	case r.URL.Path == "/api/v1/nodes" && r.Method == "PUT":
 		var in webNodeEdit
 		if webDecode(rw, r, &in) != nil || in.Name == "" {
@@ -487,12 +531,12 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 500, "CONFIG_READBACK_FAILED")
 			return
 		}
-		pending, _ := w.pendingState()
-		webJSON(rw, 200, map[string]any{"ok": true, "changed": changed, "etag": `"` + shaHex(readback) + `"`, "pendingReload": pending})
+		w.finishConfigSave(rw, r, changed, `"`+shaHex(readback)+`"`, in.ConfirmInsecure)
 	case r.URL.Path == "/api/v1/groups/selection" && r.Method == "POST":
 		var in struct {
-			Group  string `json:"group"`
-			Choice string `json:"choice"`
+			Group           string `json:"group"`
+			Choice          string `json:"choice"`
+			ConfirmInsecure bool   `json:"confirm_insecure"`
 		}
 		if webDecode(rw, r, &in) != nil || in.Group == "" || in.Choice == "" {
 			webError(rw, 400, "INVALID_INPUT")
@@ -524,11 +568,11 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 500, "GROUP_READBACK_FAILED")
 			return
 		}
-		pending, _ := w.pendingState()
-		webJSON(rw, 200, map[string]any{"ok": true, "changed": changed, "pendingReload": pending})
+		w.finishConfigSave(rw, r, changed, "", in.ConfirmInsecure)
 	case r.URL.Path == "/api/v1/nodes/selection" && r.Method == "POST":
 		var in struct {
-			Name string `json:"name"`
+			Name            string `json:"name"`
+			ConfirmInsecure bool   `json:"confirm_insecure"`
 		}
 		if webDecode(rw, r, &in) != nil || in.Name == "" {
 			webError(rw, 400, "INVALID_INPUT")
@@ -552,8 +596,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 500, "SELECTION_READBACK_FAILED")
 			return
 		}
-		pending, _ := w.pendingState()
-		webJSON(rw, 200, map[string]any{"ok": true, "changed": before != after, "pendingReload": pending})
+		w.finishConfigSave(rw, r, before != after, "", in.ConfirmInsecure)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/service/") && r.Method == "POST":
 		action := strings.TrimPrefix(r.URL.Path, "/api/v1/service/")
 		if action != "start" && action != "stop" && action != "reload" {
@@ -658,12 +701,23 @@ func webServiceAction(ctx context.Context, action string, insecure bool) error {
 	if err != nil || !filepath.IsAbs(binary) {
 		return errors.New("self executable unavailable")
 	}
+	return webServiceWithCommand(ctx, action, insecure, binary, exec.CommandContext)
+}
+
+// Per-call command seam keeps tests on owned, non-root helper subprocesses.
+func webServiceWithCommand(ctx context.Context, action string, insecure bool, binary string, command func(context.Context, string, ...string) *exec.Cmd) error {
+	if action != "start" && action != "stop" && action != "reload" {
+		return errors.New("invalid service action")
+	}
+	if action == "stop" && insecure {
+		return errors.New("insecure consent is not a stop argument")
+	}
 	script := `on run argv
 set commandText to quoted form of (item 1 of argv) & " " & quoted form of (item 2 of argv)
 if (item 3 of argv) is "true" then set commandText to commandText & " -allow-insecure"
 do shell script commandText with administrator privileges
 end run`
-	cmd := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", script, "--", binary, "service-"+action, strconv.FormatBool(insecure))
+	cmd := command(ctx, "/usr/bin/osascript", "-e", script, "--", binary, "service-"+action, strconv.FormatBool(insecure))
 	// Child output can contain user config. Never return it to HTTP or logs.
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

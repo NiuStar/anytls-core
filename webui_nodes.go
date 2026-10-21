@@ -11,11 +11,12 @@ import (
 // The raw YAML editor remains available for additions/advanced fields. Empty
 // password in the form means preserve the secret, never erase it implicitly.
 type webNodeEdit struct {
-	Name     string `json:"name"`
-	Server   string `json:"server"`
-	Port     int    `json:"port"`
-	Password string `json:"password"`
-	SNI      string `json:"sni"`
+	Name            string `json:"name"`
+	Server          string `json:"server"`
+	Port            int    `json:"port"`
+	Password        string `json:"password"`
+	SNI             string `json:"sni"`
+	ConfirmInsecure bool   `json:"confirm_insecure"`
 }
 
 func webEditNode(b []byte, in webNodeEdit) ([]byte, error) {

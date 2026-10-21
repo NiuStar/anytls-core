@@ -27,6 +27,10 @@ func webFixture(t *testing.T) (*webConsole, string) {
 	}
 	w := newWebConsole(config, filepath.Join(dir, "webui.password"), 18089)
 	w.state = func() (bool, bool, error) { return false, false, nil }
+	w.serviceAction = func(context.Context, string, bool) error {
+		t.Error("unexpected service action: fixture must explicitly mock service actions")
+		return errors.New("unexpected service action")
+	}
 	return w, password
 }
 func webRequest(w *webConsole, method, path, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
