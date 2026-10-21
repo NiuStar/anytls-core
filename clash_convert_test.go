@@ -92,7 +92,7 @@ func TestClashConvertUnsupportedAndManualGroups(t *testing.T) {
 proxy-groups: [{name: manual, type: url-test, proxies: [SECRETNAME]}, {name: broken, type: relay, proxies: [other]}]
 rules: ["GEOIP,SECRETCOUNTRY,DIRECT", "MATCH,DIRECT"]
 `, nil)
-	if len(r.Issues) != 4 || len(r.Warnings) == 0 {
+	if len(r.Issues) != 1 || len(r.Skipped) < 4 || len(r.Warnings) == 0 {
 		t.Fatalf("missing issues: %+v", r)
 	}
 	j, _ := json.Marshal(r)
@@ -154,7 +154,7 @@ rules: ['DOMAIN,before.example,DIRECT', 'RULE-SET,d,pick', 'RULE-SET,i,DIRECT,no
 }
 
 func TestClashConvertFilterPreservesExplicitMembers(t *testing.T) {
-	b, r := convertFixture(t, `proxies: [{name: first, type: anytls}, {name: second, type: anytls}]
+	b, r := convertFixture(t, `proxies: [{name: first, type: anytls, server: 192.0.2.1, port: 443, password: pass}, {name: second, type: anytls, server: 192.0.2.2, port: 443, password: pass}]
 proxy-groups: [{name: pick, type: select, proxies: [DIRECT], include-all-proxies: true, filter: first}]
 `, nil)
 	if len(r.Issues) != 0 {
@@ -172,9 +172,9 @@ proxy-groups: [{name: pick, type: select, proxies: [DIRECT], include-all-proxies
 }
 
 func TestClashConvertRemoteResourceGate(t *testing.T) {
-	raw := []byte("nodes: [{name: first, type: anytls, ca: /SECRET/ca}]\nrule-sets: {private: {path: /SECRET/rules, sha256: abc}}\nx-meta: {path: /SECRET/unused}\n")
+	raw := []byte("nodes: [{name: first, type: anytls, server: 192.0.2.1, port: 443, password: pass, ca: /SECRET/ca}]\nrule-sets: {private: {path: /SECRET/rules, sha256: abc}}\nx-meta: {path: /SECRET/unused}\n")
 	b, r, e := webConvertConfiguration(context.Background(), raw, true, nil)
-	if e != nil || len(r.Issues) != 2 || !bytes.Equal(raw, b) {
+	if e != nil || len(r.Issues) != 1 || len(r.Skipped) != 2 || bytes.Equal(raw, b) {
 		t.Fatalf("resource gate: %v %+v", e, r)
 	}
 	_, local, e := webConvertConfiguration(context.Background(), raw, false, nil)
@@ -186,7 +186,7 @@ func TestClashConvertRemoteResourceGate(t *testing.T) {
 		t.Fatal("resource value leaked")
 	}
 	_, r = convertFixture(t, "nodes: []\nx-meta: {path: /SECRET/unused}\n", nil)
-	if len(r.Issues) != 0 {
+	if len(r.Skipped) != 0 {
 		t.Fatal("unrelated path rejected")
 	}
 }
@@ -218,16 +218,16 @@ nodes: [{<<: [*first, *second], name: node, *key: anytls}]
 }
 
 func TestClashConvertNativeUnsupportedProtocols(t *testing.T) {
-	raw := []byte("nodes: [{name: private, type: ss, password: SECRET}, {name: first, type: anytls}]\n")
+	raw := []byte("nodes: [{name: private, type: ss, password: SECRET}, {name: first, type: anytls, server: 192.0.2.1, port: 443, password: pass}]\n")
 	b, r, e := webConvertConfiguration(context.Background(), raw, true, nil)
-	if e != nil || len(r.Issues) != 1 || !bytes.Equal(raw, b) {
+	if e != nil || len(r.Issues) != 0 || len(r.Skipped) != 1 || bytes.Equal(raw, b) || bytes.Contains(b, []byte("SECRET")) {
 		t.Fatalf("unsupported native node not blocked: %v %+v", e, r)
 	}
 }
 
 func TestClashConvertLiteralMergeKeyCoexists(t *testing.T) {
 	b, r := convertFixture(t, "x: &base {value: original}\nnodes: []\nx-other: {<<: *base, '<<': literal}\n", nil)
-	if len(r.Issues) != 0 {
+	if len(r.Skipped) != 0 {
 		t.Fatal(r)
 	}
 	var d map[string]any

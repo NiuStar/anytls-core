@@ -19,12 +19,13 @@ type webConversionReport struct {
 	Converted bool     `json:"converted"`
 	Warnings  []string `json:"warnings"`
 	Issues    []string `json:"issues"`
+	Skipped   []string `json:"skipped"`
 }
 
 var errWebConversionInvalid = errors.New("CONFIG_CONVERSION_INVALID")
 
 func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fetch func(context.Context, string) ([]byte, error)) ([]byte, webConversionReport, error) {
-	r := webConversionReport{Warnings: []string{}, Issues: []string{}}
+	r := webConversionReport{Warnings: []string{}, Issues: []string{}, Skipped: []string{}}
 	root, changed, err := conversionParseContext(ctx, input)
 	if err != nil {
 		return nil, r, errWebConversionInvalid
@@ -43,15 +44,21 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 		if nodes.Kind != yaml.SequenceNode {
 			return nil, r, errWebConversionInvalid
 		}
-		for i, n := range nodes.Content {
-			if n.Kind != yaml.MappingNode || conversionText(conversionField(n, "type")) != "anytls" {
-				r.Issues = append(r.Issues, fmt.Sprintf("nodes[%d].type: %s", i, conversionUnsupportedProtocol(conversionText(conversionField(n, "type")))))
+		c := conversionState{ctx: ctx, report: &r, nodes: conversionSeq()}
+		c.addNodes(nodes, "nodes")
+		for _, n := range nodes.Content {
+			if conversionField(n, "servername") != nil {
+				changed = true
+				c.warn("nodes: servername normalized to native sni; confirmation required")
 			}
 		}
-		if remote {
-			conversionRemoteFiles(root, &r)
+		if changed || len(r.Skipped) > 0 {
+			conversionSet(root, "nodes", c.nodes)
 		}
-		if !changed {
+		beforeWarnings := len(r.Warnings)
+		conversionSanitize(root, &r, remote)
+		r.Converted = changed || len(r.Skipped) > 0 || len(r.Warnings) > beforeWarnings
+		if !r.Converted {
 			return input, r, nil
 		}
 		b, e := conversionMarshal(ctx, root)
@@ -89,12 +96,16 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 			start := len(c.nodes.Content)
 			c.addNodes(conversionField(child, "proxies"), path+".proxies")
 			names := []string{}
+			kept := append([]*yaml.Node{}, c.nodes.Content[:start]...)
 			for index, n := range c.nodes.Content[start:] {
 				if ca := conversionField(n, "ca"); ca != nil && conversionText(ca) != "" {
 					c.issue(fmt.Sprintf("%s.proxies[%d].ca: remote provider requires a local file", path, index))
+					continue
 				}
+				kept = append(kept, n)
 				names = append(names, conversionText(conversionField(n, "name")))
 			}
+			c.nodes.Content = kept
 			c.providers[p.Content[i].Value] = names
 		}
 	}
@@ -105,7 +116,9 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 		}
 		next := conversionSeq()
 		for i, g := range groups.Content {
-			next.Content = append(next.Content, c.group(g, fmt.Sprintf("proxy-groups[%d]", i)))
+			if converted := c.group(g, fmt.Sprintf("proxy-groups[%d]", i)); converted != nil {
+				next.Content = append(next.Content, converted)
+			}
 		}
 		conversionSet(out, "proxy-groups", next)
 	}
@@ -224,9 +237,7 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 			c.warn(conversionPublicField(key, i/2) + ": Clash control field is not applicable to native configuration")
 		}
 	}
-	if remote {
-		conversionRemoteFiles(out, &r)
-	}
+	conversionSanitize(out, &r, remote)
 	b, e := conversionMarshal(ctx, out)
 	if e != nil {
 		return nil, r, errWebConversionInvalid
@@ -348,8 +359,10 @@ type conversionState struct {
 	ruleProviders map[string]conversionRuleProvider
 }
 
-func (c *conversionState) issue(s string) { c.report.Issues = append(c.report.Issues, s) }
-func (c *conversionState) warn(s string)  { c.report.Warnings = append(c.report.Warnings, s) }
+func (c *conversionState) issue(s string) {
+	c.report.Skipped = append(c.report.Skipped, "已跳过 "+s)
+}
+func (c *conversionState) warn(s string) { c.report.Warnings = append(c.report.Warnings, s) }
 
 func (c *conversionState) addNodes(seq *yaml.Node, path string) {
 	if seq == nil || seq.Kind != yaml.SequenceNode {
@@ -367,6 +380,7 @@ func (c *conversionState) addNodes(seq *yaml.Node, path string) {
 			c.issue(p + ".type: " + conversionUnsupportedProtocol(typ))
 			continue
 		}
+		start := len(c.report.Skipped)
 		next := conversionMap()
 		for j := 0; j < len(n.Content); j += 2 {
 			key := n.Content[j].Value
@@ -379,15 +393,20 @@ func (c *conversionState) addNodes(seq *yaml.Node, path string) {
 				} else {
 					conversionSet(next, "sni", n.Content[j+1])
 				}
+			case "icon", "hidden":
+				c.warn(p + ": display metadata not retained")
 			default:
-				c.issue(p + "." + conversionPublicField(key, j/2) + ": unsupported AnyTLS field")
+				c.issue(p + "." + conversionPublicField(key, j/2) + ": unsupported AnyTLS field; entire node removed")
 			}
 		}
-		c.nodes.Content = append(c.nodes.Content, next)
+		if len(c.report.Skipped) == start {
+			c.nodes.Content = append(c.nodes.Content, next)
+		}
 	}
 }
 
 func (c *conversionState) resource(spec *yaml.Node, path string) []byte {
+	start := len(c.report.Skipped)
 	if spec == nil || spec.Kind != yaml.MappingNode {
 		c.issue(path + ": expected provider mapping")
 		return nil
@@ -412,6 +431,9 @@ func (c *conversionState) resource(spec *yaml.Node, path string) []byte {
 			c.issue(path + "." + conversionPublicField(spec.Content[i].Value, i/2) + ": unsupported provider option")
 		}
 	}
+	if len(c.report.Skipped) != start {
+		return nil
+	}
 	url := conversionText(conversionField(spec, "url"))
 	if url == "" || c.fetch == nil {
 		c.issue(path + ".url: provider URL unavailable")
@@ -426,10 +448,11 @@ func (c *conversionState) resource(spec *yaml.Node, path string) []byte {
 }
 
 func (c *conversionState) group(g *yaml.Node, path string) *yaml.Node {
+	start := len(c.report.Skipped)
 	out := conversionMap()
 	if g.Kind != yaml.MappingNode {
 		c.issue(path + ": expected group mapping")
-		return out
+		return nil
 	}
 	kind := conversionText(conversionField(g, "type"))
 	switch kind {
@@ -465,7 +488,8 @@ func (c *conversionState) group(g *yaml.Node, path string) *yaml.Node {
 			for i, n := range use.Content {
 				names, ok := c.providers[n.Value]
 				if n.Kind != yaml.ScalarNode || !ok {
-					c.issue(fmt.Sprintf("%s.use[%d]: unresolved proxy provider", path, i))
+					c.issue(fmt.Sprintf("%s.use[%d]: unavailable provider reference", path, i))
+					start++ // This drops the reference, not the otherwise valid group.
 					continue
 				}
 				members = append(members, names...)
@@ -515,6 +539,9 @@ func (c *conversionState) group(g *yaml.Node, path string) *yaml.Node {
 		default:
 			c.issue(path + "." + conversionPublicField(key, i/2) + ": unsupported group option")
 		}
+	}
+	if len(c.report.Skipped) != start {
+		return nil
 	}
 	return out
 }

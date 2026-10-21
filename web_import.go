@@ -135,6 +135,7 @@ func webImportFetchWith(ctx context.Context, raw string, lookup func(context.Con
 			return nil, errors.New("IMPORT_FETCH_FAILED")
 		}
 		req.Header.Set("Accept", "application/yaml, text/yaml, text/plain, */*")
+		req.Header.Set("User-Agent", "clash.meta/AnyTLS-Core")
 		var resp *http.Response
 		if roundTrip == nil {
 			resp, e = tr.RoundTrip(req)
@@ -384,6 +385,12 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	if raw != "" {
+		if code := webSubscriptionResponseCode(b); code != "" {
+			webError(rw, 422, code)
+			return
+		}
+	}
 	converted, conversion, convertErr := webConvertConfiguration(ctx, b, raw != "", fetch)
 	if convertErr != nil {
 		webError(rw, 422, "CONFIG_CONVERSION_INVALID")
@@ -526,7 +533,7 @@ func (w *webConsole) importCommit(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 409, "IMPORT_PREVIEW_EXPIRED")
 		return
 	}
-	if len(p.conversion.Warnings) > 0 && !in.AcceptConversion {
+	if (len(p.conversion.Warnings) > 0 || len(p.conversion.Skipped) > 0) && !in.AcceptConversion {
 		webError(rw, 400, "CONVERSION_CONFIRMATION_REQUIRED")
 		return
 	}

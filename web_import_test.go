@@ -242,7 +242,7 @@ func TestWebImportSubscriptionPrivacyAndLocalKeep(t *testing.T) {
 	}
 }
 func TestWebImportFormatsRemotePathsAndInvalidUntouched(t *testing.T) {
-	for _, candidate := range []string{"anytls://secret@example", "cHJveGllcw==", "[Proxy]\na=anytls,example,443", "nodes: []\n", strings.Replace(webImportYAML, "type: anytls", "type: ss", 1), webImportYAML + "proxy-providers: {}\n", webImportYAML + "proxy-groups: [{name: auto, type: url-test, proxies: [imported]}]\n"} {
+	for _, candidate := range []string{"anytls://secret@example", "cHJveGllcw==", "[Proxy]\na=anytls,example,443", "nodes: []\n", strings.Replace(webImportYAML, "type: anytls", "type: ss", 1), webImportYAML + "proxy-providers: {}\n"} {
 		w, password := webFixture(t)
 		c, csrf := webLogin(t, w, password)
 		old, _ := os.ReadFile(w.configPath)
