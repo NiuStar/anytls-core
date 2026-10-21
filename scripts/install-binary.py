@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Install the official macOS arm64 binary; never compile or run archive scripts."""
 import argparse
+import contextlib
+import fcntl
+import signal
+import time
+import urllib.request
+
 import hashlib
 import importlib.util
 import os
@@ -103,6 +109,130 @@ def command_version(binary, tag, runner, env):
     i.require(result.stdout.decode("utf-8").strip() == tag, "executable version mismatch; old executable preserved before publish")
 
 
+def private_append(path):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        i.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(), "unsafe installer log/lock file")
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "ab", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextlib.contextmanager
+def installation_lock(app):
+    with private_append(app / ".install.lock") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("another binary installer is running") from None
+        yield
+
+
+class WebUI:
+    """Only manage the exact current user's default-port WebUI, never the VPN."""
+    def __init__(self, target, env):
+        self.target, self.env = target, env
+        self.timeout = 10
+        self.old = None
+
+    def listeners(self):
+        result = subprocess.run(["/usr/sbin/lsof", "-t", "-nP", "-iTCP:18089", "-sTCP:LISTEN"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        lines = result.stdout.decode("ascii").splitlines()
+        if result.returncode == 1 and not lines and not result.stderr:
+            return set()
+        i.require(result.returncode == 0 and lines and all(re.fullmatch(r"[1-9][0-9]*", line) for line in lines),
+                  "cannot safely identify port 18089 listener")
+        return {int(line) for line in lines}
+
+    def identity(self, pid):
+        fields = []
+        for field in ("uid", "lstart", "command"):
+            result = subprocess.run(["/bin/ps", "-ww", "-p", str(pid), "-o", field + "="],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+                                    env={**(self.env or {}), "LC_ALL": "C"})
+            if result.returncode == 1 and not result.stdout.strip() and not result.stderr:
+                return None
+            i.require(result.returncode == 0 and result.stdout.strip() and not result.stderr,
+                      "cannot safely identify WebUI process")
+            fields.append(result.stdout.decode("utf-8").strip())
+        return tuple(fields)
+
+    def known(self, identity):
+        return identity is not None and identity[0] == str(os.getuid()) and identity[2] in {
+            str(self.target) + " webui", str(self.target) + " webui --port 18089",
+            str(self.target) + " webui --port=18089"}
+
+    def preflight(self):
+        pids = self.listeners()
+        i.require(len(pids) <= 1, "port 18089 has multiple listeners; refusing WebUI replacement")
+        if pids:
+            pid = next(iter(pids))
+            identity = self.identity(pid)
+            i.require(self.known(identity), "port 18089 is occupied by an unknown process/arguments or UID; close it yourself")
+            self.old = (pid, identity)
+        # Historical webui.pid is never read: a PID is not process authority.
+
+    def restart(self):
+        pids = self.listeners()
+        if self.old:
+            pid, identity = self.old
+            i.require(pids <= {pid}, "port 18089 ownership changed; no process was signalled")
+            current = self.identity(pid)
+            i.require(current is None or current == identity, "WebUI process birth/identity changed; no process was signalled")
+            if current is not None:
+                # Recheck the full birth/UID/command immediately before the sole signal.
+                i.require(self.identity(pid) == identity, "WebUI process birth/identity changed; no process was signalled")
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + self.timeout
+            while True:
+                gone = self.identity(pid) != identity
+                if gone and not self.listeners():
+                    break
+                i.require(time.monotonic() < deadline, "old WebUI did not stop or port 18089 is not free; no SIGKILL sent")
+                time.sleep(0.1)
+        else:
+            i.require(not pids, "port 18089 ownership changed; no process was signalled")
+        self.start()
+
+    def start(self):
+        child = None
+        try:
+            with private_append(self.target.parent / "webui.log") as log:
+                child = subprocess.Popen([str(self.target), "webui", "--port", "18089"],
+                                         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                         start_new_session=True, env=self.env)
+            deadline = time.monotonic() + self.timeout
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            while time.monotonic() < deadline:
+                i.require(child.poll() is None, "new WebUI exited before readiness")
+                if self.listeners() == {child.pid}:
+                    try:
+                        with opener.open("http://127.0.0.1:18089/", timeout=1) as response:
+                            ready = response.status == 200 and b"<title>AnyTLS" in response.read(1024 * 1024)
+                        if ready and child.poll() is None and self.listeners() == {child.pid}:
+                            return
+                    except OSError:
+                        pass
+                time.sleep(0.1)
+            raise ValueError("new WebUI readiness timed out (child must own port 18089 and serve the actual console)")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            if child is not None and child.poll() is None:
+                # This Popen handle is our own unreaped child, never an external PID hint.
+                child.terminate()
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    raise ValueError("new WebUI failed and did not terminate; no SIGKILL sent; inspect webui.log") from None
+            raise
+
+
 def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tty=None):
     """Only called after every downloaded byte and manifest has been verified."""
     target, config, link = app / "anytls-macos", app / "config.yaml", home / ".local/bin/anytls"
@@ -111,6 +241,8 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
         regular(target)
     if config.exists() or config.is_symlink():
         regular(config)
+    webui = WebUI(target, env)
+    webui.preflight()
     # A unique, regular candidate in appdir matches the helper's fixed path policy.
     fd, name = tempfile.mkstemp(prefix=".anytls-bin-candidate-", dir=app)
     candidate = Path(name)
@@ -133,6 +265,10 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
                stderr=subprocess.PIPE, timeout=30, env=env)
         backup = i.publish_binary(candidate, target, app)
         command_version(target, tag, runner, env)
+        try:
+            webui.restart()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise ValueError("binary installed but WebUI start failed: " + str(exc) + "; inspect ~/.anytls/webui.log; VPN was not stopped/reloaded") from exc
         if created:
             print("Created 0600 config.yaml EXAMPLE ONLY. Enter your actual node/password/CA; no usable credentials were generated.")
         return backup
@@ -168,12 +304,13 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         for name in ("SHA256SUMS", "anytls-core-" + tag + "-source.tar.gz", "anytls-core-" + tag + "-corresponding-source.tar.gz"):
             shutil.copyfile(work / name, kept / name)
             i.require(sha256(work / name) == sha256(kept / name), "retained release material mismatch")
-        backup = install_verified(kept, tag, app, home, runner, env, tty)
+        with installation_lock(app):
+            backup = install_verified(kept, tag, app, home, runner, env, tty)
         print("Installed " + tag + " from verified prebuilt release; authenticated helper status succeeded.")
         if backup:
             print("Previous executable backup: " + str(backup))
         print("SHA256SUMS trusts GitHub HTTPS, NOT an independent authenticity signature. Add ~/.local/bin to PATH.")
-        print("No VPN or WebUI was stopped or restarted. Running processes still use old code: manually restart WebUI; apply/reload VPN explicitly when ready.")
+        print("WebUI started at http://127.0.0.1:18089/ using the new binary. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
         report["executed"] = True
         return report
 
@@ -187,7 +324,7 @@ def main(argv=None):
         run(args)
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
         detail = str(exc) if type(exc) is ValueError else type(exc).__name__
-        print("Binary installation failed: " + detail + "; no automatic source compilation or process restart. Check release assets, platform, paths and local authorization. A successful helper change can precede a failed final publish; inspect `anytls helper status` before retrying.", file=sys.stderr)
+        print("Binary installation failed: " + detail + "; no automatic source compilation or VPN stop/reload. Check release assets, platform, paths and local authorization. A successful helper change can precede a failed final publish; inspect `anytls helper status` before retrying.", file=sys.stderr)
         return 1
     return 0
 

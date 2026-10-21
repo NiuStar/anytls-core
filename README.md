@@ -25,10 +25,9 @@ bash install-control-helper.sh
 ```bash
 ~/.anytls/anytls-macos helper status
 ~/.anytls/anytls-macos password
-~/.anytls/anytls-macos webui
 ```
 
-打开 **http://127.0.0.1:18089**，账户 `admin`，密码由上述命令查看。已有 WebUI 请先退出旧进程再启动；新装需要填写自己的节点后再启动 VPN。系统密码只在本机系统终端输入，工具不保存。详见 [二进制安装](docs/install-binary.md) 与 [助手权限](docs/privileged-helper.md)。
+打开 **http://127.0.0.1:18089**，账户 `admin`，密码由上述命令查看。安装完成自动启动新版 WebUI；若默认端口已有本工具的旧 WebUI，会核对所属用户与完整启动命令后关闭旧进程、启动新版，并确认页面可访问。端口若被其他程序占用则报错，不强行关闭。新装需要填写自己的节点后再启动 VPN。系统密码只在本机系统终端输入，工具不保存。详见 [二进制安装](docs/install-binary.md) 与 [助手权限](docs/privileged-helper.md)。
 
 Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE；SHA256SUMS 是下载完整性校验，不是 Apple 签名或公证。
 

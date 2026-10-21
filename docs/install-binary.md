@@ -103,11 +103,34 @@ Mach-O executable 头；这不替代 macOS 平台加载及实际执行。归档�
 安装不是跨用户文件和 root helper 的原子事务：首次创建的配置/链接可能保留；helper 已成功后
 若备份/发布或最终 version 失败，helper 或用户二进制可能已经
 更新。不要把失败当作自动回退；检查 `anytls helper status`、当前
-`anytls version` 与备份后再决定恢复或重试。避免并发运行多个安装器。
+`anytls version` 与备份后再决定恢复或重试。安装/重启阶段持有
+`~/.anytls/.install.lock` 的非阻塞独占锁（拒绝符号链接、权限 `0600`），
+并发安装器会明确失败。
 
-**默认不自动重启 WebUI，也不向 `webui.pid` 指向的进程发信号。** 正在运行的
-WebUI 仍然是旧代码，须手动重启 WebUI 后使用新版；正在运行的 VPN 仍使用此前
-快照，何时显式应用/重载由用户决定。升级不会悄悄重连 VPN、改变路由或 DNS。
+**安装成功默认自动关闭旧 WebUI 并启动新版，首次安装也会启动。**
+固定地址为 `http://127.0.0.1:18089/`，不迁移或停止其他端口上的旧 WebUI。
+在 helper 安装及发布前，使用系统 `lsof` 查询 18089 监听 PID，并通过完整
+`ps` 信息核对当前 UID、启动时间和精确目标路径命令；只接受
+`~/.anytls/anytls-macos webui`（可带 `--port 18089` 或 `--port=18089`）。
+外来占用、多监听或未知参数一律拒绝继续，不根据 basename、子串或历史
+`webui.pid` 杀进程；历史 pidfile 完全不作为权限依据，也不更新它。
+
+仅在 helper 安装/status、原子发布和新目标 version 都成功后，重新核对旧进程
+身份与启动时间，向明确识别的旧 WebUI 发送一次 `SIGTERM`，有界等待旧进程
+消失且端口空闲；身份变化不再发信号，超时不使用 `SIGKILL`。helper 失败不会
+关闭旧 WebUI。新进程以 `webui --port 18089` 独立会话启动，stdin 为 `/dev/null`，
+stdout/stderr 追加到 `0600` 的 `~/.anytls/webui.log`。必须确认监听 PID 等于
+新子进程 PID，且首页 HTTP 200 含实际控制台标记，并再次确认端口归属，才报告成功。
+
+如果发布后无法停止旧 WebUI 或新版启动/就绪失败，会返回非零并明确报告
+`binary installed but WebUI start failed`；二进制已经安装，不伪称整笔回滚。
+启动失败只尝试 TERM/等待本次创建的子进程，不操作未知 PID。请检查日志、端口及
+`anytls version` 后重试。WebUI 重启会清空登录会话，需重新登录；既有应用密码、
+节点密码和配置仍保留。
+
+**整个安装流程不调用 VPN 的 stop/reload/start，也不向 VPN 或 helper 发信号。**
+正在运行的 VPN 仍使用此前快照，何时显式应用/重载由用户决定；不会悄悄重连
+VPN、改变路由或 DNS。此行为由可信 main 的 Python 安装器实现，不要求新二进制 tag。
 
 ## 本地单元验证
 
@@ -115,7 +138,10 @@ WebUI 仍然是旧代码，须手动重启 WebUI 后使用新版；正在运行�
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_binary_test.py
 ```
 
-测试使用实际临时 tar/文件及模拟 transport/subprocess，禁止真实网络和
-subprocess.Popen；覆盖校验材料、URL、路径、版本、manifest、候选权限、配置
-保留、链接冲突、助手失败及真实备份/原子发布文件操作。属于
-**UNIT-SIMULATED**，不是一次真实 macOS 特权安装验收。
+测试使用实际临时 tar/文件及模拟 transport/subprocess/HTTP，禁止真实网络和
+未模拟的 subprocess.Popen；覆盖校验材料、URL、路径、版本、manifest、候选权限、
+配置保留、链接冲突、助手失败及真实备份/原子发布文件操作，并覆盖 WebUI 首次
+启动/安全重启、外来 UID/路径/参数、陈旧 pidfile、启动时间变化、TERM 超时、
+子进程退出、错误监听 PID、HTTP 标记与就绪竞态、失败清理及安装锁。属于
+**UNIT-SIMULATED**，不是一次真实 macOS 特权安装验收；仍需真实 Mac 上验证系统
+lsof/ps 输出、官方二进制启动和 VPN 运行状态不变。
