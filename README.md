@@ -1,6 +1,36 @@
 # anytls-core
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前版本：**v2026-10-21-02**。源码发行与验证边界见 [版本说明](docs/releases/v2026-10-21-02.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。下一版 **v2026-10-21-03** 增加预编译 macOS arm64 安装包和一次授权助手；以 GitHub Release 实际附件为准。旧版说明见 [v2026-10-21-02](docs/releases/v2026-10-21-02.md)。
+
+## 一键安装（预编译程序 + 受限特权助手）
+
+在 **Mac Apple Silicon 的本机终端**运行（不要加 `sudo`）：
+
+```bash
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/NiuStar/anytls-core/main/install-control-helper.sh | bash
+```
+
+脚本从官方 Release 下载 `darwin-arm64` 二进制包，校验 SHA256，再在本机进行一次系统授权安装助手；**不需要安装 Go、不在用户电脑编译**。已有配置与密码保留，旧程序先备份，不自动停止／重载 VPN。缺 Python 3 时会提示安装；不支持 Intel Mac。没有二进制附件的旧 Release 会明确拒绝，不自动转源码构建。
+
+先下载审阅再运行：
+
+```bash
+curl --fail --show-error --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/NiuStar/anytls-core/main/install-control-helper.sh -o install-control-helper.sh
+bash install-control-helper.sh --check-download # 只校验下载，不安装、不授权
+bash install-control-helper.sh
+```
+
+完成后：
+
+```bash
+~/.anytls/anytls-macos helper status
+~/.anytls/anytls-macos password
+~/.anytls/anytls-macos webui
+```
+
+打开 **http://127.0.0.1:18089**，账户 `admin`，密码由上述命令查看。已有 WebUI 请先退出旧进程再启动；新装需要填写自己的节点后再启动 VPN。系统密码只在本机系统终端输入，工具不保存。详见 [二进制安装](docs/install-binary.md) 与 [助手权限](docs/privileged-helper.md)。
+
+Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE；SHA256SUMS 是下载完整性校验，不是 Apple 签名或公证。
 
 默认发布构建内嵌精简 sing-box 核心，无需独立 sing-box 可执行文件。保留外部核心构建模式用于对照和回退。本项目不是 SagerNet 官方应用。
 
@@ -18,7 +48,7 @@ Go 编写的 macOS AnyTLS VPN 客户端。当前版本：**v2026-10-21-02**。�
 
 ## 从源码构建
 
-本次 Release 固定源码，**不附二进制下载**。需要 Python 3 和 **Go 1.26.8**；首次构建需能取得 go.mod 锁定的依赖。已有 macOS arm64 实测产物另记录于 [版本说明](docs/releases/v2026-10-21-01.md)。
+Release 提供 macOS arm64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.26.8**，首次构建需能取得 go.mod 锁定的依赖。
 
 必须使用附带 wrapper 应用已认证的 sing-box Box.Start 清理错误补丁，不能用普通 `go build` 替代发布构建：
 
@@ -82,4 +112,4 @@ anytls stop
 
 ## 许可证
 
-应用源码为 [GPL-3.0-or-later](LICENSE)。内嵌依赖、补丁及名称／关联限制见 [第三方说明](THIRD_PARTY_NOTICES.md) 和 [补丁说明](docs/embedded-upstream-patch.md)。本次仅分发项目源码及补丁，不打包上游源码或第三方二进制。若另行分发静态链接二进制，需要同时满足相应源码、许可证及 NOTICE 交付义务。
+应用源码为 [GPL-3.0-or-later](LICENSE)。内嵌依赖、补丁及名称／关联限制见 [第三方说明](THIRD_PARTY_NOTICES.md) 和 [补丁说明](docs/embedded-upstream-patch.md)。v2026-10-21-03 的预编译附件同时提供对应源码和依赖许可证／NOTICE，不将仅有源码的旧 Release 与新版二进制分发混同。

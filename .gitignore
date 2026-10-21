@@ -13,6 +13,7 @@ backup*/
 
 # Binaries, local datasets and tooling caches
 dist/
+build/
 release/
 *.test
 *.tar.gz

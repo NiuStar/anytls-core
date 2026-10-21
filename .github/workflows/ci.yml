@@ -22,6 +22,8 @@ jobs:
           cache: true
       - name: Pin wrapper toolchain and cache paths
         run: |
+          echo "TMPDIR=$HOME/.aq-ci" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.aq-ci"
           echo "GO_BIN=$(command -v go)" >> "$GITHUB_ENV"
           echo "GOMODCACHE=$(go env GOMODCACHE)" >> "$GITHUB_ENV"
       - name: Real Box patch regression
@@ -32,7 +34,10 @@ jobs:
           export TMPDIR="$RUNNER_TEMP/anytls-installer-tests"
           mkdir -p "$TMPDIR"
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_binary_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/package_binary_test.py
           bash -n install.sh
+          bash -n install-control-helper.sh
       - run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - run: python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - run: mkdir -p dist

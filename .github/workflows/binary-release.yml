@@ -1,0 +1,56 @@
+name: Binary Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  macos-arm64:
+    runs-on: macos-latest
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: ''
+      GOMAXPROCS: '2'
+      CGO_ENABLED: '0'
+      GOOS: darwin
+      GOARCH: arm64
+      GOMEMLIMIT: 768MiB
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: true
+      - name: Verify architecture and prepare build environment
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(cat VERSION)" = "${{ github.ref_name }}"
+          echo "TMPDIR=$HOME/.aq-ci" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.aq-ci"
+          echo "GO_BIN=$(command -v go)" >> "$GITHUB_ENV"
+          echo "GOMODCACHE=$(go env GOMODCACHE)" >> "$GITHUB_ENV"
+      - name: Run native tests and vet
+        run: |
+          python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
+          python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
+      - name: Build and verify embedded executable
+        run: |
+          mkdir -p dist build
+          python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o build/anytls-macos . | tee build/certified-build.log
+          test "$(build/anytls-macos version)" = "${{ github.ref_name }}"
+      - name: Package binary, corresponding source and licenses
+        run: python3 scripts/package-binary.py --binary build/anytls-macos --out dist --receipt build/certified-build.log --tag '${{ github.ref_name }}'
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "$TAG — AnyTLS macOS" --notes-file "docs/releases/${TAG}.md" --latest
+          fi

@@ -2,7 +2,7 @@
 
 anytls-core is an independent application, not an official SagerNet application and not endorsed by upstream projects.
 
-This source release includes application source and an independently authored patch description, not a bundled third-party executable or vendor tree. Exact module versions and checksums are in go.mod/go.sum. Build tags are `with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core`.
+Source archives contain the independent application and patch description. Binary Releases additionally include original license/copyright/NOTICE files under `licenses/`, and provide the exact application plus linked dependency module archives and Go source in a corresponding-source asset alongside the binary. Exact module versions and checksums are in go.mod/go.sum. Build tags are `with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core`.
 
 - sing-box v1.14.3, commit `7054cac5124465ffdb145870d7c01885566711b1`: GPL-3.0-or-later with the additional naming/association sentence reproduced in `licenses/sing-box-LICENSE`. Source: https://github.com/SagerNet/sing-box/tree/7054cac5124465ffdb145870d7c01885566711b1
 - The Box.Start patch joins startup and Close errors. See `patches/sing-box/identity.json`, `box-start.patch.json` and `docs/embedded-upstream-patch.md`. No other upstream source change is intended.
