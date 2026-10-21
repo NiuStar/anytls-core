@@ -3,6 +3,7 @@ config.yaml
 config.yaml.selected
 runtime.json
 password.txt
+webui.password
 *.pem
 *.key
 .env
