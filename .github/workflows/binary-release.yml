@@ -4,53 +4,192 @@ on:
     tags:
       - 'v*'
 permissions:
-  contents: write
+  contents: read
+concurrency:
+  group: binary-release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  macos-arm64:
-    runs-on: macos-latest
+  build:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            machine: arm64
+          - arch: amd64
+            runner: macos-15-intel
+            machine: x86_64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     env:
+      TAG: ${{ github.ref_name }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
       GOTOOLCHAIN: local
       GOWORK: 'off'
       GOFLAGS: ''
       GOMAXPROCS: '2'
       CGO_ENABLED: '0'
       GOOS: darwin
-      GOARCH: arm64
+      GOARCH: ${{ matrix.arch }}
+      GOAMD64: v1
+      GOARM64: v8.0
       GOMEMLIMIT: 768MiB
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+      - name: Verify native architecture and clean tag source
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          tag = os.environ['TAG']
+          if not re.fullmatch(r'(?:v[0-9]+\.[0-9]+\.[0-9]+|v[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2})', tag):
+              raise SystemExit('unsupported release tag')
+          if Path('VERSION').read_text().strip() != tag:
+              raise SystemExit('VERSION/tag mismatch')
+          PY
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$TAG^{commit}")"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "TMPDIR=$HOME/.aq-ci" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.aq-ci"
+      - name: Run all three Python tooling suites before Go
+        run: python3 -m unittest discover -s scripts -p '*_test.py' -v
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.8'
           cache: true
-      - name: Verify architecture and prepare build environment
+      - name: Prepare native Go environment
         run: |
-          test "$(uname -m)" = arm64
-          test "$(cat VERSION)" = "${{ github.ref_name }}"
-          echo "TMPDIR=$HOME/.aq-ci" >> "$GITHUB_ENV"
-          mkdir -p "$HOME/.aq-ci"
+          set -euo pipefail
+          test "$(go env GOHOSTOS)" = darwin
+          test "$(go env GOHOSTARCH)" = "$GOARCH"
           echo "GO_BIN=$(command -v go)" >> "$GITHUB_ENV"
           echo "GOMODCACHE=$(go env GOMODCACHE)" >> "$GITHUB_ENV"
       - name: Run native tests and vet
         run: |
+          set -euo pipefail
           python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
           python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - name: Build and verify embedded executable
         run: |
+          set -euo pipefail
           mkdir -p dist build
           python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o build/anytls-macos . | tee build/certified-build.log
-          test "$(build/anytls-macos version)" = "${{ github.ref_name }}"
+          test "$(build/anytls-macos version)" = "$TAG"
       - name: Package binary, corresponding source and licenses
-        run: python3 scripts/package-binary.py --binary build/anytls-macos --out dist --receipt build/certified-build.log --tag '${{ github.ref_name }}'
-      - name: Publish verified assets
+        run: python3 scripts/package-binary.py --arch "$GOARCH" --binary build/anytls-macos --out dist --receipt build/certified-build.log --tag "$TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-release-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-release-arm64
+          path: incoming/arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-release-amd64
+          path: incoming/amd64
+      - name: Verify both manifests and merge exactly five archives
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re, shutil
+          from pathlib import Path
+
+          tag = os.environ['TAG']
+          if not re.fullmatch(r'(?:v[0-9]+\.[0-9]+\.[0-9]+|v[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2})', tag):
+              raise SystemExit('unsupported release tag')
+          prefix = 'anytls-core-' + tag
+          common = prefix + '-source.tar.gz'
+          expected = {
+              'arm64': {common, prefix + '-darwin-arm64.tar.gz', prefix + '-corresponding-source.tar.gz'},
+              'amd64': {common, prefix + '-darwin-amd64.tar.gz', prefix + '-darwin-amd64-corresponding-source.tar.gz'},
+          }
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as data:
+                  for chunk in iter(lambda: data.read(1024 * 1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          merged = {}
+          for arch, names in expected.items():
+              root = Path('incoming') / arch
+              entries = list(root.iterdir())
+              if {p.name for p in entries} != names | {'SHA256SUMS'}:
+                  raise SystemExit('unexpected or missing assets: ' + arch)
+              if any(p.is_symlink() or not p.is_file() for p in entries):
+                  raise SystemExit('non-regular asset: ' + arch)
+              manifest = {}
+              for line in (root / 'SHA256SUMS').read_text(encoding='ascii').splitlines():
+                  match = re.fullmatch(r'([0-9a-f]{64})  ([^/\\]+)', line)
+                  if not match or match[2] not in names or match[2] in manifest:
+                      raise SystemExit('invalid manifest: ' + arch)
+                  manifest[match[2]] = match[1]
+              if set(manifest) != names:
+                  raise SystemExit('incomplete manifest: ' + arch)
+              for name in sorted(names):
+                  path = root / name
+                  if sha256(path) != manifest[name]:
+                      raise SystemExit('digest mismatch: ' + arch + '/' + name)
+                  if name in merged:
+                      if name != common or path.read_bytes() != merged[name].read_bytes():
+                          raise SystemExit('conflicting asset: ' + name)
+                  else:
+                      merged[name] = path
+          if len(merged) != 5 or set(merged) != set.union(*expected.values()):
+              raise SystemExit('expected exactly five archives')
+          out = Path('dist')
+          out.mkdir(exist_ok=False)
+          for name, path in sorted(merged.items()):
+              shutil.copyfile(path, out / name)
+          with (out / 'SHA256SUMS').open('w', encoding='ascii', newline='\n') as sums:
+              for name in sorted(merged):
+                  sums.write(sha256(out / name) + '  ' + name + '\n')
+          PY
+      - name: Publish verified assets once, without replacing existing assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/*
           else
             gh release create "$TAG" dist/* --verify-tag --title "$TAG — AnyTLS macOS" --notes-file "docs/releases/${TAG}.md" --latest
           fi
+          gh release view "$TAG" --json tagName,assets > release-readback.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads(Path('release-readback.json').read_text())
+          expected = {p.name: p.stat().st_size for p in Path('dist').iterdir()}
+          actual = {a['name']: a['size'] for a in release['assets']}
+          if release['tagName'] != os.environ['TAG'] or any(actual.get(n) != size for n, size in expected.items()):
+              raise SystemExit('published asset readback mismatch')
+          PY

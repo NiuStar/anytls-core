@@ -44,20 +44,23 @@ def add_bytes(t,name,data,mode=0o644):
  info=tarfile.TarInfo(name);info.size=len(data);info.mode=mode;info.mtime=0;t.addfile(info,io.BytesIO(data))
 
 
-def package(root,binary,out,tag,go,cache,receipt):
+def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
+ if arch not in ('arm64','amd64'):raise ValueError('unsupported architecture: '+str(arch))
  root=Path(root).resolve();binary=Path(binary).resolve();out=Path(out).resolve();cache=Path(cache).resolve();out.mkdir(exist_ok=True,parents=True)
  if (root/'VERSION').read_text().strip()!=tag:raise ValueError('VERSION/tag mismatch')
  commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
  info=subprocess.check_output([str(go),'version','-m',str(binary)],cwd=root,text=True)
  if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=root,text=True).strip():raise ValueError('tracked release source is dirty')
  settings=build_settings(info)
- expected={'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0','-trimpath':'true','vcs.revision':commit,'vcs.modified':'false'}
+ expected={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true','vcs.revision':commit,'vcs.modified':'false'}
+ if arch=='amd64':expected['GOAMD64']='v1'
  if any(settings.get(k)!=v for k,v in expected.items()) or not info.splitlines()[0].endswith('go1.26.8'):raise ValueError('unexpected binary build settings or VCS binding')
  if set(settings.get('-tags','').split(','))!=set('with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'.split(',')):raise ValueError('unexpected binary tags')
  ends=[json.loads(line.split(' ',1)[1]) for line in Path(receipt).read_text().splitlines() if line.startswith('PATCHED_GO_END ')]
  if len(ends)!=1 or ends[0].get('rc')!=0 or ends[0].get('ephemeral_cleanup')!='ok':raise ValueError('missing successful certified wrapper END')
  build_receipt=ends[0];binary_digest=hashlib.sha256(binary.read_bytes()).hexdigest()
  if binary_digest!=build_receipt.get('output_sha256'):raise ValueError('wrapper END does not bind binary digest')
+ if build_receipt.get('target')!={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'}:raise ValueError('wrapper END target does not match binary architecture')
  modules=[]
  sums={}
  for l in (root/'go.sum').read_text().splitlines():
@@ -80,7 +83,7 @@ def package(root,binary,out,tag,go,cache,receipt):
  prefix='anytls-core-'+tag
  source=out/(prefix+'-source.tar.gz')
  with source.open('wb') as f:subprocess.run(['git','archive','--format=tar.gz','--prefix='+prefix+'/','HEAD'],cwd=root,stdout=f,check=True)
- ccs=out/(prefix+'-corresponding-source.tar.gz')
+ ccs=out/(prefix+('-corresponding-source.tar.gz' if arch=='arm64' else '-darwin-amd64-corresponding-source.tar.gz'))
  with tarfile.open(ccs,'w:gz') as t:
   t.add(source,arcname=prefix+'/application-source.tar.gz',recursive=False)
   for row in modules:t.add(row['zip'],arcname=prefix+'/modules/'+module_escape(row['module'])+'@'+row['version']+'.zip',recursive=False)
@@ -97,12 +100,12 @@ def package(root,binary,out,tag,go,cache,receipt):
    t.add(path,arcname=prefix+'/go-toolchain/'+str(rel),recursive=False)
   add_bytes(t,prefix+'/BUILD-IDENTITY.json',json.dumps({'source_commit':commit,'binary_sha256':binary_digest,'settings':settings,'certified_build':build_receipt},indent=2).encode())
   add_bytes(t,prefix+'/MODULES.json',json.dumps(manifest,indent=2).encode())
-  add_bytes(t,prefix+'/BUILD.txt',('Source commit: '+commit+'\nGo 1.26.8 darwin/arm64 CGO=0\nUse scripts/go-patched.py, exact patch/identity and tags in README.\nDependencies are Go module ZIPs; verify against MODULES.json and go.sum.\nGo toolchain: https://go.dev/dl/ ; source: https://go.dev/dl/?mode=json&include=all\nExtract module ZIPs or populate GOPROXY cache, then use the certified wrapper.\n').encode())
- bundle=out/(prefix+'-darwin-arm64.tar.gz');bp=prefix+'-darwin-arm64';sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+  add_bytes(t,prefix+'/BUILD.txt',('Source commit: '+commit+'\nGo 1.26.8 darwin/'+arch+' CGO=0\nUse scripts/go-patched.py, exact patch/identity and tags in README.\nDependencies are Go module ZIPs; verify against MODULES.json and go.sum.\nGo toolchain: https://go.dev/dl/ ; source: https://go.dev/dl/?mode=json&include=all\nExtract module ZIPs or populate GOPROXY cache, then use the certified wrapper.\n').encode())
+ platform='darwin-'+arch;bp=prefix+'-'+platform;bundle=out/(bp+'.tar.gz');sha=hashlib.sha256(binary.read_bytes()).hexdigest()
  with tarfile.open(bundle,'w:gz') as t:
   t.add(binary,arcname=bp+'/bin/anytls-macos',recursive=False)
   for n in ['VERSION','LICENSE','THIRD_PARTY_NOTICES.md','config.example.yaml']:t.add(root/n,arcname=bp+'/'+n,recursive=False)
-  add_bytes(t,bp+'/BUILD-INFO.json',json.dumps({'source_commit':commit,'binary_sha256':sha,'go_version':'1.26.8','platform':'darwin-arm64','corresponding_source':ccs.name},indent=2).encode())
+  add_bytes(t,bp+'/BUILD-INFO.json',json.dumps({'source_commit':commit,'binary_sha256':sha,'go_version':'1.26.8','platform':platform,'corresponding_source':ccs.name},indent=2).encode())
   add_bytes(t,bp+'/SOURCE-LOCATION.txt',('Corresponding source, dependencies and Go sources:\nhttps://github.com/NiuStar/anytls-core/releases/download/'+tag+'/'+ccs.name+'\n').encode())
   for path in sorted(goroot.rglob('*')):
    rel=path.relative_to(goroot)
@@ -128,5 +131,5 @@ def package(root,binary,out,tag,go,cache,receipt):
 
 
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('--binary',required=True);p.add_argument('--out',required=True);p.add_argument('--tag',required=True);p.add_argument('--receipt',required=True);a=p.parse_args()
- print(json.dumps(package(Path.cwd(),a.binary,a.out,a.tag,os.environ['GO_BIN'],os.environ['GOMODCACHE'],a.receipt)))
+ p=argparse.ArgumentParser();p.add_argument('--binary',required=True);p.add_argument('--out',required=True);p.add_argument('--tag',required=True);p.add_argument('--receipt',required=True);p.add_argument('--arch',choices=('arm64','amd64'),default='arm64');a=p.parse_args()
+ print(json.dumps(package(Path.cwd(),a.binary,a.out,a.tag,os.environ['GO_BIN'],os.environ['GOMODCACHE'],a.receipt,a.arch)))

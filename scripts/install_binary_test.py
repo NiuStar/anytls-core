@@ -52,7 +52,7 @@ class InstallerTests(unittest.TestCase):
         self.binary_name = self.prefix + ".tar.gz"
         self.source_name = NAME + "-source.tar.gz"
         self.ccs_name = NAME + "-corresponding-source.tar.gz"
-        self.info = {"source_commit": COMMIT, "binary_sha256": hashlib.sha256(BINARY).hexdigest()}
+        self.info = {"source_commit": COMMIT, "platform": "darwin-arm64", "binary_sha256": hashlib.sha256(BINARY).hexdigest()}
         self.files = {"VERSION": (TAG + "\n").encode(), "BUILD-INFO.json": json.dumps(self.info).encode(),
                       "bin/anytls-macos": BINARY, "config.example.yaml": b"nodes: []\n",
                       "LICENSE": b"UNIT license", "THIRD_PARTY_NOTICES.md": b"UNIT notices"}
@@ -358,12 +358,217 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
             self.verified()
 
+    def use_intel_fixture(self):
+        self.prefix = NAME + "-darwin-amd64"
+        self.binary_name = self.prefix + ".tar.gz"
+        self.ccs_name = NAME + "-darwin-amd64-corresponding-source.tar.gz"
+        self.files["bin/anytls-macos"] = struct.pack("<IIIIIIII", 0xfeedfacf, 0x01000007, 3, 2, 0, 0, 0, 0) + b"intel-unit-fixture"
+        self.info.update(platform="darwin-amd64", binary_sha256=hashlib.sha256(self.files["bin/anytls-macos"]).hexdigest())
+        self.files["BUILD-INFO.json"] = json.dumps(self.info).encode()
+        self.release["assets"] = [{"name": n, "browser_download_url": self.url(n)} for n in (self.binary_name, self.source_name, self.ccs_name, "SHA256SUMS")]
+        self.rebuild()
+
+    def test_intel_complete_run_uses_intel_binary_and_corresponding_source(self):
+        self.use_intel_fixture()
+        self.processes = []
+        def runner(args, **kwargs):
+            if args[0] == "/usr/sbin/sysctl":
+                return types.SimpleNamespace(stdout=b"0\n", returncode=0)
+            return self.runner(args, **kwargs)
+        args = types.SimpleNamespace(version=TAG, check_download=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = b.run(args, self.transport, runner, system="Darwin", machine="x86_64",
+                           euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
+        self.assertEqual(report["platform"], "darwin-amd64")
+        self.assertTrue(report["executed"])
+        self.assertIn(self.url(self.binary_name), self.calls)
+        kept, = (self.app / "releases").iterdir()
+        self.assertEqual((kept / self.ccs_name).read_bytes(), self.source)
+        self.assertEqual((self.app / "anytls-macos").read_bytes(), self.files["bin/anytls-macos"])
+        self.assertEqual([command[1:] for command, _ in self.processes], [["version"], ["helper", "install"], ["helper", "status"], ["version"]])
+        self.webui_factory.return_value.restart.assert_called_once()
+
     def test_platform_and_root_rejected_before_download(self):
         args = types.SimpleNamespace(version=None, check_download=False)
-        for system, machine, uid in (("Linux", "arm64", 501), ("Darwin", "x86_64", 501), ("Darwin", "arm64", 0)):
+        for system, machine, uid in (("Linux", "arm64", 501), ("Darwin", "unsupported", 501), ("Darwin", "arm64", 0), ("Darwin", "x86_64", 0)):
             with self.subTest(system=system, machine=machine, uid=uid), self.assertRaises(ValueError):
-                b.run(args, self.transport, system=system, machine=machine, euid=uid, home=self.home)
+                b.run(args, self.transport, runner=lambda *a, **k: self.fail("unexpected process"), system=system, machine=machine, euid=uid, home=self.home)
         self.assertEqual(self.calls, [])
+
+    def test_intel_check_download_explicit_arch_on_linux(self):
+        self.use_intel_fixture()
+        args = types.SimpleNamespace(version=TAG, check_download=True, arch="amd64")
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), system="Linux", machine="x86_64", home=self.home)
+        self.assertEqual(result["platform"], "darwin-amd64")
+        self.assertFalse(result["executed"])
+        self.assertFalse(self.app.exists())
+
+    def test_install_arch_override_rejected_even_if_matching_host(self):
+        for arch in ("arm64", "amd64"):
+            args = types.SimpleNamespace(version=TAG, check_download=False, arch=arch)
+            with self.assertRaisesRegex(ValueError, "only with --check-download"):
+                b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), system="Darwin", machine="arm64", euid=501, home=self.home)
+        self.assertFalse(self.app.exists())
+        self.assertEqual(self.calls, [])
+
+    def test_intel_missing_asset_rejects_legacy_arm64_release(self):
+        args = types.SimpleNamespace(version=TAG, check_download=False)
+        runner = lambda *a, **k: types.SimpleNamespace(stdout=b"0\n", returncode=0)
+        with self.assertRaisesRegex(ValueError, "amd64 binary.*legacy"):
+            b.run(args, self.transport, runner, system="Darwin", machine="x86_64", euid=501, home=self.home)
+        self.assertFalse(any("/releases/download/" in url for url in self.calls))
+        self.webui_factory.assert_not_called()
+
+    def test_rosetta_complete_run_selects_arm64(self):
+        self.processes = []
+        def runner(args, **kwargs):
+            if args[0] == "/usr/sbin/sysctl":
+                return types.SimpleNamespace(stdout=b"1\n", returncode=0)
+            return self.runner(args, **kwargs)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = b.run(types.SimpleNamespace(version=TAG, check_download=False), self.transport, runner,
+                           system="Darwin", machine="x86_64", euid=501, home=self.home, tty=lambda: io.BytesIO())
+        self.assertEqual(result["platform"], "darwin-arm64")
+        self.assertIn(self.url(self.binary_name), self.calls)
+        self.assertIn(self.url(NAME + "-corresponding-source.tar.gz"), self.calls)
+
+    def test_metadata_platform_requires_exact_architecture(self):
+        for arch in ("arm64", "amd64"):
+            if arch == "amd64":
+                self.use_intel_fixture()
+            for platform_value in (None, "darwin", "darwin-" + ("amd64" if arch == "arm64" else "arm64"), "darwin-" + arch + " "):
+                self.info["platform"] = platform_value
+                self.files["BUILD-INFO.json"] = json.dumps(self.info).encode()
+                self.rebuild()
+                work = self.root / ("metadata-" + str(len(list(self.root.iterdir()))))
+                work.mkdir()
+                with self.subTest(arch=arch, value=platform_value), self.assertRaisesRegex(ValueError, "BUILD-INFO.platform"):
+                    b.verified_download(work, TAG, self.transport, arch=arch)
+
+    def test_intel_macho_mismatch_rejected_before_execution(self):
+        self.use_intel_fixture()
+        for magic, cpu, filetype in ((0xfeedfacf, 0x0100000c, 2), (0xfeedface, 0x01000007, 2), (0xcffaedfe, 0x01000007, 2), (0xfeedfacf, 0x01000007, 6)):
+            self.files["bin/anytls-macos"] = struct.pack("<IIIIIIII", magic, cpu, 0, filetype, 0, 0, 0, 0)
+            self.info["binary_sha256"] = hashlib.sha256(self.files["bin/anytls-macos"]).hexdigest()
+            self.files["BUILD-INFO.json"] = json.dumps(self.info).encode()
+            self.rebuild()
+            def runner(args, **kwargs):
+                self.assertEqual(args[0], "/usr/sbin/sysctl", "downloaded binary executed before architecture validation")
+                return types.SimpleNamespace(stdout=b"0\n", returncode=0)
+            with self.subTest(magic=magic, cpu=cpu, filetype=filetype), self.assertRaisesRegex(ValueError, "amd64 Mach-O"):
+                b.run(types.SimpleNamespace(version=TAG, check_download=False), self.transport, runner,
+                      system="Darwin", machine="x86_64", euid=501, home=self.home)
+        self.assertFalse((self.app / "anytls-macos").exists())
+        self.webui_factory.assert_not_called()
+
+    def test_arm64_rejects_intel_macho_with_valid_arm64_metadata(self):
+        self.files["bin/anytls-macos"] = struct.pack("<IIIIIIII", 0xfeedfacf, 0x01000007, 0, 2, 0, 0, 0, 0)
+        self.info["binary_sha256"] = hashlib.sha256(self.files["bin/anytls-macos"]).hexdigest()
+        self.files["BUILD-INFO.json"] = json.dumps(self.info).encode()
+        self.rebuild()
+        with self.assertRaisesRegex(ValueError, "arm64 Mach-O"):
+            self.verified()
+
+    def test_intel_corresponding_source_is_required_and_checksum_verified(self):
+        self.use_intel_fixture()
+        work = self.root / "intel-ccs"
+        work.mkdir()
+        self.sums = "\n".join(self.sums.splitlines()[:-1]) + "\n"
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            b.verified_download(work, TAG, self.transport, arch="amd64")
+        self.release["assets"] = [a for a in self.release["assets"] if a["name"] != self.ccs_name]
+        with self.assertRaisesRegex(ValueError, "corresponding source"):
+            b.binary_release(TAG, self.transport, arch="amd64")
+
+
+class ArchitectureTests(unittest.TestCase):
+    def test_native_arm64_does_not_probe_sysctl(self):
+        self.assertEqual(b.detect_arch("Darwin", "arm64", lambda *a, **k: self.fail("unexpected process")), "arm64")
+
+    def test_x86_aliases_and_rosetta_sysctl_signals(self):
+        for machine in ("x86_64", "amd64"):
+            for values, expected in (((b"0\n", b"0\n"), "amd64"), ((b"1\n",), "arm64"), ((b"0\n", b"1\n"), "arm64"), ((b"", b""), "amd64")):
+                runner = mock.Mock(side_effect=[types.SimpleNamespace(stdout=v, returncode=0) for v in values])
+                self.assertEqual(b.detect_arch("Darwin", machine, runner), expected)
+                self.assertEqual([call.args[0] for call in runner.call_args_list], [["/usr/sbin/sysctl", "-in", key] for key in ("hw.optional.arm64", "sysctl.proc_translated")[:len(values)]])
+
+    def test_cli_arch_check_only(self):
+        with mock.patch.object(b, "run") as run:
+            self.assertEqual(b.main(["--check-download", "--arch", "amd64"]), 0)
+            self.assertEqual(run.call_args.args[0].arch, "amd64")
+            run.reset_mock()
+            for argv in (["--arch", "arm64"], ["--arch", "amd64"], ["--check-download", "--arch", "x86_64"]):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    b.main(argv)
+            run.assert_not_called()
+
+    def test_bootstrap_accepts_intel_without_changing_root_https_guards(self):
+        script = Path(__file__).resolve().parents[1].joinpath("install-control-helper.sh").read_text()
+        self.assertIn("x86_64", script)
+        self.assertIn('[[ "$EUID" != 0 ]]', script)
+        self.assertEqual(script.count("--proto '=https'"), 2)
+        self.assertIn("--tlsv1.2", script)
+
+
+class ProgressTests(unittest.TestCase):
+    def test_read_all_preserves_http_response_no_argument_semantics(self):
+        class HTTPResponse(io.BytesIO):
+            def read(self, *args):
+                if args and args[0] < 0:
+                    raise ValueError("negative count")
+                return super().read(*args)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with b.progress_transport(lambda *args: HTTPResponse(b'{}'))("https://api.github.com/repos/NiuStar/anytls-core/releases/latest", "api") as response:
+                self.assertEqual(response.read(), b'{}')
+
+    def test_waiting_download_heartbeat_and_final_bytes_go_to_stderr(self):
+        import threading
+        started, release = threading.Event(), threading.Event()
+        class Delayed(io.BytesIO):
+            headers = {"Content-Length": "3"}
+            def read(self, n=-1):
+                started.set()
+                if not release.wait(2):
+                    raise AssertionError("fixture was not released")
+                return super().read(n)
+        output = io.StringIO()
+        errors = []
+        with contextlib.redirect_stderr(output):
+            transport = b.progress_transport(lambda *args: Delayed(b"abc"), interval=0.02)
+            def download():
+                try:
+                    with transport("https://github.com/NiuStar/anytls-core/releases/download/v1.2.3/file.tar.gz", "asset") as response:
+                        self.assertEqual(response.read(), b"abc")
+                except BaseException as error:
+                    errors.append(error)
+            thread = threading.Thread(target=download)
+            thread.start()
+            self.assertTrue(started.wait(1))
+            try:
+                import time
+                deadline = time.monotonic() + 1
+                while "已接收" not in output.getvalue() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIn("已接收", output.getvalue())
+                self.assertIn("0 B", output.getvalue())
+            finally:
+                release.set()
+                thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIn("3 B", output.getvalue())
+        self.assertIn("完成", output.getvalue())
+
+    def test_download_failure_is_not_reported_as_complete(self):
+        def fail(*args):
+            raise OSError("network failed")
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output), self.assertRaises(OSError):
+            with b.progress_transport(fail)("https://api.github.com/repos/NiuStar/anytls-core/releases/latest", "api"):
+                self.fail("opened")
+        self.assertIn("失败", output.getvalue())
+        self.assertNotIn("完成", output.getvalue())
 
 
 class WebUITests(unittest.TestCase):

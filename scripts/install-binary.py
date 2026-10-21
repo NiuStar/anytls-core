@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the official macOS arm64 binary; never compile or run archive scripts."""
+"""Install the official macOS arm64/amd64 binary; never compile or run archive scripts."""
 import argparse
 import contextlib
 import fcntl
@@ -20,6 +20,77 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import urllib.parse
+
+
+def progress(message):
+    print("[AnyTLS] " + message, file=sys.stderr, flush=True)
+
+
+def byte_text(value):
+    return ("%.1f MiB" % (value / (1024 * 1024))) if value >= 1024 * 1024 else (str(value) + " B")
+
+
+@contextlib.contextmanager
+def stage(message, interval=5):
+    progress(message)
+    stop = threading.Event()
+    started = time.monotonic()
+    def heartbeat():
+        while not stop.wait(interval):
+            progress(message + "（仍在处理，已等待 %ds）" % (time.monotonic() - started))
+    worker = threading.Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join()
+
+
+def progress_transport(transport, interval=5):
+    @contextlib.contextmanager
+    def opened(url, kind):
+        # Display only the official path basename, never signed redirect queries.
+        path = urllib.parse.urlsplit(url).path
+        label = path.rsplit("/", 1)[-1]
+        label = label if re.fullmatch(r"[A-Za-z0-9._-]+", label) else "GitHub"
+        received = 0
+        total = None
+        started = time.monotonic()
+        stop = threading.Event()
+        def status():
+            suffix = "/" + byte_text(total) if total is not None else ""
+            return label + "：已接收 " + byte_text(received) + suffix + "，耗时 %ds" % (time.monotonic() - started)
+        def heartbeat():
+            while not stop.wait(interval):
+                progress(status() + "（正在连接或接收数据）")
+        progress("正在获取 " + label + " …")
+        worker = threading.Thread(target=heartbeat, daemon=True)
+        worker.start()
+        try:
+            with transport(url, kind) as src:
+                raw_total = getattr(src, "headers", {}).get("Content-Length")
+                if raw_total and re.fullmatch(r"[0-9]+", raw_total):
+                    total = int(raw_total)
+                class Response:
+                    def read(self, size=-1):
+                        nonlocal received
+                        data = src.read() if size < 0 else src.read(size)
+                        received += len(data)
+                        return data
+                yield Response()
+        except BaseException:
+            stop.set()
+            worker.join()
+            progress(status() + "，失败／已取消")
+            raise
+        else:
+            stop.set()
+            worker.join()
+            progress(status() + "，完成")
+    return opened
 
 # This sibling is fetched by the trusted bootstrap, NEVER from a release archive.
 sys.dont_write_bytecode = True
@@ -28,9 +99,29 @@ i = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(i)
 
 
-def binary_release(version=None, transport=i.open_url):
+def corresponding_source(tag, arch):
+    i.require(arch in ("arm64", "amd64"), "unsupported binary architecture")
+    return "anytls-core-" + tag + ("-darwin-amd64" if arch == "amd64" else "") + "-corresponding-source.tar.gz"
+
+
+def detect_arch(system, machine, runner=subprocess.run):
+    i.require(system == "Darwin", "binary installation supports macOS only")
+    if machine == "arm64":
+        return "arm64"
+    i.require(machine in ("x86_64", "amd64"), "unsupported macOS architecture")
+    # A translated Python reports x86_64 on Apple Silicon. Prefer native arm64.
+    for key in ("hw.optional.arm64", "sysctl.proc_translated"):
+        result = runner(["/usr/sbin/sysctl", "-in", key], stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip() == b"1":
+            return "arm64"
+    return "amd64"
+
+
+def binary_release(version=None, transport=i.open_url, arch="arm64"):
+    i.require(arch in ("arm64", "amd64"), "unsupported binary architecture")
     tag, page, assets = i.release(version, transport)
-    name = "anytls-core-" + tag + "-darwin-arm64.tar.gz"
+    name = "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz"
     # Source installer intentionally selects only its own two assets. Read the
     # same fixed release endpoint and independently validate the binary asset.
     release = i.read_json(i.API + "/releases/tags/" + tag, transport=transport)
@@ -40,11 +131,11 @@ def binary_release(version=None, transport=i.open_url):
     entries = release.get("assets")
     i.require(isinstance(entries, list), "invalid binary release assets")
     matches = [a for a in entries if isinstance(a, dict) and a.get("name") == name]
-    i.require(len(matches) == 1, "release has no unique macOS arm64 binary; legacy source-only releases are not compiled automatically")
+    i.require(len(matches) == 1, "release has no unique macOS " + arch + " binary; legacy source-only/arm64-only releases are not compiled automatically")
     url = "https://github.com/" + i.REPO + "/releases/download/" + tag + "/" + name
     i.require(matches[0].get("browser_download_url") == url, "binary asset tag/URL mismatch")
     assets[name] = i.trusted_url(url, "asset")
-    ccs_name = "anytls-core-" + tag + "-corresponding-source.tar.gz"
+    ccs_name = corresponding_source(tag, arch)
     ccs = [a for a in entries if isinstance(a, dict) and a.get("name") == ccs_name]
     i.require(len(ccs) == 1, "release must provide corresponding source")
     ccs_url = "https://github.com/" + i.REPO + "/releases/download/" + tag + "/" + ccs_name
@@ -65,36 +156,42 @@ def regular(path):
     i.require(stat.S_ISREG(Path(path).lstat().st_mode), "required path is not a regular file")
 
 
-def validate_bundle(bundle, tag, commit):
+def validate_bundle(bundle, tag, commit, arch="arm64"):
+    i.require(arch in ("arm64", "amd64"), "unsupported binary architecture")
     for name in ("VERSION", "BUILD-INFO.json", "bin/anytls-macos", "config.example.yaml", "LICENSE", "THIRD_PARTY_NOTICES.md"):
         regular(bundle / name)
     i.require((bundle / "VERSION").read_bytes() in (tag.encode(), (tag + "\n").encode()), "binary VERSION does not match exact release tag")
     info = i.strict_json((bundle / "BUILD-INFO.json").read_bytes())
     i.require(isinstance(info, dict) and re.fullmatch(r"[0-9a-f]{40}", info.get("source_commit", "")) and
               info["source_commit"] == commit, "binary source_commit does not match release commit")
+    i.require(info.get("platform") == "darwin-" + arch, "binary BUILD-INFO.platform must exactly match darwin-" + arch)
     binary = bundle / "bin/anytls-macos"
     digest = sha256(binary)
     i.require(info.get("binary_sha256") == digest, "binary SHA256 does not match BUILD-INFO.json")
     with binary.open("rb") as src:
         header = src.read(32)
-    i.require(len(header) == 32 and struct.unpack("<IIII", header[:16])[:2] == (0xfeedfacf, 0x0100000c) and
-              struct.unpack("<IIII", header[:16])[3] == 2, "binary must be a thin arm64 Mach-O executable")
+    cpu = {"arm64": 0x0100000c, "amd64": 0x01000007}[arch]
+    i.require(len(header) == 32 and struct.unpack("<IIII", header[:16])[:2] == (0xfeedfacf, cpu) and
+              struct.unpack("<IIII", header[:16])[3] == 2, "binary must be a thin " + arch + " Mach-O executable")
     return digest
 
 
-def verified_download(work, version=None, transport=i.open_url):
-    tag, page, assets = binary_release(version, transport)
+def verified_download(work, version=None, transport=i.open_url, arch="arm64"):
+    progress("[1/6] 检查官方发行版本及下载附件（含对应源码，可能较大）")
+    transport = progress_transport(transport)
+    tag, page, assets = binary_release(version, transport, arch=arch)
     commit = i.read_json(i.API + "/commits/" + tag, transport=transport)
     i.require(isinstance(commit, dict) and re.fullmatch(r"[0-9a-f]{40}", commit.get("sha", "")), "invalid release commit")
     sums = work / "SHA256SUMS"
     i.download(assets["SHA256SUMS"], sums, transport=transport)
     text = sums.read_text(encoding="ascii")
-    for name in ("anytls-core-" + tag + "-darwin-arm64.tar.gz", "anytls-core-" + tag + "-source.tar.gz", "anytls-core-" + tag + "-corresponding-source.tar.gz"):
+    for name in ("anytls-core-" + tag + "-darwin-" + arch + ".tar.gz", "anytls-core-" + tag + "-source.tar.gz", corresponding_source(tag, arch)):
         expected = i.checksum(text, name)
         i.download(assets[name], work / name, expected, transport)
-    name = "anytls-core-" + tag + "-darwin-arm64"
+    name = "anytls-core-" + tag + "-darwin-" + arch
+    progress("[2/6] 下载摘要已核对，正在安全解压并验证程序身份")
     bundle = i.extract(work / (name + ".tar.gz"), work / "extracted", name)
-    digest = validate_bundle(bundle, tag, commit["sha"])
+    digest = validate_bundle(bundle, tag, commit["sha"], arch=arch)
     return tag, bundle, digest, commit["sha"]
 
 
@@ -259,14 +356,18 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
         # first-install symlink may be dangling until the atomic publish below.
         i.ensure_link(target, link)
         opener = tty or (lambda: open("/dev/tty", "rb", buffering=0))
-        with opener() as terminal:
+        progress("[4/6] 准备系统助手；如出现 Password，请在本机终端输入系统密码（输入不回显）")
+        with opener() as terminal, stage("正在安装并验证受限助手；不会停止 VPN"):
             runner([str(candidate), "helper", "install"], check=True, stdin=terminal, env=env)
+        progress("正在验证助手认证与配置绑定")
         runner([str(candidate), "helper", "status"], check=True, stdout=subprocess.PIPE,
                stderr=subprocess.PIPE, timeout=30, env=env)
+        progress("[5/6] 备份旧程序并原子替换为已验证版本")
         backup = i.publish_binary(candidate, target, app)
         command_version(target, tag, runner, env)
         try:
-            webui.restart()
+            with stage("[6/6] 切换至新版 WebUI 并验证页面就绪；VPN 保持运行"):
+                webui.restart()
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise ValueError("binary installed but WebUI start failed: " + str(exc) + "; inspect ~/.anytls/webui.log; VPN was not stopped/reloaded") from exc
         if created:
@@ -279,18 +380,24 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
 def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=None, euid=None, home=None, tty=None, env=None):
     home = Path.home() if home is None else Path(home)
     app = home / ".anytls"
+    requested_arch = getattr(args, "arch", None)
+    i.require(args.check_download or requested_arch is None, "--arch is allowed only with --check-download; installation always uses the host architecture")
+    system = system or platform.system()
     if not args.check_download:
-        i.require((system or platform.system()) == "Darwin" and (machine or platform.machine()) == "arm64", "binary installation supports macOS arm64 only")
         i.require((os.geteuid() if euid is None else euid) != 0, "run as your normal user, never root/sudo")
+        arch = detect_arch(system, machine or platform.machine(), runner)
         i.require(not app.is_symlink(), "app directory cannot be a symlink")
         check_link(app / "anytls-macos", home / ".local/bin/anytls")
         app.mkdir(mode=0o700, parents=True, exist_ok=True)
+    else:
+        # Preserve the historical arm64 default for off-Mac archive verification.
+        arch = requested_arch or (detect_arch(system, machine or platform.machine(), runner) if system == "Darwin" else "arm64")
     # Check-only never creates app/config/link and never executes downloaded code.
     with tempfile.TemporaryDirectory(prefix="anytls-binary-", dir=None if args.check_download else app) as temp:
         work = Path(temp)
-        tag, bundle, digest, commit = verified_download(work, args.version, transport)
+        tag, bundle, digest, commit = verified_download(work, args.version, transport, arch=arch)
         report = {"version": tag, "source_commit": commit, "binary_sha256": digest,
-                  "platform": "darwin-arm64", "download_verified": True, "executed": False}
+                  "platform": "darwin-" + arch, "download_verified": True, "executed": False}
         if args.check_download:
             print(i.json.dumps(report, sort_keys=True))
             return report
@@ -298,10 +405,11 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
             env = {k: os.environ[k] for k in ("HOME", "PATH", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR") if k in os.environ}
         # Retain required source/license materials BEFORE any privileged change
         # or executable publication. Retention failure leaves the old app intact.
+        progress("[3/6] 保留许可证与对应源码；已有配置及密码不覆盖")
         kept = app / "releases" / (tag + "-" + i.uuid.uuid4().hex)
         kept.parent.mkdir(mode=0o700, exist_ok=True)
         os.replace(bundle, kept)
-        for name in ("SHA256SUMS", "anytls-core-" + tag + "-source.tar.gz", "anytls-core-" + tag + "-corresponding-source.tar.gz"):
+        for name in ("SHA256SUMS", "anytls-core-" + tag + "-source.tar.gz", corresponding_source(tag, arch)):
             shutil.copyfile(work / name, kept / name)
             i.require(sha256(work / name) == sha256(kept / name), "retained release material mismatch")
         with installation_lock(app):
@@ -319,7 +427,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", type=i.validate_version, help="stable tag; default is latest stable release")
     parser.add_argument("--check-download", action="store_true", help="verify binary/source archives without executing code or changing configuration")
+    parser.add_argument("--arch", choices=("arm64", "amd64"), help="only with --check-download: target archive architecture; default is native on macOS, arm64 elsewhere")
     args = parser.parse_args(argv)
+    if args.arch is not None and not args.check_download:
+        parser.error("--arch is allowed only with --check-download")
     try:
         run(args)
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:

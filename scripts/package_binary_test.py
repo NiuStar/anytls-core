@@ -1,4 +1,5 @@
-import base64, hashlib, importlib.util, io, os
+import base64, gzip, hashlib, importlib.util, io, json, os
+from contextlib import contextmanager
 from unittest import mock
 from pathlib import Path
 import tarfile, tempfile, unittest, zipfile
@@ -6,6 +7,119 @@ spec=importlib.util.spec_from_file_location('packager',Path(__file__).with_name(
 p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
 
 class PackagingTests(unittest.TestCase):
+ @contextmanager
+ def package_fixture(self,arch):
+  # Only external Go/Git inspection is simulated; exercise real packaging,
+  # module authentication, source/notice collection and archive writing.
+  with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
+   root=Path(d);cache=root/'cache';goroot=root/'go';(goroot/'src').mkdir(parents=True)
+   (goroot/'LICENSE').write_text('Go license fixture')
+   (goroot/'src/runtime.go').write_text('// Copyright Go authors\n// BSD license\n\npackage runtime\n')
+   for name,data in {'VERSION':'v1.0.0','LICENSE':'GPL fixture','THIRD_PARTY_NOTICES.md':'Notices','config.example.yaml':'example'}.items():(root/name).write_text(data)
+   binary=root/'binary';binary.write_bytes(b'UNIT-SIMULATED binary '+arch.encode())
+   sums=[];deps=[]
+   for i in range(37):
+    mod='example.com/module'+str(i);version='v1.0.0';prefix=mod+'@'+version
+    z=cache/'cache/download'/mod/'@v'/(version+'.zip');z.parent.mkdir(parents=True)
+    with zipfile.ZipFile(z,'w') as f:
+     f.writestr(prefix+'/LICENSE',b'Module license fixture')
+     f.writestr(prefix+'/main.go',b'// Copyright module authors\n// BSD license\n\npackage sample\n')
+    modfile=z.with_suffix('.mod');modfile.write_text('module '+mod+'\n')
+    modsum='h1:'+base64.b64encode(hashlib.sha256((hashlib.sha256(modfile.read_bytes()).hexdigest()+'  go.mod\n').encode()).digest()).decode()
+    sums.extend([mod+' '+version+' '+p.zip_h1(z),mod+' '+version+'/go.mod '+modsum]);deps.append('\tdep\t'+mod+' '+version+' '+p.zip_h1(z)+'\n')
+   (root/'go.sum').write_text('\n'.join(sums)+'\n')
+   settings={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true','vcs.revision':'a'*40,'vcs.modified':'false','-tags':'with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'}
+   settings['GOAMD64' if arch=='amd64' else 'GOARM64']='v1' if arch=='amd64' else 'v8.0'
+   receipt={'rc':0,'ephemeral_cleanup':'ok','output_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'target':{'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'},'go_version':'go version go1.26.8 darwin/arm64'}
+   receipt_path=root/'receipt'
+   def output(args,**kwargs):
+    if args[:2]==['go','version']:return 'unit: go1.26.8\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())
+    if args[:3]==['go','env','GOROOT']:return str(goroot)+'\n'
+    if args[:2]==['git','rev-parse']:return 'a'*40+'\n'
+    if args[:2]==['git','status']:return ''
+    raise AssertionError(args)
+   source_buffer=io.BytesIO()
+   with tarfile.open(fileobj=source_buffer,mode='w') as t:p.add_bytes(t,'anytls-core-v1.0.0/VERSION',b'v1.0.0\n')
+   def archive(args,**kwargs):
+    self.assertEqual(args[:2],['git','archive']);kwargs['stdout'].write(gzip.compress(source_buffer.getvalue(),mtime=0))
+   def invoke(out=None,**kwargs):
+    receipt_path.write_text('PATCHED_GO_END '+json.dumps(receipt)+'\n')
+    with mock.patch.object(p.subprocess,'check_output',side_effect=output),mock.patch.object(p.subprocess,'run',side_effect=archive):
+     return p.package(root,binary,out or root/'out','v1.0.0','go',cache,receipt_path,**kwargs)
+   yield root,settings,receipt,invoke
+
+ def test_packages_each_architecture_with_bound_identity(self):
+  for arch in ('arm64','amd64'):
+   for host in ('arm64','amd64'):
+    with self.subTest(arch=arch,host=host),self.package_fixture(arch) as (root,settings,receipt,invoke):
+     receipt['go_version']='go version go1.26.8 darwin/'+host
+     # Keep the legacy positional/default entry point working for arm64.
+     result=invoke(**({'arch':arch} if arch=='amd64' else {}))
+     prefix='anytls-core-v1.0.0';platform='darwin-'+arch;bp=prefix+'-'+platform
+     ccs=prefix+('-corresponding-source.tar.gz' if arch=='arm64' else '-darwin-amd64-corresponding-source.tar.gz')
+     expected=[prefix+'-source.tar.gz',ccs,bp+'.tar.gz','SHA256SUMS']
+     self.assertEqual(result['assets'],expected);self.assertEqual(result['modules'],37)
+     out=root/'out'
+     self.assertEqual((out/'SHA256SUMS').read_text(),''.join(hashlib.sha256((out/name).read_bytes()).hexdigest()+'  '+name+'\n' for name in expected[:-1]))
+     with tarfile.open(out/(bp+'.tar.gz')) as t:
+      info=json.load(t.extractfile(bp+'/BUILD-INFO.json'));self.assertEqual(info['platform'],platform);self.assertEqual(info['corresponding_source'],ccs)
+      self.assertEqual(info['binary_sha256'],receipt['output_sha256'])
+      self.assertIn(b'Copyright Go',t.extractfile(bp+'/licenses/Go/SOURCE-NOTICES.txt').read())
+     with tarfile.open(out/ccs) as t:
+      identity=json.load(t.extractfile(prefix+'/BUILD-IDENTITY.json'))
+      self.assertEqual(identity['settings']['GOARCH'],arch);self.assertEqual(identity['certified_build'],receipt)
+      self.assertEqual(len(json.load(t.extractfile(prefix+'/MODULES.json'))),37)
+      self.assertIn(('darwin/'+arch).encode(),t.extractfile(prefix+'/BUILD.txt').read())
+      self.assertEqual(t.extractfile(prefix+'/go-toolchain/LICENSE').read(),b'Go license fixture')
+      self.assertIn(b'package runtime',t.extractfile(prefix+'/go-toolchain/src/runtime.go').read())
+
+ def test_independent_outputs_share_only_byte_identical_application_source(self):
+  archives={}
+  for arch in ('arm64','amd64'):
+   with self.package_fixture(arch) as (root,settings,receipt,invoke):
+    out=root/arch;result=invoke(out=out,arch=arch)
+    for name in result['assets'][:-1]:
+     data=(out/name).read_bytes()
+     if name in archives:
+      self.assertTrue(name.endswith('-source.tar.gz'))
+      self.assertFalse(name.endswith('-corresponding-source.tar.gz'))
+      self.assertEqual(archives[name],data)
+     else:archives[name]=data
+  self.assertEqual(len(archives),5)
+
+ def test_rejects_receipt_target_mismatch(self):
+  for arch in ('arm64','amd64'):
+   targets=[None,{},dict(GOOS='darwin',GOARCH='amd64' if arch=='arm64' else 'arm64',CGO_ENABLED='0'),dict(GOOS='linux',GOARCH=arch,CGO_ENABLED='0'),dict(GOOS='darwin',GOARCH=arch,CGO_ENABLED='1')]
+   for target in targets:
+    with self.subTest(arch=arch,target=target),self.package_fixture(arch) as (root,settings,receipt,invoke):
+     receipt['target']=target
+     with self.assertRaisesRegex(ValueError,'target'):invoke(arch=arch)
+     self.assertFalse(list((root/'out').glob('*.tar.gz')))
+
+ def test_rejects_wrong_architecture_and_nonbaseline_amd64(self):
+  for arch in ('arm64','amd64'):
+   with self.subTest(arch=arch),self.package_fixture(arch) as (root,settings,receipt,invoke):
+    settings['GOARCH']='amd64' if arch=='arm64' else 'arm64'
+    with self.assertRaisesRegex(ValueError,'settings'):invoke(arch=arch)
+    self.assertFalse(list((root/'out').glob('*.tar.gz')))
+  for baseline in ('v2','v3','v4',None):
+   with self.subTest(baseline=baseline),self.package_fixture('amd64') as (root,settings,receipt,invoke):
+    if baseline is None:settings.pop('GOAMD64')
+    else:settings['GOAMD64']=baseline
+    with self.assertRaisesRegex(ValueError,'settings'):invoke(arch='amd64')
+
+ def test_rejects_unsupported_architecture_before_external_effects(self):
+  for arch in ('386','aarch64','ARM64','',None):
+   with self.subTest(arch=arch),mock.patch.object(p.subprocess,'check_output',side_effect=AssertionError('no external inspection')):
+    with self.assertRaisesRegex(ValueError,'unsupported architecture'):p.package(None,None,None,None,None,None,None,arch)
+
+ def test_rejects_unbound_binary_digest(self):
+  for arch in ('arm64','amd64'):
+   with self.subTest(arch=arch),self.package_fixture(arch) as (root,settings,receipt,invoke):
+    receipt['output_sha256']='0'*64
+    with self.assertRaisesRegex(ValueError,'digest'):invoke(arch=arch)
+    self.assertFalse(list((root/'out').glob('*.tar.gz')))
+
  def test_module_escape(self):
   self.assertEqual(p.module_escape('github.com/Upper/Name'),'github.com/!upper/!name')
  def test_zip_hash_matches_go_hash1_algorithm(self):

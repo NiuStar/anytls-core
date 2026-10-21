@@ -4,13 +4,15 @@ Go 编写的 macOS AnyTLS VPN 客户端。当前版本 **[v2026-10-21-03](https:
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
-在 **Mac Apple Silicon 的本机终端**运行（不要加 `sudo`）：
+在 **Mac 的本机终端**运行（双架构版本支持 Apple Silicon 与 Intel）（不要加 `sudo`）：
 
 ```bash
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/NiuStar/anytls-core/main/install-control-helper.sh | bash
 ```
 
-脚本从官方 Release 下载 `darwin-arm64` 二进制包，校验 SHA256，再在本机进行一次系统授权安装助手；**不需要安装 Go、不在用户电脑编译**。已有配置与密码保留，旧程序先备份，不自动停止／重载 VPN。缺 Python 3 时会提示安装；不支持 Intel Mac。没有二进制附件的旧 Release 会明确拒绝，不自动转源码构建。
+脚本按硬件架构从官方 Release 下载 `darwin-arm64`（Apple Silicon）或 `darwin-amd64`（Intel）二进制包，校验 SHA256，再在本机进行一次系统授权安装助手；**不需要安装 Go、不在用户电脑编译**。已有配置与密码保留，旧程序先备份，不自动停止／重载 VPN。缺 Python 3 时会提示安装；Intel 支持从提供 `darwin-amd64` 附件的双架构 Release 开始；旧版 arm64-only Release 不能在 Intel 安装。没有二进制附件的旧 Release 会明确拒绝，不自动转源码构建。
+
+脚本会即时显示下载组件、发行附件、校验、系统助手授权、程序替换和 WebUI 切换阶段；网络等待期间每约5秒显示已接收字节、总大小（服务器提供时）与耗时。对应源码附件较大，GitHub 下载缓慢时也会持续提示。进度写入终端 stderr，不包含密码或签名下载链接。
 
 先下载审阅再运行：
 
@@ -47,7 +49,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 ## 从源码构建
 
-Release 提供 macOS arm64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.26.8**，首次构建需能取得 go.mod 锁定的依赖。
+双架构 Release 提供 macOS arm64 / amd64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.26.8**，首次构建需能取得 go.mod 锁定的依赖。
 
 必须使用附带 wrapper 应用已认证的 sing-box Box.Start 清理错误补丁，不能用普通 `go build` 替代发布构建：
 
@@ -66,7 +68,7 @@ wrapper 校验精确上游版本、归档、补丁、临时 replacement 及输�
 
 ## 安装与使用
 
-目标为 macOS Apple Silicon；没有 Apple 签名或公证。已有安装先停止 VPN 并备份程序、配置、选择文件和引用规则／证书，**不要覆盖真实配置**。
+发行目标为 macOS Apple Silicon 与 Intel；双架构适配说明见 [Intel 支持](docs/macos-intel-support.md)。没有 Apple 签名或公证。已有安装先停止 VPN 并备份程序、配置、选择文件和引用规则／证书，**不要覆盖真实配置**。
 
 新安装示例：
 

@@ -1,8 +1,8 @@
-# 预编译 Release 安装器（macOS Apple Silicon）
+# 预编译 Release 安装器（macOS Apple Silicon / Intel）
 
 此入口从固定官方仓库 `NiuStar/anytls-core` 的稳定 GitHub Release 下载
-`darwin-arm64` 二进制，**不安装 Go、不本地编译、不运行压缩包内的 Python/shell**。
-需要普通用户、macOS arm64、Python 3、curl 和可交互的本地终端。不要用 sudo
+按硬件选择 `darwin-arm64` / `darwin-amd64` 二进制，**不安装 Go、不本地编译、不运行压缩包内的 Python/shell**。
+需要普通用户、macOS arm64 或 Intel x86_64、Python 3、curl 和可交互的本地终端。不要用 sudo
 运行整个安装器；受限助手安装步骤会由候选程序调用系统 sudo 自行授权。安装器
 不读取、保存或传输系统密码。VPN 不会因安装而自动启动。
 
@@ -30,6 +30,7 @@ Release 归档寻找 Python 模块。可信 bootstrap/main 和 GitHub HTTPS 都�
 ```sh
 python3 -I scripts/install-binary.py --check-download
 python3 -I scripts/install-binary.py --check-download --version v1.2.3
+python3 -I scripts/install-binary.py --check-download --arch amd64 # 仅校验Intel包，不执行
 ```
 
 本地需同时保有可信 `scripts/install.py`。检查模式可在非 macOS 上运行，使用
@@ -44,16 +45,18 @@ Mach-O 头及二进制摘要；输出 JSON 的 `download_verified: true` 和
 
 ## Release 合同
 
-同一个稳定 tag 必须存在以下四个精确附件；没有二进制的旧 source-only Release
+双架构稳定 tag 提供以下六个精确附件（安装器只下载当前硬件所需的四个）；没有二进制的旧 source-only Release
 明确失败，不会回退编译：
 
 - `anytls-core-TAG-darwin-arm64.tar.gz`
+- `anytls-core-TAG-darwin-amd64.tar.gz`
 - `anytls-core-TAG-source.tar.gz`（精确应用源码、构建脚本及补丁）
 - `anytls-core-TAG-corresponding-source.tar.gz`（应用源码、实际链接依赖源码和 Go 源码）
-- `SHA256SUMS`（上述三个归档必须各有唯一 SHA256 行）
+- `anytls-core-TAG-darwin-amd64-corresponding-source.tar.gz`（Intel产物的独立对应源码与构建身份）
+- `SHA256SUMS`（上述五个归档必须各有唯一 SHA256 行）
 
 所有初始 API 和附件 URL 固定官方仓库及精确 tag；附件仅接受可信 GitHub HTTPS
-重定向域。二进制包前缀必须为 `anytls-core-TAG-darwin-arm64/`，至少包含：
+重定向域。二进制包前缀必须为 `anytls-core-TAG-darwin-ARCH/`（ARCH 为 arm64 或 amd64），至少包含：
 
 ```text
 bin/anytls-macos
@@ -72,8 +75,8 @@ THIRD_PARTY_NOTICES.md
 ```
 
 重复 JSON 字段拒绝；`source_commit` 必须等于官方 `/commits/TAG` 的结果；
-`binary_sha256` 必须等于流式计算的实际文件摘要。二进制要求 thin arm64
-Mach-O executable 头；这不替代 macOS 平台加载及实际执行。归档流式展开，拒绝
+`binary_sha256` 必须等于流式计算的实际文件摘要。二进制要求与选定架构一致的 thin arm64 或 x86_64
+Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-ARCH`；这不替代 macOS 平台加载及实际执行。归档流式展开，拒绝
 越界、错误前缀、重复成员、file/directory 碰撞、符号/硬链接及特殊文件；不继承
 可执行位。源码包验证整体 SHA256 并保留，不执行或展开其内容。
 
@@ -131,6 +134,16 @@ stdout/stderr 追加到 `0600` 的 `~/.anytls/webui.log`。必须确认监听 PI
 **整个安装流程不调用 VPN 的 stop/reload/start，也不向 VPN 或 helper 发信号。**
 正在运行的 VPN 仍使用此前快照，何时显式应用/重载由用户决定；不会悄悄重连
 VPN、改变路由或 DNS。此行为由可信 main 的 Python 安装器实现，不要求新二进制 tag。
+
+## 安装进度
+
+公开 shell 在下载两个可信安装组件时显示阶段和 curl 进度条；进入 Python 后，6个阶段分别提示附件下载、安全解压及身份校验、材料保留、系统助手授权、备份替换和 WebUI 就绪。
+
+每次 API／附件请求立即提示文件名；连接和接收数据时每约5秒输出已收字节、总大小（Content-Length可用时）和耗时。0字节表示尚未收到可交付给读取循环的数据，不保证网络毫无传输；这是接收状态，不是伪造百分比或剩余时间。原有网络读超时保留，不将缓慢但持续接收的数据冒称超时失败。
+
+进度仅写stderr并及时flush，`--check-download` 的stdout仍为原有JSON。下载“完成”指传输结束，所有附件SHA通过后才显示第2阶段；系统密码只在本机Password提示处输入且不回显。失败／取消会标记，不打印密码、认证头或签名重定向查询。
+
+已启动的旧安装进程不会动态加载新脚本；不要为了看新提示而同时启动第二个安装器。等待当前结果，或自行取消后再重跑。
 
 ## 本地单元验证
 
