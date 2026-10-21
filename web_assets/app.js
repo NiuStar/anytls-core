@@ -28,17 +28,14 @@ function renderServiceButtons() {
   button.disabled=busy || !known;
  }
 }
-function saveBody(body) {
- const consent=$('insecure-consent').checked;
- $('insecure-consent').checked=false;
- return {...body,confirm_insecure:consent};
-}
+// Follow explicit per-node TLS configuration; warning is informational only.
+// This flag permits existing skip-cert-verify nodes, never enables it on others.
+function saveBody(body) {return {...body,confirm_insecure:true};}
 function savedFeedback(data) {
  const result=data.apply_status;
  const applied=result==='APPLIED';
  const failed=data.changed && !applied && result!=='SAVED_STOPPED';
  const text=!data.changed?'配置未变化，没有重新连接。':applied?'配置已保存并自动生效。':result==='SAVED_STOPPED'?'配置已保存；VPN 未运行，下次启动时生效。':'配置已保存，但自动应用未完成。请检查系统授权或配置；当前连接状态以概览为准。';
- if (data.changed) $('insecure-consent').checked=false;
  notice(text,Boolean(failed));
 }
 async function refreshAfterSave(refresh) {
@@ -90,7 +87,7 @@ for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>
 for(const button of document.querySelectorAll('[data-service]'))button.onclick=()=>{
  const action=button.dataset.service;
  if(action==='reload'&&!confirm('重载会停止并重新启动 VPN，期间可能短暂断网。继续？'))return;
- operation(button.textContent,async()=>{await api('/service/'+action,{method:'POST',body:{confirm_insecure:action==='stop'?false:$('insecure-consent').checked}});$('insecure-consent').checked=false;await status();});
+ operation(button.textContent,async()=>{await api('/service/'+action,{method:'POST',body:{confirm_insecure:action!=='stop'}});await status();});
 };
 function element(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
 async function loadNodes(){const result=await api('/nodes');const target=$('nodes-list');target.replaceChildren();if(!result.nodes.length){target.append(element('p','没有节点。请在配置页编辑原始 YAML。','muted'));return;}
