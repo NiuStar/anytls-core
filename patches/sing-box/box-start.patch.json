@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "import (\n\t\"context\"\n",
+      "new": "import (\n\t\"context\"\n\t\"errors\"\n"
+    },
+    {
+      "old": "func (s *Box) Start() error {\n\terr := s.start()\n\tif err != nil {\n\t\ts.Close()\n\t\treturn err\n\t}",
+      "new": "func (s *Box) Start() error {\n\terr := s.start()\n\tif err != nil {\n\t\treturn errors.Join(err, s.Close())\n\t}"
+    }
+  ]
+}

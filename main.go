@@ -7,14 +7,10 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
-	"time"
 )
 
 type options struct{ Server, SNI, Password, CA string }
@@ -77,23 +73,20 @@ func execute(args []string) error {
 		args = []string{"select"}
 	}
 	if len(args) == 1 && args[0] == "status" {
-		live, err := launched()
+		root, err := serviceRoot()
 		if err != nil {
 			return err
 		}
-		if live {
-			fmt.Println("AnyTLS TUN running")
-		} else {
-			fmt.Println("AnyTLS TUN stopped")
-		}
-		return nil
+		status, err := newServiceLifecycle(root).status()
+		fmt.Println(status)
+		return err
 	}
 	if len(args) == 1 && args[0] == "start" {
 		_, config, _, err := servicePaths()
 		if err != nil {
 			return err
 		}
-		n, err := selectedServiceNode(config)
+		n, err := preflightServiceNode(config)
 		if err != nil {
 			return err
 		}
@@ -120,8 +113,16 @@ func execute(args []string) error {
 			return err
 		}
 		if !loaded {
-			fmt.Println("AnyTLS is not running")
-			return nil
+			root, err := serviceRoot()
+			if err != nil {
+				return err
+			}
+			if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+				fmt.Println("AnyTLS TUN stopped")
+				return nil
+			}
+			// Existing or unreadable private evidence requires privileged recovery
+			// verification, even when launchd has already unloaded the job.
 		}
 		return sudoSubcommand("service-stop", false)
 	}
@@ -155,97 +156,13 @@ func execute(args []string) error {
 	if fs.NArg() != 1 || (fs.Arg(0) != "list" && fs.Arg(0) != "select" && fs.Arg(0) != "check" && fs.Arg(0) != "run") {
 		return errors.New("usage: anytls-macos [flags] list|select|check|run")
 	}
-	if *config == "" && *server == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		exe, err = filepath.EvalSymlinks(exe)
-		if err != nil {
-			return err
-		}
-		candidate := filepath.Join(filepath.Dir(exe), "config.yaml")
-		if _, err := os.Stat(candidate); err == nil {
-			*config = candidate
-		}
+	if err := validateCoreFlag(fs); err != nil {
+		return err
 	}
-	var cfg map[string]any
-	if *config != "" {
-		nodes, err := loadNodes(*config)
-		if err != nil {
-			return err
-		}
-		current, err := selectedNode(*config, nodes)
-		if err != nil {
-			return err
-		}
-		if fs.Arg(0) == "list" {
-			printNodes(os.Stdout, nodes, current)
-			groups, err := groupChoices(*config)
-			if err != nil {
-				return err
-			}
-			for _, g := range groups {
-				fmt.Printf("策略组 %s → %s\n", g.Name, g.Selected)
-			}
-			return nil
-		}
-		if fs.Arg(0) == "select" {
-			groups, err := groupChoices(*config)
-			if err != nil {
-				return err
-			}
-			if len(groups) > 0 {
-				return selectGroupMenu(*config, nodes, groups, os.Stdin, os.Stdout)
-			}
-			return selectMenu(*config, nodes, current, os.Stdin, os.Stdout)
-		}
-		if *nodeName == "" {
-			*nodeName = current
-		}
-		if *nodeName == "" {
-			return errors.New("no node selected; use select or -node")
-		}
-		n, err := choose(nodes, *nodeName)
-		if err != nil {
-			return err
-		}
-		cfg, err = buildNode(n, *mode, *localPort, *allowInsecure)
-		if err != nil {
-			return err
-		}
-		if err := applyRouting(*config, nodes, n, cfg, *allowInsecure); err != nil {
-			return err
-		}
-		if n.EgressIP != "" {
-			fmt.Fprintln(os.Stderr, "note: egress-ip is server-side policy, not an AnyTLS client setting; verify observed exit IP")
-		}
-	} else {
-		if fs.Arg(0) == "list" || fs.Arg(0) == "select" {
-			return errors.New("-config is required for list/select")
-		}
-		if *passwordFile == "" {
-			return errors.New("password-file is required")
-		}
-		st, err := os.Stat(*passwordFile)
-		if err != nil {
-			return err
-		}
-		if !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 {
-			return errors.New("password-file must be regular and private (chmod 600)")
-		}
-		pass, err := os.ReadFile(*passwordFile)
-		if err != nil {
-			return err
-		}
-		password := strings.TrimSuffix(strings.TrimSuffix(string(pass), "\n"), "\r")
-		if strings.ContainsAny(password, "\r\n") {
-			return errors.New("password-file must contain one line")
-		}
-		cfg, err = build(options{*server, *sni, password, *ca})
-		if err != nil {
-			return err
-		}
+	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalPort: *localPort, AllowInsecure: *allowInsecure}
+	cfg, err := prepareRuntime(&o)
+	if err != nil || cfg == nil {
+		return err
 	}
 	if fs.Arg(0) == "run" && runtime.GOOS != "darwin" {
 		return errors.New("run is only supported on macOS; use check on other systems")
@@ -254,87 +171,7 @@ func execute(args []string) error {
 	if err != nil {
 		return err
 	}
-	configDir := ""
-	if *config != "" {
-		configDir = filepath.Dir(*config)
-	} else {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		exe, err = filepath.EvalSymlinks(exe)
-		if err != nil {
-			return err
-		}
-		configDir = filepath.Dir(exe)
-	}
-	configPath := filepath.Join(configDir, "runtime.json")
-	f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return fmt.Errorf("runtime config already exists; another instance may be running: %w", err)
-	}
-	defer os.Remove(configPath)
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	path, err := exec.LookPath(*core)
-	if errors.Is(err, exec.ErrNotFound) && *core == "sing-box" {
-		exe, exeErr := os.Executable()
-		if exeErr != nil {
-			return exeErr
-		}
-		exe, exeErr = filepath.EvalSymlinks(exe)
-		if exeErr != nil {
-			return exeErr
-		}
-		path, err = exec.LookPath(filepath.Join(filepath.Dir(exe), "sing-box"))
-	}
-	if err != nil {
-		return fmt.Errorf("sing-box executable: %w", err)
-	}
-	if err := coreCmd(path, "check", configPath); err != nil {
-		return err
-	}
-	if fs.Arg(0) == "check" {
-		fmt.Println("sing-box configuration valid")
-		return nil
-	}
-	return coreCmd(path, "run", configPath)
-}
-
-func coreCmd(path, sub, configPath string) error {
-	cmd := exec.Command(path, sub, "-c", configPath)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("sing-box %s: %w", sub, err)
-	}
-	if sub == "run" {
-		sig := make(chan os.Signal, 1)
-		stop := make(chan struct{})
-		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-		defer signal.Stop(sig)
-		defer close(stop)
-		go func() {
-			select {
-			case s := <-sig:
-				_ = cmd.Process.Signal(s)
-				select {
-				case <-time.After(5 * time.Second):
-					_ = cmd.Process.Kill()
-				case <-stop:
-				}
-			case <-stop:
-			}
-		}()
-	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("sing-box %s: %w", sub, err)
-	}
-	return nil
+	return dispatchEngine(o.Command, b, o.Config, *core)
 }
 
 func main() {

@@ -21,19 +21,34 @@ func readYAML(path string, v any) error {
 }
 
 func stageRuleSets(config, root string) error {
-	var doc map[string]any
-	if err := readYAML(config, &doc); err != nil {
+	captured, err := readSnapshotSource(filepath.Join(root, "config.yaml"), snapshotConfigLimit, false)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(captured, &doc); err != nil {
 		return err
 	}
 	var typed struct {
 		Sets map[string]fileRuleSet `yaml:"rule-sets"`
 	}
-	if err := readYAML(config, &typed); err != nil {
+	if err := doc.Decode(&typed); err != nil {
 		return err
 	}
 	if len(typed.Sets) == 0 {
 		return nil
 	}
+	if err := snapshotYAMLPlain(&doc); err != nil {
+		return err
+	}
+	sets := snapshotYAMLField(doc.Content[0], "rule-sets")
+	if sets == nil || sets.Kind != yaml.MappingNode {
+		return errors.New("snapshot rule-sets mapping missing")
+	}
+	if len(typed.Sets) > snapshotReferenceLimit {
+		return errors.New("snapshot has too many rule sets")
+	}
+	total := 0
 	dir := filepath.Join(root, "rules")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return err
@@ -43,32 +58,88 @@ func stageRuleSets(config, root string) error {
 		if strings.ContainsAny(name, "/\\\\\x00") || name == "." || name == ".." {
 			return fmt.Errorf("unsafe rule-set name %q", name)
 		}
-		if _, err := loadRuleSet(config, name, spec); err != nil {
-			return err
-		}
 		path := spec.Path
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(filepath.Dir(config), path)
 		}
-		b, err := os.ReadFile(path)
+		b, err := readSnapshotSource(path, snapshotRuleLimit, true)
 		if err != nil {
 			return err
 		}
-		if shaHex(b) != spec.SHA256 {
-			return fmt.Errorf("rule-set %s changed during staging", name)
+		if _, err := validateRuleSetBytes(name, spec, b); err != nil {
+			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, name+".json"), b, 0600); err != nil {
+		total += len(b)
+		if total > snapshotRuleTotalLimit {
+			return errors.New("snapshot aggregate rule bytes exceeded")
+		}
+		if err := writeSnapshotLeaf(filepath.Join(dir, name+".json"), b, 0600); err != nil {
 			return err
 		}
 		spec.Path = "rules/" + name + ".json"
 		next[name] = spec
 	}
-	doc["rule-sets"] = next
-	b, err := yaml.Marshal(doc)
+	seen := map[string]bool{}
+	for i := 0; i < len(sets.Content); i += 2 {
+		var name string
+		if err := sets.Content[i].Decode(&name); err != nil {
+			return err
+		}
+		spec, ok := next[name]
+		if !ok {
+			return errors.New("snapshot rule-set replacement missing")
+		}
+		if err := snapshotYAMLSetPath(sets.Content[i+1], "path", spec.Path); err != nil {
+			return err
+		}
+		seen[name] = true
+	}
+	if len(seen) != len(next) {
+		return errors.New("snapshot rule-set replacement missing")
+	}
+	b, err := yaml.Marshal(&doc)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(root, "config.yaml"), b, 0600)
+	return replaceSnapshotConfig(root, b)
+}
+
+// Snapshot rewrites deliberately fail closed on aliases/merges: editing an
+// anchored leaf could also change an unrelated field through a shared alias.
+// Ordinary nodes retain their original scalar tag and spelling via yaml.Node.
+func snapshotYAMLPlain(n *yaml.Node) error {
+	if n.Kind == yaml.AliasNode || n.Tag == "!!merge" {
+		return errors.New("snapshot path rewrite does not support YAML aliases or merges")
+	}
+	if n.Kind == yaml.DocumentNode && (len(n.Content) != 1 || n.Content[0].Kind != yaml.MappingNode) {
+		return errors.New("snapshot requires a YAML mapping")
+	}
+	for _, child := range n.Content {
+		if err := snapshotYAMLPlain(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func snapshotYAMLField(n *yaml.Node, key string) *yaml.Node {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i < len(n.Content); i += 2 {
+			if n.Content[i].Kind == yaml.ScalarNode && n.Content[i].Value == key {
+				return n.Content[i+1]
+			}
+		}
+	}
+	return nil
+}
+
+func snapshotYAMLSetPath(n *yaml.Node, key, path string) error {
+	leaf := snapshotYAMLField(n, key)
+	if leaf == nil || leaf.Kind != yaml.ScalarNode {
+		return errors.New("snapshot path replacement missing scalar")
+	}
+	leaf.Tag, leaf.Value = "!!str", path
+	return nil
 }
 
 type proxyGroup struct {
@@ -143,21 +214,16 @@ func loadRuleSet(config, name string, spec fileRuleSet) (map[string]any, error) 
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(filepath.Dir(config), p)
 	}
-	f, err := os.Open(p)
+	b, err := readSnapshotSource(p, snapshotRuleLimit, true)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !st.Mode().IsRegular() || st.Size() > 32<<20 {
-		return nil, errors.New("rule-set must be regular, at most 32MiB")
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return nil, err
+	return validateRuleSetBytes(name, spec, b)
+}
+
+func validateRuleSetBytes(name string, spec fileRuleSet, b []byte) (map[string]any, error) {
+	if spec.Path == "" || len(spec.SHA256) != 64 {
+		return nil, fmt.Errorf("rule-set %q needs path and sha256", name)
 	}
 	if shaHex(b) != spec.SHA256 {
 		return nil, fmt.Errorf("rule-set %q SHA mismatch", name)

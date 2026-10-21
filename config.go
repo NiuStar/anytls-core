@@ -36,10 +36,14 @@ func loadNodes(path string) ([]node, error) {
 	if !st.Mode().IsRegular() {
 		return nil, errors.New("config.yaml must be a regular file")
 	}
-	b, err := os.ReadFile(path)
+	b, err := readSnapshotSource(path, snapshotConfigLimit, true)
 	if err != nil {
 		return nil, err
 	}
+	return loadNodesBytes(b)
+}
+
+func loadNodesBytes(b []byte) ([]node, error) {
 	var doc struct {
 		Proxies []node `yaml:"proxies"`
 		Nodes   []node `yaml:"nodes"`

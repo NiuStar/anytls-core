@@ -21,3 +21,11 @@ anytls-core
 migration-audit/
 __pycache__/
 .DS_Store
+
+# Private development experiments and execution evidence (not release source)
+artifacts/
+NEWg*/
+newg*/
+g3-*/
+HTTPS-retry-fix/
+network-recovery-readbacks/

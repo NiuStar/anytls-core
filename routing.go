@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,10 +12,14 @@ import (
 // applyRouting accepts only the small, explicit Clash rule subset documented in README.
 // ponytail: no provider/group/GEOIP emulation; add each only with a separate verified contract.
 func applyRouting(path string, nodes []node, selected node, cfg map[string]any, allowInsecure bool) error {
-	b, err := os.ReadFile(path)
+	b, err := readSnapshotSource(path, snapshotConfigLimit, true)
 	if err != nil {
 		return err
 	}
+	return applyRoutingBytes(path, b, nodes, selected, cfg, allowInsecure)
+}
+
+func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg map[string]any, allowInsecure bool) error {
 	var doc struct {
 		Rules     []string               `yaml:"rules"`
 		Groups    []proxyGroup           `yaml:"proxy-groups"`

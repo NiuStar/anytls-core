@@ -1,0 +1,28 @@
+name: Source Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check version and prepare exact source
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          test "$(cat VERSION)" = "$TAG"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="anytls-core-${TAG}/" HEAD > "dist/anytls-core-${TAG}-source.tar.gz"
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+      - name: Publish source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG — embedded core + HTTPS retry" --notes-file "docs/releases/${TAG}.md" --latest

@@ -18,13 +18,17 @@ func selectable(n node) bool {
 }
 
 func selectedNode(config string, nodes []node) (string, error) {
-	b, err := os.ReadFile(selectedPath(config))
+	b, err := readSnapshotSource(selectedPath(config), snapshotSelectedLimit, true)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
+	return selectedBytes(b, nodes)
+}
+
+func selectedBytes(b []byte, nodes []node) (string, error) {
 	name := strings.TrimSuffix(string(b), "\n")
 	n, err := choose(nodes, name)
 	if err != nil {

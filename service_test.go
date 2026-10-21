@@ -10,12 +10,28 @@ import (
 )
 
 func TestGeneratedServicePlistParsesOnMac(t *testing.T) {
-	if runtime.GOOS != "darwin" { t.Skip("macOS plutil required") }
-	p, err := servicePlist("/Users/example/.anytls/service/anytls-macos", "/Users/example/.anytls/service/config.yaml", "/Users/example/.anytls/service/sing-box", "/Users/example/.anytls/service/anytls.log", true)
-	if err != nil { t.Fatal(err) }
-	path := filepath.Join(t.TempDir(), "anytls.plist")
-	if err := os.WriteFile(path, []byte(p), 0600); err != nil { t.Fatal(err) }
-	if out, err := exec.Command("/usr/bin/plutil", "-lint", path).CombinedOutput(); err != nil { t.Fatalf("plutil rejected plist: %s: %v", out, err) }
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS plutil required")
+	}
+	for _, insecure := range []bool{false, true} {
+		core := "/Users/example/.anytls/service/sing-box"
+		if snapshotEmbedded(t) {
+			core = "unused&invalid-core"
+		}
+		p, err := servicePlist("/Users/example/.anytls/service/anytls-macos", "/Users/example/.anytls/service/config.yaml", core, "/Users/example/.anytls/service/anytls.log", insecure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "anytls.plist")
+		if err := os.WriteFile(path, []byte(p), 0600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command("/usr/bin/plutil", "-lint", path).CombinedOutput()
+		if err != nil {
+			t.Fatalf("plutil rejected plist: %s: %v", out, err)
+		}
+		t.Logf("native plutil insecure=%v: %s", insecure, out)
+	}
 }
 
 func TestServicePlistContainsExactPaths(t *testing.T) {
