@@ -1,6 +1,6 @@
 # anytls-core
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前稳定版 **[v2026-10-22-05](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-22-05)** 提供 Intel（amd64）和 Apple Silicon（arm64）预编译安装包，新增最多8路并发节点测速、整数延迟与分色显示、全体取消及迟到结果隔离；保留分阶段脱敏诊断、配置方案、32 MiB 配置与一次授权助手。该发行提交的分支／标签三平台 CI、双架构原生发行和六个公开附件下载核验通过；见 [公开核验与限制](docs/releases/v2026-10-22-05-public-validation.md)。慢节点仍受真实网络超时影响，不承诺全部秒完；用户反馈的 DIRECT 实际故障仍未定位，本版不宣称修复。详细诊断需要程序与受限助手配套更新。
+Go 编写的 macOS AnyTLS VPN 客户端。当前稳定版 **[v2026-10-22-06](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-22-06)** 提供 Intel（amd64）和 Apple Silicon（arm64）预编译安装包，修复网页“安装更新”依赖本机 Go 的问题，明确当前控制台／磁盘版本及分阶段失败原因；保留并发节点测速、配置方案、32 MiB 配置与一次授权助手。该提交双分支三平台 CI、Mac干净构建、真实HTTP及浏览器点击更新均通过，六个公开附件已下载核验；标签作业状态存在未终态／聚合冲突，**不宣称标签CI全部通过**。见 [公开核验与限制](docs/releases/v2026-10-22-06-public-validation.md)。用户反馈的 DIRECT 实际故障仍未定位，本版不宣称修复。详细服务诊断需要程序与受限助手配套更新，网页更新本身不更新助手或重启VPN。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -50,7 +50,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 - `anytls start / stop / status`：launchd 管理系统 TUN，本机 sudo 授权。
 - `anytls config`：终端策略组与节点选择，方向键、回车／空格确认；运行时可保存，`anytls reload` 受控重连后生效。
 - `anytls webui`：普通用户启动本机管理页 `http://127.0.0.1:18089`，账户 `admin`；`anytls password` 查看应用密码，`anytls password reset` 轮换并撤销旧会话。
-- `anytls update --check` / `anytls update`：检查／源码升级，保留配置与程序备份；不自动重启 VPN 或 WebUI。安装说明见 [安装与升级](docs/install-update.md)。
+- `anytls update --check` / `anytls update`：从 `v2026-10-22-06` 起检查／安装官方预编译更新，无需本机 Go，保留配置与程序备份；不自动重启 VPN 或 WebUI。失败按阶段给出受控原因，网页区分内存与磁盘版本并保留待重启状态。见 [更新说明](docs/install-update.md)。
 - AnyTLS TCP／UDP、Chrome uTLS、gVisor mixed 网络栈。
 - 显式 select 策略组、有序分流、SHA-256 固定本地 JSON 规则集。
 - 节点服务器 IPv4 `/32`、IPv6 `/128` 物理接口旁路。
