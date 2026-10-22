@@ -12,7 +12,9 @@ import importlib.util
 import os
 from pathlib import Path
 import platform
+import pwd
 import re
+import shlex
 import shutil
 import stat
 import struct
@@ -219,6 +221,79 @@ def check_link(target, link):
         i.require(link.is_symlink() and link.resolve() == target.resolve(), "~/.local/bin/anytls conflicts with another program; not overwritten")
 
 
+PATH_BEGIN = b"# >>> AnyTLS PATH >>>"
+PATH_END = b"# <<< AnyTLS PATH <<<"
+PATH_BLOCK = (PATH_BEGIN + b'\ncase ":${PATH-}:" in\n'
+              b'    *:"$HOME/.local/bin":*) ;;\n'
+              b'    *) export PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;\n'
+              b'esac\n' + PATH_END + b'\n')
+
+
+def append_shell_path(path):
+    # No truncation/decoding: preserve user bytes and existing permissions.
+    # NONBLOCK matters for FIFOs, which must be rejected before any read/write.
+    flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+    created = False
+    try:
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        i.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(),
+                  "shell config must be a regular file owned by the current user")
+        if created:
+            os.fchmod(fd, 0o600)
+        stream = os.fdopen(fd, "a+b")
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        stream.seek(0)
+        original = stream.read()
+        if PATH_BEGIN in original or PATH_END in original:
+            start = original.find(PATH_BLOCK)
+            i.require(original.count(PATH_BEGIN) == original.count(PATH_END) == 1 and
+                      start >= 0 and (start == 0 or original[start - 1:start] == b"\n"),
+                      "malformed AnyTLS PATH markers; repair manually (not appended)")
+            return
+        stream.write((b"\n" if original and not original.endswith(b"\n") else b"") + PATH_BLOCK)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def configure_shell_path(home, env):
+    """Best-effort startup configuration only; never source or execute an rc file."""
+    try:
+        shell = env.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell
+        if shell == "/bin/bash":
+            candidates = [home / name for name in (".bash_profile", ".bash_login", ".profile")]
+            # lexists includes dangling symlinks: do not bypass an unsafe first file.
+            login = next((p for p in candidates if os.path.lexists(p)), candidates[0])
+            paths = [login, home / ".bashrc"]
+        elif shell == "/bin/zsh":
+            directory = home
+            if env.get("ZDOTDIR"):
+                directory = Path(env["ZDOTDIR"])
+                i.require(directory.is_absolute() and
+                          (directory == home or home in directory.parents) and
+                          (directory.resolve() == home.resolve() or home.resolve() in directory.resolve().parents),
+                          "ZDOTDIR must be absolute and within home; configure PATH manually")
+            paths = [directory / ".zprofile", directory / ".zshrc"]
+        else:
+            raise ValueError("unsupported login shell " + repr(shell) + "; configure PATH manually")
+    except (OSError, ValueError, KeyError, RuntimeError) as exc:
+        progress("Warning: PATH configuration skipped: " + str(exc))
+        return
+    for path in paths:
+        try:
+            append_shell_path(path)
+            progress("PATH startup configuration ready: " + str(path) + " (new shells only)")
+        except (OSError, ValueError) as exc:
+            progress("Warning: could not configure PATH in " + str(path) + ": " + str(exc) + "; configure manually")
+
+
 def command_version(binary, tag, runner, env):
     result = runner([str(binary), "version"], check=True, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, timeout=20, env=env)
@@ -398,6 +473,7 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
                 webui.restart()
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise ValueError("binary installed but WebUI start failed: " + str(exc) + "; inspect ~/.anytls/webui.log; VPN was not stopped/reloaded") from exc
+        configure_shell_path(home, os.environ if env is None else env)
         if created:
             print("Created 0600 config.yaml EXAMPLE ONLY. Enter your actual node/password/CA; no usable credentials were generated.")
         return backup
@@ -432,7 +508,7 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
             print(i.json.dumps(report, sort_keys=True))
             return report
         if env is None:
-            env = {k: os.environ[k] for k in ("HOME", "PATH", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR") if k in os.environ}
+            env = {k: os.environ[k] for k in ("HOME", "PATH", "SHELL", "ZDOTDIR", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR") if k in os.environ}
         # Retain required source/license materials BEFORE any privileged change
         # or executable publication. Retention failure leaves the old app intact.
         progress("[3/6] 保留许可证与对应源码；已有配置及密码不覆盖")
@@ -447,7 +523,10 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         print("Installed " + tag + " from verified prebuilt release; authenticated helper status succeeded.")
         if backup:
             print("Previous executable backup: " + str(backup))
-        print("SHA256SUMS trusts GitHub HTTPS, NOT an independent authenticity signature. Add ~/.local/bin to PATH.")
+        print("SHA256SUMS trusts GitHub HTTPS, NOT an independent authenticity signature.")
+        print("Run now by absolute path: " + shlex.quote(str(app / "anytls-macos")))
+        print("The current terminal PATH is unchanged. Open a new terminal, or for bash/zsh run: export PATH=" +
+              shlex.quote(str(home / ".local/bin")) + ':"$PATH"')
         print("WebUI started at http://127.0.0.1:18089/ using the new binary. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
         report["executed"] = True
         return report

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UNIT-SIMULATED transport/process tests; no real install, SSH, Go or network."""
+"""Simulated installer tests plus isolated bash startup; no install/SSH/Go/network."""
 import contextlib
 import hashlib
 import importlib.util
@@ -393,6 +393,77 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "binary installed but WebUI start failed"):
             self.install(bundle)
         self.assertEqual((self.app / "anytls-macos").read_bytes(), BINARY)
+        for name in (".bash_profile", ".bashrc", ".zprofile", ".zshrc"):
+            self.assertFalse((self.home / name).exists())
+
+    def test_repeated_install_configures_path_only_after_webui(self):
+        _, bundle, _, _ = self.verified()
+        self.app.mkdir()
+        self.processes = []
+        env = {"HOME": str(self.home), "SHELL": "/bin/bash"}
+        self.webui_factory.return_value.restart.side_effect = lambda: self.assertFalse((self.home / ".bash_profile").exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            b.install_verified(bundle, TAG, self.app, self.home, self.runner, env, tty=lambda: io.BytesIO())
+        before = {name: (self.home / name).read_bytes() for name in (".bash_profile", ".bashrc")}
+        self.webui_factory.return_value.restart.side_effect = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            b.install_verified(bundle, TAG, self.app, self.home, self.runner, env, tty=lambda: io.BytesIO())
+        self.assertEqual(before, {name: (self.home / name).read_bytes() for name in before})
+        self.assertEqual(before[".bash_profile"], b.PATH_BLOCK)
+
+    def test_path_failure_is_warning_not_install_failure_and_instructions_always_print(self):
+        self.processes = []
+        outside = self.root / "outside"
+        outside.write_bytes(b"unchanged")
+        (self.home / ".bash_profile").symlink_to(outside)
+        args = types.SimpleNamespace(version=TAG, check_download=False)
+        with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
+            report = b.run(args, self.transport, self.runner, system="Darwin", machine="arm64", euid=501,
+                           home=self.home, tty=lambda: io.BytesIO(), env={"SHELL": "/bin/bash", "HOME": str(self.home)})
+        self.assertTrue(report["executed"])
+        self.assertIn("Warning", stderr.getvalue())
+        self.assertEqual(outside.read_bytes(), b"unchanged")
+        self.assertIn(str(self.app / "anytls-macos"), stdout.getvalue())
+        self.assertIn("export PATH=", stdout.getvalue())
+        self.assertIn("current terminal PATH is unchanged", stdout.getvalue())
+
+    def test_filtered_environment_retains_shell_and_zdotdir(self):
+        self.processes = []
+        directory = self.home / "shell config"
+        directory.mkdir()
+        args = types.SimpleNamespace(version=TAG, check_download=False)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), "SHELL": "/bin/zsh", "ZDOTDIR": str(directory)}, clear=True), \
+                contextlib.redirect_stdout(io.StringIO()):
+            b.run(args, self.transport, self.runner, system="Darwin", machine="arm64", euid=501,
+                  home=self.home, tty=lambda: io.BytesIO())
+        self.assertEqual((directory / ".zprofile").read_bytes(), b.PATH_BLOCK)
+        self.assertEqual((directory / ".zshrc").read_bytes(), b.PATH_BLOCK)
+        for _, kwargs in self.processes:
+            self.assertEqual(kwargs["env"]["SHELL"], "/bin/zsh")
+            self.assertEqual(kwargs["env"]["ZDOTDIR"], str(directory))
+
+    def test_unknown_shell_install_still_prints_manual_and_absolute_commands(self):
+        self.processes = []
+        args = types.SimpleNamespace(version=TAG, check_download=False)
+        with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
+            result = b.run(args, self.transport, self.runner, system="Darwin", machine="arm64", euid=501,
+                           home=self.home, tty=lambda: io.BytesIO(), env={"SHELL": "/bin/fish"})
+        self.assertTrue(result["executed"])
+        self.assertIn("unsupported login shell", stderr.getvalue())
+        self.assertIn(str(self.app / "anytls-macos"), stdout.getvalue())
+        self.assertIn("export PATH=", stdout.getvalue())
+        self.assertFalse((self.home / ".bash_profile").exists())
+
+    def test_check_download_preserves_existing_shell_config(self):
+        path = self.home / ".bash_profile"
+        path.write_bytes(b"# untouched\xff")
+        before = {p.name: p.read_bytes() for p in self.home.iterdir()}
+        with mock.patch.object(b, "configure_shell_path", side_effect=AssertionError("check-only configured PATH")), \
+                mock.patch.object(b.pwd, "getpwuid", side_effect=AssertionError("check-only shell lookup")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            b.run(types.SimpleNamespace(version=TAG, check_download=True), self.transport,
+                  runner=lambda *a, **k: self.fail("process"), home=self.home)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.home.iterdir()})
 
     def test_source_archive_hash_mismatch(self):
         self.source += b"tampered-source"
@@ -558,6 +629,162 @@ class InstallerTests(unittest.TestCase):
         self.release["assets"] = [a for a in self.release["assets"] if a["name"] != self.ccs_name]
         with self.assertRaisesRegex(ValueError, "corresponding source"):
             b.binary_release(TAG, self.transport, arch="amd64")
+
+
+class ShellPathTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="shell-path-unit-")
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name) / "home with spaces ' [x] $d"
+        self.home.mkdir()
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(subprocess, "Popen", side_effect=AssertionError("process forbidden")).start()
+        mock.patch.object(socket, "socket", side_effect=AssertionError("network forbidden")).start()
+
+    def configure(self, shell="/bin/bash", **env):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            b.configure_shell_path(self.home, {"SHELL": shell, **env})
+        return output.getvalue()
+
+    def test_bash_login_precedence_and_nonlogin(self):
+        for existing, chosen in (((), ".bash_profile"), ((".profile",), ".profile"),
+                                 ((".bash_login", ".profile"), ".bash_login"),
+                                 ((".bash_profile", ".bash_login", ".profile"), ".bash_profile")):
+            with self.subTest(existing=existing):
+                for path in self.home.iterdir():
+                    path.unlink()
+                for name in existing:
+                    (self.home / name).write_bytes(b"# existing\n")
+                self.configure()
+                self.assertTrue((self.home / chosen).read_bytes().endswith(b.PATH_BLOCK))
+                self.assertEqual((self.home / ".bashrc").read_bytes(), b.PATH_BLOCK)
+                for name in existing:
+                    if name != chosen:
+                        self.assertEqual((self.home / name).read_bytes(), b"# existing\n")
+                self.assertEqual(set(p.name for p in self.home.iterdir()), set(existing) | {chosen, ".bashrc"})
+
+    def test_zsh_and_safe_zdotdir(self):
+        self.configure("/bin/zsh")
+        for name in (".zprofile", ".zshrc"):
+            self.assertEqual((self.home / name).read_bytes(), b.PATH_BLOCK)
+            (self.home / name).unlink()
+        directory = self.home / "zsh config"
+        directory.mkdir()
+        self.configure("/bin/zsh", ZDOTDIR=str(directory))
+        self.assertEqual(set(p.name for p in self.home.iterdir()), {directory.name})
+        self.assertEqual(set(p.name for p in directory.iterdir()), {".zprofile", ".zshrc"})
+
+    def test_invalid_and_external_zdotdir_warn_without_writes(self):
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (self.home / "escape").symlink_to(outside, target_is_directory=True)
+        for value in ("relative", str(outside), str(self.home / "escape")):
+            with self.subTest(value=value):
+                self.assertIn("Warning", self.configure("/bin/zsh", ZDOTDIR=value))
+                self.assertEqual(list(outside.iterdir()), [])
+                self.assertFalse((self.home / ".zprofile").exists())
+        self.assertIn("Warning", self.configure("/bin/zsh", ZDOTDIR=str(self.home / "missing")))
+        self.assertFalse((self.home / "missing").exists())
+
+    def test_unknown_shell_and_account_fallback(self):
+        for shell in ("/bin/fish", "/custom path/bash", "/bin/zsh --login"):
+            self.assertIn("configure PATH manually", self.configure(shell))
+            self.assertEqual(list(self.home.iterdir()), [])
+        with mock.patch.object(b.pwd, "getpwuid", return_value=types.SimpleNamespace(pw_shell="/bin/zsh")) as lookup:
+            self.configure("")
+        lookup.assert_called_once_with(os.getuid())
+        self.assertTrue((self.home / ".zprofile").exists())
+
+    def test_preserve_nonutf8_bytes_modes_and_idempotence(self):
+        path = self.home / ".bash_profile"
+        original = b"# user bytes \xff\xfe\r\n# no final newline"
+        path.write_bytes(original)
+        path.chmod(0o640)
+        self.configure()
+        first = {p.name: (p.read_bytes(), p.stat().st_mode) for p in self.home.iterdir()}
+        self.configure()
+        self.assertEqual(first, {p.name: (p.read_bytes(), p.stat().st_mode) for p in self.home.iterdir()})
+        self.assertEqual(path.read_bytes(), original + b"\n" + b.PATH_BLOCK)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+        self.assertEqual((self.home / ".bashrc").stat().st_mode & 0o777, 0o600)
+
+    def test_malformed_markers_never_duplicate(self):
+        path = self.home / ".bash_profile"
+        for original in (b.PATH_BEGIN, b.PATH_END + b"\n", b.PATH_BEGIN + b"\ncustom\n" + b.PATH_END + b"\n",
+                         b.PATH_BLOCK * 2, b"# prefix " + b.PATH_BLOCK):
+            path.write_bytes(original)
+            self.assertIn("malformed", self.configure())
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_symlink_fifo_directory_rejected_without_following_or_blocking(self):
+        outside = Path(self.temp.name) / "outside"
+        outside.write_bytes(b"untouched")
+        path = self.home / ".bash_profile"
+        path.symlink_to(outside)
+        self.assertIn("Warning", self.configure())
+        self.assertEqual(outside.read_bytes(), b"untouched")
+        self.assertFalse((self.home / ".bash_login").exists())
+        path.unlink()
+        path.symlink_to(self.home / "missing")
+        self.assertIn("Warning", self.configure())
+        self.assertFalse((self.home / "missing").exists())
+        path.unlink()
+        os.mkfifo(path)
+        self.assertIn("regular file", self.configure())
+        self.assertTrue(b.stat.S_ISFIFO(path.lstat().st_mode))
+        path.unlink()
+        path.mkdir()
+        self.assertIn("Warning", self.configure())
+        self.assertEqual(list(path.iterdir()), [])
+
+    def test_foreign_owner_rejected(self):
+        path = self.home / ".bash_profile"
+        path.write_bytes(b"unchanged")
+        with mock.patch.object(b.os, "fstat", return_value=types.SimpleNamespace(st_mode=b.stat.S_IFREG | 0o600, st_uid=os.getuid() + 1)):
+            self.assertIn("owned by", self.configure())
+        self.assertEqual(path.read_bytes(), b"unchanged")
+
+    def test_new_files_are_0600_even_under_restrictive_umask(self):
+        previous = os.umask(0o777)
+        try:
+            self.configure()
+        finally:
+            os.umask(previous)
+        for path in self.home.iterdir():
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class RealShellPathTests(unittest.TestCase):
+    """Only these tests spawn a real isolated bash; no installer/executable runs."""
+    @unittest.skipUnless(Path("/bin/bash").is_file(), "bash unavailable")
+    def test_actual_bash_resolution_guard_and_no_installer_rc_execution(self):
+        with tempfile.TemporaryDirectory(prefix="shell-path-real-") as temp:
+            home = Path(temp) / "home with spaces ' [x] $d"
+            home.mkdir()
+            sentinel = home / "rc-executed"
+            # The installer must append without executing this existing command.
+            (home / ".profile").write_text('printf executed > "$HOME/rc-executed"\n')
+            with contextlib.redirect_stderr(io.StringIO()):
+                b.configure_shell_path(home, {"SHELL": "/bin/bash"})
+            self.assertFalse(sentinel.exists())
+            binary = home / ".local/bin/anytls"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\nprintf 'isolated-anytls\\n'\n")
+            binary.chmod(0o700)
+            for rc in (".profile", ".bashrc"):
+                # --rcfile isolates the actual shell from the host's /etc/profile.
+                for path in ("/usr/bin:/bin", str(binary.parent) + ":/usr/bin:/bin", "/usr/bin:" + str(binary.parent), ""):
+                    with self.subTest(rc=rc, path=path):
+                        result = subprocess.run(["/bin/bash", "--noprofile", "--rcfile", str(home / rc), "-ic",
+                                                 'command -v anytls; anytls; printf "%s\\n" "$PATH"'],
+                                                env={"HOME": str(home), "PATH": path}, cwd=home,
+                                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                timeout=5, check=True)
+                        lines = result.stdout.decode().splitlines()
+                        self.assertEqual(lines[:2], [str(binary), "isolated-anytls"])
+                        self.assertEqual(lines[2].split(":").count(str(binary.parent)), 1)
+            self.assertEqual(sentinel.read_text(), "executed")
 
 
 class ArchitectureTests(unittest.TestCase):

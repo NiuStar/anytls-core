@@ -8,6 +8,16 @@
 
 ## 使用
 
+推荐在本机终端使用统一短入口（默认最新稳定版，旧 URL 继续兼容）：
+
+```sh
+curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | bash
+```
+
+正常公共证书环境无需在命令前手动 export CA；若代理／私有 CA 不在可信证书库中，仍需配置经独立确认可信的 CA，校验失败会停止而不绕过。自动选择仅适用于以下条件：未显式设置 SSL_CERT_FILE／SSL_CERT_DIR，且 Python 默认 CA 库为空时，bootstrap 验证系统 `/etc/ssl/cert.pem` 含 CA 后仅为本次安装使用它；已有默认 CA 或显式设置不替换，证书失败不关闭校验。
+
+成功后 Bash／Zsh 的登录和交互配置会加入幂等 PATH 段，原文件保留；新终端可直接运行 `anytls password`。脚本无法修改父终端环境，当前窗口仍需 `export PATH="$HOME/.local/bin:$PATH"` 或用 `~/.anytls/anytls-macos password`。不支持的 Shell／危险配置文件只警告，不改写。`--check-download` 不改 Shell 配置。
+
 从可信 checkout 执行：
 
 ```sh

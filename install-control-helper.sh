@@ -20,5 +20,13 @@ printf '%s\n' '[AnyTLS] 正在下载安装组件（1/2）；网络无响应将�
 curl --fail --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 https://raw.githubusercontent.com/NiuStar/anytls-core/main/scripts/install.py -o "$work/install.py"
 printf '%s\n' '[AnyTLS] 正在下载安装组件（2/2）…' >&2
 curl --fail --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 https://raw.githubusercontent.com/NiuStar/anytls-core/main/scripts/install-binary.py -o "$work/install-binary.py"
+# Python.org builds can lack their default CA bundle although macOS curl works.
+# Use the existing system PEM only when Python has no loaded default CA at all;
+# preserve an explicitly configured SSL_CERT_FILE/SSL_CERT_DIR, including errors.
+if [[ -z "${SSL_CERT_FILE+x}" && -z "${SSL_CERT_DIR+x}" && -r /etc/ssl/cert.pem ]] &&
+  python3 -I -c 'import ssl,sys; default=ssl.create_default_context(); system=ssl.create_default_context(cafile="/etc/ssl/cert.pem"); sys.exit(0 if default.cert_store_stats()["x509_ca"] == 0 and system.cert_store_stats()["x509_ca"] > 0 else 1)' 2>/dev/null; then
+  export SSL_CERT_FILE=/etc/ssl/cert.pem
+  printf '%s\n' '[AnyTLS] Python 默认 CA 缺失，本次安装使用 macOS CA 文件（保持证书校验，不修改系统配置）。' >&2
+fi
 printf '%s\n' '[AnyTLS] 安装组件已下载，开始校验和安装。' >&2
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$work/install-binary.py" "$@"
