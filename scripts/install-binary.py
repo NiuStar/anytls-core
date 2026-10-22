@@ -374,10 +374,19 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
         # Resolve the CLI collision before making any privileged change. The
         # first-install symlink may be dangling until the atomic publish below.
         i.ensure_link(target, link)
-        opener = tty or (lambda: open("/dev/tty", "rb", buffering=0))
-        progress("[4/6] 准备系统助手；如出现 Password，请在本机终端输入系统密码（输入不回显）")
-        with opener() as terminal, stage("正在安装并验证受限助手；不会停止 VPN"):
-            runner([str(candidate), "helper", "install"], check=True, stdin=terminal, env=env)
+        opener = tty or (lambda: open("/dev/tty", "r+b", buffering=0))
+        progress("[4/6] 系统授权：请在当前终端完成 sudo 提示；此时暂停进度刷屏，输入不回显。")
+        with opener() as terminal:
+            # Give native sudo exclusive use of the controlling terminal. Do not
+            # read a password, pipe it through Python, or print over its prompt.
+            try:
+                runner(["/usr/bin/sudo", "-v"], check=True, stdin=terminal,
+                       stdout=terminal, stderr=terminal, env=env)
+            except subprocess.CalledProcessError:
+                raise ValueError("系统授权未完成；未执行助手安装或程序替换，请检查本机终端的 sudo 提示") from None
+            progress("系统授权已完成，正在安装并验证受限助手；终端由助手独占，不刷等待进度。")
+            runner([str(candidate), "helper", "install"], check=True, stdin=terminal,
+                   stdout=terminal, stderr=terminal, env=env)
         progress("正在验证助手认证与配置绑定")
         runner([str(candidate), "helper", "status"], check=True, stdout=subprocess.PIPE,
                stderr=subprocess.PIPE, timeout=30, env=env)

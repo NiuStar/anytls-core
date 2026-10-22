@@ -107,6 +107,47 @@ class InstallerTests(unittest.TestCase):
         return b.install_verified(bundle, TAG, self.app, self.home, runner or self.runner,
                                   env={"HOME": str(self.home)}, tty=lambda: io.BytesIO())
 
+    def test_authorization_uses_real_terminal_without_heartbeat(self):
+        _, bundle, _, _ = self.verified()
+        terminal = io.BytesIO()
+        seen = []
+        original = self.runner
+        def runner(args, **kwargs):
+            if args[0] == "/usr/bin/sudo" or args[1:] == ["helper", "install"]:
+                self.assertIs(kwargs["stdin"], terminal)
+                self.assertIs(kwargs["stdout"], terminal)
+                self.assertIs(kwargs["stderr"], terminal)
+                self.assertFalse(any(t.name == "anytls-auth-heartbeat" for t in __import__('threading').enumerate()))
+                seen.append(args)
+            return original(args, **kwargs)
+        self.app.mkdir(exist_ok=True)
+        self.processes = []
+        def stages(message, **kwargs):
+            self.assertNotIn("受限助手", message)
+            return contextlib.nullcontext()
+        with mock.patch.object(b, "stage", side_effect=stages), mock.patch.object(b.WebUI, "restart"):
+            b.install_verified(bundle, TAG, self.app, self.home, runner, {"HOME": str(self.home)}, tty=lambda: terminal)
+        self.assertEqual(seen[0][:2], ["/usr/bin/sudo", "-v"])
+        self.assertEqual(seen[1][1:], ["helper", "install"])
+
+    def test_authorization_denial_preserves_binary_and_does_not_install_helper(self):
+        _, bundle, _, _ = self.verified()
+        self.app.mkdir(exist_ok=True)
+        target = self.app / "anytls-macos"
+        target.write_bytes(b"old-binary")
+        original = self.runner
+        self.processes = []
+        def runner(args, **kwargs):
+            if args[:2] == ["/usr/bin/sudo", "-v"]:
+                raise subprocess.CalledProcessError(1, args)
+            return original(args, **kwargs)
+        with self.assertRaisesRegex(ValueError, "系统授权未完成"):
+            b.install_verified(bundle, TAG, self.app, self.home, runner, {"HOME": str(self.home)}, tty=lambda: io.BytesIO())
+        self.assertEqual(target.read_bytes(), b"old-binary")
+        self.assertFalse(any(args[1:] == ["helper", "install"] for args, _ in self.processes))
+        self.assertFalse(list(self.app.glob(".anytls-bin-candidate-*")))
+        self.webui_factory.return_value.restart.assert_not_called()
+
     def test_verified_download_no_execute_permissions(self):
         tag, bundle, digest, commit = self.verified()
         self.assertEqual((tag, digest, commit), (TAG, self.info["binary_sha256"], COMMIT))
@@ -225,7 +266,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual((self.app / "anytls-macos").read_bytes(), BINARY)
         self.assertEqual((self.app / "config.yaml").read_bytes(), b"private-real-config")
         self.assertFalse(list(self.app.glob(".anytls-bin-candidate-*")))
-        self.assertEqual([args[1:] for args, _ in self.processes], [["version"], ["helper", "install"], ["helper", "status"], ["version"]])
+        self.assertEqual([args[1:] for args, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"], ["version"]])
 
     def test_first_install_example_and_link(self):
         _, bundle, _, _ = self.verified()
@@ -312,7 +353,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(report["executed"])
         self.webui_factory.return_value.preflight.assert_called_once()
         self.webui_factory.return_value.restart.assert_called_once()
-        self.assertEqual([args[1:] for args, _ in self.processes], [["version"], ["helper", "install"], ["helper", "status"], ["version"]])
+        self.assertEqual([args[1:] for args, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"], ["version"]])
         kept = list((self.app / "releases").iterdir())
         self.assertEqual(len(kept), 1)
         self.assertEqual((kept[0] / self.source_name).read_bytes(), self.source)
@@ -385,7 +426,7 @@ class InstallerTests(unittest.TestCase):
         kept, = (self.app / "releases").iterdir()
         self.assertEqual((kept / self.ccs_name).read_bytes(), self.source)
         self.assertEqual((self.app / "anytls-macos").read_bytes(), self.files["bin/anytls-macos"])
-        self.assertEqual([command[1:] for command, _ in self.processes], [["version"], ["helper", "install"], ["helper", "status"], ["version"]])
+        self.assertEqual([command[1:] for command, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"], ["version"]])
         self.webui_factory.return_value.restart.assert_called_once()
 
     def test_platform_and_root_rejected_before_download(self):
