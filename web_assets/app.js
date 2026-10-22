@@ -2,7 +2,7 @@
 // No HTML strings are populated from API data. Credentials remain in memory only.
 const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
-let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeController=null;
+let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {
  PROFILE_INVALID:'方案名称或标识无效，请检查后重试。', PROFILE_NOT_FOUND:'方案已不存在，请刷新方案列表。', PROFILE_CONFLICT:'配置或方案已改变，请刷新后再切换。', PROFILE_STORE_UNAVAILABLE:'方案存储不可用，请检查本机目录权限。', PROFILE_SAVE_FAILED:'方案保存失败，请检查本机目录权限后刷新确认。', PROFILE_SWITCH_FAILED_ROLLED_BACK:'方案切换失败，已恢复旧配置；请检查配置后重试。', PROFILE_STATE_UNCERTAIN:'严重警告：方案切换恢复未能确认，配置与运行状态未知。请检查本机配置与备份，不要继续覆盖。',
  CONFIG_CONVERSION_TIMEOUT:'订阅已进入配置转换，但获取远程规则集或展开转换超过处理期限。不是订阅格式判定失败；原配置未改变，请检查规则集网络连接。', CONFIG_CONVERSION_CANCELED:'配置转换已取消，未生成预览，原配置未改变。', CONFIG_CONVERSION_TOO_LARGE:'转换后的配置超过 32 MiB，未生成预览或修改原配置；规则未被删除或去重。', CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
@@ -10,7 +10,7 @@ const messages = {
  IMPORT_FORMAT_UNSUPPORTED:'格式不支持：请提供 Clash / Mihomo 或 AnyTLS 原生 YAML；暂不支持 URI 或 Base64。', IMPORT_INVALID:'导入配置无效或超过 32 MiB，请检查 YAML、节点与规则。', IMPORT_FETCH_FAILED:'订阅获取失败，请检查 HTTPS 地址与网络后重试。', IMPORT_SOURCE_REJECTED:'订阅来源被拒绝，请使用允许访问的 HTTPS 地址。', IMPORT_CONFLICT:'当前配置已更改，请重新预览后导入。', IMPORT_PREVIEW_EXPIRED:'预览已过期，请重新预览。', IMPORT_BACKUP_FAILED:'备份失败，未继续导入。请检查应用目录权限。', IMPORT_WRITE_FAILED:'配置写入未完成，请重新读取配置并确认当前状态。', IMPORT_ROLLBACK_FAILED:'严重警告：导入回退失败，配置与运行状态未知。请在本机检查配置、备份和 VPN；不要继续覆盖保存。', SUBSCRIPTION_UNAVAILABLE:'已保存订阅不可用，请重新输入 HTTPS 订阅地址。',
  HELPER_CONFIG_MISMATCH:'助手绑定的配置与当前控制台不一致。请确认 VPN 状态，并在当前安装目录重新执行 anytls helper install。', HELPER_UNAVAILABLE:'特权助手未安装或不可用。请在这台 Mac 的终端运行 anytls helper install，一次系统授权后即可自动控制。', FORBIDDEN:'特权助手拒绝当前用户，请用安装助手时授权的账户操作。', PREFLIGHT_FAILED:'配置预检失败，未停止现有 VPN。请检查节点、证书和规则。', STOP_FAILED:'停止或路由恢复检查失败，未继续启动。', START_FAILED:'新配置启动失败，请检查 VPN 状态和连接配置。', STATE_FAILED:'助手无法确认服务状态。', BUSY:'助手正在执行另一项操作，请等待。', SERVICE_ACTION_FAILED:'服务操作未完成，请检查助手状态。',
  AUTH_REQUIRED:'登录已过期，请重新登录。', INVALID_CREDENTIALS:'账户或应用专用密码不正确。', LOGIN_THROTTLED:'尝试次数过多，请一分钟后重试。', SESSION_LIMIT:'登录会话已达上限，请退出其他会话或轮换密码。',
- INVALID_ORIGIN:'请求来源不匹配，请直接使用本机地址打开控制台。', CSRF_REQUIRED:'登录校验已失效，请重新登录。', CONFIG_CONFLICT:'配置已被其他编辑器修改。请复制你的修改，重新读取后合并。', IF_MATCH_REQUIRED:'请先读取原始配置，再保存。', CONFIG_VALIDATION_FAILED:'配置校验失败：请检查 YAML、节点类型、组选择、规则顺序及引用文件。文件未保存。', CONFIG_UNAVAILABLE:'无法读取应用目录下的配置文件。', CONFIG_INVALID:'配置无法解析，请在本机检查 YAML。', GROUP_SELECTION_REJECTED:'不能保存这个选择，请检查分组成员与循环引用。', NODE_SELECTION_REJECTED:'节点不可选，请补全 AnyTLS 节点参数。', ACTION_BUSY:'另一项操作正在执行，请等待完成。', INVALID_INPUT:'输入格式不正确。', UPDATE_UNAVAILABLE:'更新功能不可用：当前程序未提供有效更新结果，或网络/版本校验失败。', SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE:'操作未完成：管理员授权被取消、缺少图形会话或服务操作失败。请在终端检查服务；网页不会接收系统密码。', SERVICE_STATE_NOT_CONFIRMED:'操作后未能确认真实服务状态，请在本机检查。'
+ INVALID_ORIGIN:'请求来源不匹配，请直接使用本机地址打开控制台。', CSRF_REQUIRED:'登录校验已失效，请重新登录。', CONFIG_CONFLICT:'配置已被其他编辑器修改。请复制你的修改，重新读取后合并。', IF_MATCH_REQUIRED:'请先读取原始配置，再保存。', CONFIG_VALIDATION_FAILED:'配置校验失败：请检查 YAML、节点类型、组选择、规则顺序及引用文件。文件未保存。', CONFIG_UNAVAILABLE:'无法读取应用目录下的配置文件。', CONFIG_INVALID:'配置无法解析，请在本机检查 YAML。', GROUP_SELECTION_REJECTED:'不能保存这个选择，请检查分组成员与循环引用。', NODE_SELECTION_REJECTED:'节点不可选，请补全 AnyTLS 节点参数。', ACTION_BUSY:'另一项操作正在执行，请等待完成。', PROBE_BUSY:'测速名额已满，请稍后重试。', INVALID_INPUT:'输入格式不正确。', UPDATE_UNAVAILABLE:'更新功能不可用：当前程序未提供有效更新结果，或网络/版本校验失败。', SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE:'操作未完成：管理员授权被取消、缺少图形会话或服务操作失败。请在终端检查服务；网页不会接收系统密码。', SERVICE_STATE_NOT_CONFIRMED:'操作后未能确认真实服务状态，请在本机检查。'
 };
 // Fixed vocabulary only: never display raw helper/tool errors or unknown enum values.
 const diagnosticStages = {
@@ -115,8 +115,12 @@ async function operation(label, fn) {
  if (busy) return;
  const session=sessionGeneration;
  busy=true; const enabled=[...document.querySelectorAll('button')].filter(b=>!b.disabled); enabled.forEach(b=>b.disabled=true); renderExtraButtons();notice(label+'，请稍候…');
- try { await fn(); if (session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(session===sessionGeneration)notice(e.message, true); }
- finally { busy=false; enabled.forEach(b=>{if(b.isConnected)b.disabled=false;}); if (!etag) $('save-config').disabled=true; $('run-update').disabled=!updateAvailable; renderServiceButtons(); renderImportButtons();renderExtraButtons(); }
+ // An invalidated probe batch may release its UI immediately. Its late finally
+ // must never unlock a newer operation or restore that operation's buttons.
+ const finish=()=>{if(finishOperation!==finish)return;finishOperation=null;busy=false;enabled.forEach(b=>{if(b.isConnected)b.disabled=false;});if(!etag)$('save-config').disabled=true;$('run-update').disabled=!updateAvailable;renderServiceButtons();renderImportButtons();renderExtraButtons();};
+ finishOperation=finish;
+ try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
+ finally { finish(); }
 }
 function showLogin() {sessionGeneration++;invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';updateAvailable=false;$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
 async function enterConsole(data) {csrf=data.csrf;$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';await status();}
@@ -168,7 +172,7 @@ function filterNodes(){
 $('nodes-search').addEventListener('input',filterNodes);
 async function loadNodes(){const request=++nodesRequest,session=sessionGeneration;cancelProbes();nodesEtag='';renderExtraButtons();let result;try{result=await api('/nodes');}catch(e){if(request===nodesRequest&&session===sessionGeneration)invalidateNodes();throw e;}if(request!==nodesRequest||session!==sessionGeneration||!csrf)return;if(!Array.isArray(result.nodes)||typeof result.etag!=='string'||!result.etag){invalidateNodes();throw new Error('节点列表响应不完整，请重新读取。');}const target=$('nodes-list');target.replaceChildren();nodesLoaded=true;nodesEtag=result.etag;
  for(const n of result.nodes){const row=element('article',undefined,'item'),content=element('div',undefined,'item-content');row.nodeSearch=n;row.classList.toggle('selected',Boolean(n.selected));const heading=element('div',undefined,'node-heading');heading.append(element('strong',n.name),element('span',n.type,'badge'));if(n.selected)heading.append(element('span','当前启动节点','badge current'));if(n.skipVerify)heading.append(element('span','跳过证书校验 · 风险','badge risky'));content.append(heading,element('p',n.server+':'+n.port+' · '+(n.hasPassword?'已配置密码':'未配置密码'),'node-meta'));row.append(content);const choose=element('button',n.selected?'当前启动节点':'设为启动节点');choose.disabled=!n.selectable||n.selected;choose.onclick=()=>operation('保存节点选择',async()=>{const saved=await api('/nodes/selection',{method:'POST',body:saveBody({name:n.name})});savedFeedback(saved);await refreshAfterSave(loadNodes);}); row.append(choose);
- const probes=element('div',undefined,'node-probes'),probeResult=element('p','尚未测速','probe-result');probeResult.setAttribute('role','status');row.probeResult=probeResult;row.probeName=n.name;
+ const probes=element('div',undefined,'node-probes'),probeResult=element('p','尚未测速','probe-result');probeResult.setAttribute('role','status');probeResult.dataset.latency='unknown';row.probeResult=probeResult;row.probeName=n.name;
  for(const [mode,label] of [['https','代理延迟'],['tcp','TCP延迟']]){const button=element('button',label);button.type='button';button.dataset.probe=mode;button.onclick=()=>startProbes([row],mode);probes.append(button);}probes.append(probeResult);row.append(probes);
  const edit=element('details');const summary=element('summary','编辑节点参数');edit.append(summary);
  const form=element('form');form.className='node-form';
@@ -375,32 +379,51 @@ $('copy-editor').onclick=async()=>{
  try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw new Error('clipboard unavailable');await navigator.clipboard.writeText(text);if(session===sessionGeneration&&csrf)notice('已复制编辑区配置文本（含节点密码及未保存草稿）；未保存或应用。');}
  catch{if(session!==sessionGeneration||!csrf)return;const editor=$('yaml-editor');editor.focus();editor.select();notice('浏览器未允许自动复制，尚未复制。已选中编辑区，请按 ⌘C / Ctrl+C 手动复制（含节点密码）。',true);}
 };
-function cancelProbes(){probeGeneration++;if(probeController)probeController.abort();probeController=null;for(const row of $('nodes-list').querySelectorAll('article'))if(row.probeResult&&row.probeResult.dataset.pending==='true'){row.probeResult.textContent='测速已取消，未获得结果。';row.probeResult.dataset.pending='false';}}
+function cancelProbes(){
+ probeGeneration++;const batch=probeBatch;if(!batch)return;
+ probeBatch=null;probeRunning=false;
+ for(const [controller,timer] of batch.controllers){clearTimeout(timer);controller.abort();}batch.controllers.clear();
+ for(const row of batch.rows)if(row.probeResult.dataset.pending==='true'){
+  row.probeResult.textContent='测速已取消，未获得结果。';row.probeResult.dataset.pending='false';row.probeResult.dataset.latency='unknown';
+ }
+ batch.finish();renderExtraButtons();
+}
 function invalidateNodes(){nodesRequest++;cancelProbes();nodesEtag='';nodesLoaded=false;$('nodes-list').replaceChildren();$('nodes-count').textContent='尚未读取';renderExtraButtons();}
 $('cancel-probes').onclick=()=>{cancelProbes();notice('已取消测速，不再测试后续节点。');};
 $('probe-all').onclick=()=>startProbes([...$('nodes-list').querySelectorAll('article')],'https');
 function startProbes(rows,mode){
  if(busy||!csrf||!nodesEtag||!rows.length)return;
+ rows=rows.filter(row=>row.isConnected&&row.probeResult);if(!rows.length)return;
  const generation=++probeGeneration,session=sessionGeneration,expected=nodesEtag;
  const valid=()=>generation===probeGeneration&&session===sessionGeneration&&csrf&&expected===nodesEtag;
- return operation(rows.length>1?'顺序测试全部代理延迟':'测试节点延迟',async()=>{
-  probeRunning=true;renderExtraButtons();let completed=0;
-  try{for(const row of rows){
-   if(!valid()||!row.isConnected)break;
-   const output=row.probeResult,label=mode==='tcp'?'TCP 延迟':'代理延迟';output.textContent=label+' · 正在测试…';output.dataset.pending='true';
-   const controller=new AbortController();probeController=controller;let timedOut=false;const timer=setTimeout(()=>{timedOut=true;controller.abort();},8000);
+ return operation(rows.length>1?'并发测试全部代理延迟':'测试节点延迟',async()=>{
+  const batch={rows,controllers:new Map(),finish:finishOperation};probeBatch=batch;probeRunning=true;
+  const label=mode==='tcp'?'TCP 延迟':'代理延迟';let completed=0,next=0;
+  for(const row of rows){row.probeResult.textContent=label+' · 等待测试…';row.probeResult.dataset.pending='true';row.probeResult.dataset.latency='pending';}
+  renderExtraButtons();
+  async function worker(){while(valid()&&next<rows.length){
+   const row=rows[next++];if(!row.isConnected)continue;
+   const output=row.probeResult;output.textContent=label+' · 正在测试…';
+   const controller=new AbortController();let timedOut=false;
+   const timer=setTimeout(()=>{timedOut=true;controller.abort();},8000);batch.controllers.set(controller,timer);
    try{
     const data=await api('/nodes/probe',{method:'POST',headers:{'If-Match':expected},body:{name:row.probeName,mode,confirm_insecure:true},signal:controller.signal});
-    if(!valid()||!row.isConnected)break;
-    if(data.config_etag!==expected){invalidateNodes();notice('配置已改变，旧测速结果已丢弃。请刷新节点。',true);break;}
-    if(data.name!==row.probeName||data.mode!==mode||!['OK','FAILED','TIMEOUT','UNSUPPORTED'].includes(data.status)||data.status==='OK'&&(!Number.isFinite(data.latency_ms)||data.latency_ms<0))throw new Error('测速响应不完整，未获得可靠结果。');
-    const states={FAILED:'失败',TIMEOUT:'超时',UNSUPPORTED:'不支持'};
-    output.textContent=label+' · '+(data.status==='OK'?data.latency_ms+' ms':states[data.status])+' · '+displayTime(data.checked_at)+(data.risk_insecure?' · 跳过证书校验风险':'');completed++;
-   }catch(error){if(!valid()||!row.isConnected)break;if(error.code==='CONFIG_CONFLICT'||error.code==='PROFILE_CONFLICT'){invalidateNodes();notice('配置已改变，请刷新节点后重新测速。',true);break;}output.textContent=label+' · '+(timedOut?'超时（8 秒），未获得结果。':error.message);}
-   finally{clearTimeout(timer);output.dataset.pending='false';if(probeController===controller)probeController=null;}
-  }
-  if(valid())notice('延迟测试结束：收到 '+completed+' / '+rows.length+' 个结果；未切换节点或 VPN。');
-  }finally{probeRunning=false;probeController=null;renderExtraButtons();}
+    if(!valid()||!row.isConnected)return;
+    if(data&&typeof data==='object'&&data.config_etag!==expected){invalidateNodes();notice('配置已改变，旧测速结果已丢弃。请刷新节点。',true);return;}
+    if(!data||data.name!==row.probeName||data.mode!==mode||!['OK','FAILED','TIMEOUT','UNSUPPORTED'].includes(data.status)||data.status==='OK'&&(!Number.isFinite(data.latency_ms)||data.latency_ms<0))throw new Error('测速响应不完整，未获得可靠结果。');
+    const ms=data.status==='OK'?Math.round(data.latency_ms):null,states={FAILED:'失败',TIMEOUT:'超时',UNSUPPORTED:'不支持'};
+    output.dataset.latency=ms!==null?(ms<200?'fast':ms<500?'medium':'slow'):'failed';
+    output.textContent=label+' · '+(ms!==null?ms+' ms':states[data.status])+' · '+displayTime(data.checked_at)+(data.risk_insecure?' · 跳过证书校验风险':'');completed++;
+   }catch(error){
+    if(!valid()||!row.isConnected)return;
+    if(error.code==='CONFIG_CONFLICT'||error.code==='PROFILE_CONFLICT'){invalidateNodes();notice('配置已改变，请刷新节点后重新测速。',true);return;}
+    output.dataset.latency='failed';output.textContent=label+' · '+(timedOut?'超时（8 秒），未获得结果。':'失败 · '+error.message);
+   }finally{clearTimeout(timer);batch.controllers.delete(controller);if(valid()&&row.isConnected)output.dataset.pending='false';}
+  }}
+  try{
+   await Promise.all(Array.from({length:Math.min(8,rows.length)},()=>worker()));
+   if(valid())notice('延迟测试结束：收到 '+completed+' / '+rows.length+' 个结果；未切换节点或 VPN。');
+  }finally{if(probeBatch===batch){probeBatch=null;probeRunning=false;renderExtraButtons();}}
  });
 }
 $('run-update').onclick=()=>{if(!confirm('将检查并安装官方更新、保留现有配置，不自动重启服务。继续？'))return;operation('安装更新',async()=>{const data=await api('/update',{method:'POST',body:{confirm:true}});$('update-result').textContent=JSON.stringify(data,null,2);});};

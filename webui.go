@@ -38,7 +38,7 @@ type webConsole struct {
 	failures                 int
 	loginWindow              time.Time
 	blockedUntil             time.Time
-	actionMu                 sync.Mutex
+	actionMu                 sync.RWMutex
 	metaMu                   sync.Mutex
 	pending                  bool
 	pendingKnown             bool
@@ -50,6 +50,8 @@ type webConsole struct {
 	importPending            *webImportCandidate // guarded by actionMu
 	importFetch              func(context.Context, string) ([]byte, error)
 	nodeProbe                func(context.Context, node, string) (float64, error)
+	probeSlotsOnce           sync.Once
+	probeSlots               chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
 }
 
 func newWebConsole(config, password string, port int) *webConsole {
@@ -279,6 +281,11 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		webJSON(rw, 200, map[string]bool{"ok": true})
 		return
 	}
+	// Read-only probes own their short action-lock phases, never the network wait.
+	if r.URL.Path == "/api/v1/nodes/probe" && r.Method == http.MethodPost {
+		w.probeNodeHandler(rw, r)
+		return
+	}
 	// A long native authorization or build does not monopolize auth/status GETs.
 	if !w.actionMu.TryLock() {
 		webError(rw, 409, "ACTION_BUSY")
@@ -468,8 +475,6 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		w.copyProfile(rw, r)
 	case r.URL.Path == "/api/v1/profiles/switch" && r.Method == "POST":
 		w.switchProfile(rw, r)
-	case r.URL.Path == "/api/v1/nodes/probe" && r.Method == "POST":
-		w.probeNodeHandler(rw, r)
 	case r.URL.Path == "/api/v1/import/export" && r.Method == "POST":
 		w.exportConverted(rw, r)
 	case r.URL.Path == "/api/v1/import/preview" && r.Method == "POST":

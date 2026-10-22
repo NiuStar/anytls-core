@@ -28,7 +28,7 @@
 | GET /nodes | `{nodes:[{name,type,server,port,hasPassword,selectable,skipVerify,sni,selected}],etag}` |
 | POST /nodes/selection | `{name}`；实际 saveSelection + readback → `{ok,changed,pendingReload}` |
 | PUT /nodes | `{name,server,port,password,sni}` + If-Match；空 password 保留；只编辑既有显式节点，保留未知字段/注释，拒绝共享 alias 目标 → `{ok,changed,etag,pendingReload}` |
-| POST /nodes/probe | `{name,mode:"tcp"或"https",confirm_insecure:true}` + If-Match；精确当前配置节点、8秒有界；结果含mode/status/latency_ms/checked_at/config_etag，失败不返回虚假0ms；不保存或切换节点。TCP不等于AnyTLS认证／网络可用；HTTPS通过实际AnyTLS访问固定204目标，不是带宽测速。 |
+| POST /nodes/probe | `{name,mode:"tcp"或"https",confirm_insecure:true}` + If-Match；精确当前配置节点、8秒网络context；每控制台TCP/HTTPS共享最多8个活动名额，超额429 PROBE_BUSY，无排队；网络与同步清理不持配置动作锁，捕获／收尾共享读锁，配置／服务写锁冲突409 ACTION_BUSY，配置变化412；结果含mode/status/latency_ms/checked_at/config_etag，API保留浮点、UI显示整数分色；失败不返回虚假0ms，不保存或切换节点。TCP不等于AnyTLS认证／网络可用；HTTPS通过实际AnyTLS访问固定204目标，不是带宽测速。同步构建/Close不是OS级硬期限。 |
 | GET /profiles | 私有方案元数据列表及当前config etag，不返回配置、密码或订阅令牌。 |
 | POST /profiles | `{name}`；保存磁盘当前配置、选择与私有订阅为不可变方案，不包含未保存编辑草稿。 |
 | POST /profiles/copy | `{id,name}`；复制已有方案为新ID，不改变当前配置或VPN。 |

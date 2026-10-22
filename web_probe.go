@@ -27,12 +27,22 @@ type webNodeProbeResult struct {
 }
 
 // Called by the authenticated, CSRF-protected dispatcher. Probes never save,
-// select, reload or start the VPN. The parent dispatcher owns actionMu.
+// select, reload or start the VPN. Both short actionMu phases are shared reads.
 func (w *webConsole) probeNodeHandler(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		webError(rw, 405, "METHOD_NOT_ALLOWED")
 		return
 	}
+	if !w.actionMu.TryRLock() {
+		webError(rw, 409, "ACTION_BUSY")
+		return
+	}
+	locked := true
+	defer func() {
+		if locked {
+			w.actionMu.RUnlock()
+		}
+	}()
 	var in struct {
 		Name            string `json:"name"`
 		Mode            string `json:"mode"`
@@ -78,6 +88,17 @@ func (w *webConsole) probeNodeHandler(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 400, "INSECURE_CONFIRMATION_REQUIRED")
 		return
 	}
+	w.probeSlotsOnce.Do(func() {
+		w.probeSlots = make(chan struct{}, 8)
+	})
+	slots := w.probeSlots
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	default:
+		webError(rw, 429, "PROBE_BUSY")
+		return
+	}
 	result := webNodeProbeResult{Name: in.Name, Mode: in.Mode, Status: "FAILED", RiskInsecure: risk, ConfigETag: etag}
 	ctx, cancel := context.WithTimeout(r.Context(), webNodeProbeTimeout)
 	defer cancel()
@@ -85,12 +106,20 @@ func (w *webConsole) probeNodeHandler(rw http.ResponseWriter, r *http.Request) {
 	if probe == nil {
 		probe = webNodeProbe
 	}
+	w.actionMu.RUnlock()
+	locked = false
 	var ms float64
 	if selected.Type != "anytls" {
 		err = errNodeProbeUnsupported
 	} else {
 		ms, err = probe(ctx, selected, in.Mode)
 	}
+	// Synchronous probe cleanup has completed before finalization or slot release.
+	if !w.actionMu.TryRLock() {
+		webError(rw, 409, "ACTION_BUSY")
+		return
+	}
+	locked = true
 	latest, readErr := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
 	if readErr != nil || `"`+shaHex(latest)+`"` != etag {
 		webError(rw, 412, "CONFIG_CONFLICT")
