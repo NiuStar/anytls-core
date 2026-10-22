@@ -1,6 +1,6 @@
 # anytls-core
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前版本 **[v2026-10-21-03](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-21-03)** 提供预编译 macOS arm64 安装包和一次授权助手；[发布验证与边界](docs/binary-release-validation.md)。旧版说明见 [v2026-10-21-02](docs/releases/v2026-10-21-02.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。当前稳定版 **[v2026-10-21-06](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-21-06)** 提供 Intel（amd64）和 Apple Silicon（arm64）预编译安装包、Clash 配置转换／跳过清单／导出及一次授权助手；[双架构发布验证](docs/releases/v2026-10-21-06-public-validation.md)。历史验证见 [v03 发布边界](docs/binary-release-validation.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
