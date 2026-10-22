@@ -413,6 +413,16 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(result["executed"])
         self.assertFalse(self.app.exists())
 
+    def test_unresolved_hardware_stops_full_install_before_download(self):
+        args = types.SimpleNamespace(version=TAG, check_download=False)
+        for rc, value in ((1, b""), (0, b""), (0, b"invalid")):
+            runner = mock.Mock(return_value=types.SimpleNamespace(returncode=rc, stdout=value))
+            with self.subTest(rc=rc, value=value), self.assertRaisesRegex(ValueError, "cannot establish"):
+                b.run(args, self.transport, runner, system="Darwin", machine="x86_64", euid=501, home=self.home)
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.app.exists())
+        self.webui_factory.assert_not_called()
+
     def test_install_arch_override_rejected_even_if_matching_host(self):
         for arch in ("arm64", "amd64"):
             args = types.SimpleNamespace(version=TAG, check_download=False, arch=arch)
@@ -497,7 +507,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_x86_aliases_and_rosetta_sysctl_signals(self):
         for machine in ("x86_64", "amd64"):
-            for values, expected in (((b"0\n", b"0\n"), "amd64"), ((b"1\n",), "arm64"), ((b"0\n", b"1\n"), "arm64"), ((b"", b""), "amd64")):
+            for values, expected in (((b"0\n", b"0\n"), "amd64"), ((b"1\n",), "arm64"), ((b"0\n", b"1\n"), "arm64")):
                 runner = mock.Mock(side_effect=[types.SimpleNamespace(stdout=v, returncode=0) for v in values])
                 self.assertEqual(b.detect_arch("Darwin", machine, runner), expected)
                 self.assertEqual([call.args[0] for call in runner.call_args_list], [["/usr/sbin/sysctl", "-in", key] for key in ("hw.optional.arm64", "sysctl.proc_translated")[:len(values)]])

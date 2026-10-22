@@ -110,11 +110,16 @@ def detect_arch(system, machine, runner=subprocess.run):
         return "arm64"
     i.require(machine in ("x86_64", "amd64"), "unsupported macOS architecture")
     # A translated Python reports x86_64 on Apple Silicon. Prefer native arm64.
+    hardware_intel = False
     for key in ("hw.optional.arm64", "sysctl.proc_translated"):
         result = runner(["/usr/sbin/sysctl", "-in", key], stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE, timeout=5, check=False)
-        if result.returncode == 0 and result.stdout.strip() == b"1":
+        value = result.stdout.strip()
+        if result.returncode == 0 and value == b"1":
             return "arm64"
+        if key == "hw.optional.arm64" and result.returncode == 0 and value == b"0":
+            hardware_intel = True
+    i.require(hardware_intel, "cannot establish native macOS architecture; no download or installation performed")
     return "amd64"
 
 
