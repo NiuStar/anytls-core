@@ -242,10 +242,19 @@ def publish_binary(candidate, target, app, replace=os.replace):
         backups = app / "backups"
         backups.mkdir(mode=0o700, exist_ok=True)
         backup = backups / ("update-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex + "-anytls")
+        original_sha = hashlib.sha256()
         with target.open("rb") as src, backup.open("xb") as dst:
-            shutil.copyfileobj(src, dst, 1024 * 1024)
+            for block in iter(lambda: src.read(1024 * 1024), b""):
+                original_sha.update(block)
+                dst.write(block)
             dst.flush()
             os.fsync(dst.fileno())
+        # Independently reopen AFTER close; never publish an unverified backup.
+        backup_sha = hashlib.sha256()
+        with backup.open("rb") as src:
+            for block in iter(lambda: src.read(1024 * 1024), b""):
+                backup_sha.update(block)
+        require(backup_sha.digest() == original_sha.digest(), "backup SHA256 mismatch")
         backup.chmod(0o700)
     candidate.chmod(0o700)
     with candidate.open("rb") as f:

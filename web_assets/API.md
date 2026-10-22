@@ -40,10 +40,10 @@
 | PUT /config | `{yaml}` + `If-Match: "SHA256"`；无 header 428，冲突412，无效422；同目录0600原子写入并读回 → `{ok,changed,etag,pendingReload}` |
 | POST /service/start, /service/stop, /service/reload | `{confirm_insecure:false}`；只布尔同意，不接收命令；原生授权及 launchd 状态读回 → `{ok,loaded,running,pendingReload,readiness}` |
 | GET /version | `{version}` 是当前控制台进程版本，不假冒活动快照版本 |
-| GET /update-check | 固定自身 `update --check` 有界子进程；解析真实 sibling contract `current_version/latest_version/update_available/source_only`，只输出 `{status,current,latest,available,sourceOnly,updated,restartRequired}` |
-| POST /update | `{confirm:true}`；先固定自身 check，再 `update --version CHECKED_VERSION` 用户级子进程；丢弃输出，执行替换后自身 `version` 读回匹配才报告 UPDATED；不重启服务；失败503 UPDATE_UNAVAILABLE |
+| GET /update-check | 固定自身 `update --check` 有界子进程；保持 sibling 五字段 CLI contract，只输出 `{status,current,installed,latest,available,sourceOnly,updated,restartRequired}`。current 永远是本 WebUI 内存版本，installed 是磁盘 sibling 报告；不相同时 restartRequired=true，status=RESTART_REQUIRED（可安装更新时优先 UPDATE_AVAILABLE）。响应丢失后重查仍保留重启提示。 |
+| POST /update | `{confirm:true}`；先固定自身 check，再 `update --version CHECKED_VERSION` 用户级子进程；丢弃输出，执行替换后自身 `version`（独立20秒期限）读回匹配才报告 UPDATED，installed=目标版本、restartRequired=true；不重启WebUI/VPN。失败503，只投影固定错误码 UPDATE_CHECK_FAILED(40)、UPDATE_PYTHON_REQUIRED(41)、UPDATE_BINARY_UNAVAILABLE(42)、UPDATE_DOWNLOAD_FAILED(43)、UPDATE_VALIDATION_FAILED(44)、UPDATE_PUBLISH_FAILED(45)、UPDATE_VERIFY_FAILED(46)、UPDATE_UNAVAILABLE(47/未知)。核验失败或超时不保证旧文件未变，不自动回滚，需独立核对磁盘版本、摘要和备份。 |
 
-服务动作原生授权最长3分钟，检查升级30秒，安装更新10分钟。认证与状态读取不持有 action 锁；修改、服务动作、升级共用 TryLock，忙返回409 ACTION_BUSY，避免排队请求超时后意外执行。更新检查是只读，可与状态并行。
+服务动作原生授权最长3分钟，检查升级30秒，安装接纳前请求期限10分钟；接纳后独立于HTTP取消同步等待CLI及版本读回，CLI以35分钟context kill并Wait唯一Python publisher。认证与状态读取不持有 action 锁；修改、服务动作、升级共用 TryLock，忙返回409 ACTION_BUSY，避免排队请求超时后意外执行。更新检查是只读，可与状态并行。
 
 ## 配置与运行边界
 

@@ -253,7 +253,7 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		}
 		mime := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
 		if name == "index.html" {
-			b = bytes.Replace(b, []byte(`<div class="note">升级后`), []byte(`<div class="note">安装开始后，关闭网页、断开连接或十分钟请求超时均不会停止安装；其他修改会保持忙碌，直到安装退出并完成版本核验。请勿强制退出控制台或更新进程；进程崩溃不保证安装生命周期安全。升级后`), 1)
+			b = bytes.Replace(b, []byte(`<div class="note">更新仅替换`), []byte(`<div class="note">安装开始后，关闭网页、断开连接或十分钟请求超时均不会停止安装；其他修改会保持忙碌，直到安装退出并完成版本核验。请勿强制退出控制台或更新进程；进程崩溃不保证安装生命周期安全。更新仅替换`), 1)
 		}
 		rw.Header().Set("Content-Type", mime[name])
 		rw.Write(b)
@@ -401,7 +401,7 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 		defer cancel()
 		result, err := w.updateAction(ctx, true)
 		if err != nil {
-			webError(rw, 503, "UPDATE_UNAVAILABLE")
+			webError(rw, 503, webUpdateErrorName(err))
 			return
 		}
 		webJSON(rw, 200, result)
@@ -699,7 +699,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		result, err := w.updateAction(ctx, false)
 		if err != nil {
-			webError(rw, 503, "UPDATE_UNAVAILABLE")
+			webError(rw, 503, webUpdateErrorName(err))
 			return
 		}
 		webJSON(rw, 200, result)
@@ -790,59 +790,68 @@ func webUpdateWithCommands(ctx context.Context, check bool, binary string, comma
 	var out webBoundedOutput
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil || out.overflow {
-		return nil, errors.New("update check unavailable")
+	if err := cmd.Run(); err != nil {
+		return nil, updateChildFailure(err)
+	}
+	if out.overflow {
+		return nil, updateFailure(40, errors.New("update check output overflow"))
 	}
 	var result struct {
 		Current    string `json:"current_version"`
 		Latest     string `json:"latest_version"`
 		Available  *bool  `json:"update_available"`
-		SourceOnly bool   `json:"source_only"`
+		SourceOnly *bool  `json:"source_only"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(out.b))
 	if err := dec.Decode(&result); err != nil {
-		return nil, errors.New("update response unavailable")
+		return nil, updateFailure(40, err)
 	}
 	var extra any
-	if dec.Decode(&extra) != io.EOF || result.Available == nil || result.Current == "" || result.Latest == "" {
-		return nil, errors.New("invalid update response")
+	if dec.Decode(&extra) != io.EOF || result.Available == nil || result.SourceOnly == nil || result.Current == "" || validateUpdateVersion(result.Latest) != nil {
+		return nil, updateFailure(40, errors.New("invalid update response"))
 	}
-	for _, s := range []string{result.Current, result.Latest} {
-		if len(s) > 128 || strings.ContainsAny(s, "\r\n\x00") {
-			return nil, errors.New("invalid update version")
-		}
+	if len(result.Current) > 128 || strings.ContainsAny(result.Current, "\r\n\x00") {
+		return nil, updateFailure(40, errors.New("invalid installed version"))
 	}
-	response := map[string]any{"current": result.Current, "latest": result.Latest, "available": *result.Available, "sourceOnly": result.SourceOnly, "updated": false, "restartRequired": false, "status": "UP_TO_DATE"}
+	// The sibling check runs from disk; it cannot identify this running WebUI.
+	restart := result.Current != currentVersion()
+	response := map[string]any{"current": currentVersion(), "installed": result.Current, "latest": result.Latest, "available": *result.Available, "sourceOnly": *result.SourceOnly, "updated": false, "restartRequired": restart, "status": "UP_TO_DATE"}
+	if restart {
+		response["status"] = "RESTART_REQUIRED"
+	}
 	if *result.Available {
 		response["status"] = "UPDATE_AVAILABLE"
 	}
 	if !check && *result.Available {
-		// Pin the checked stable version, not a request-controlled URL/command.
-		// Cancellation still aborts the read-only check, or admission before install.
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if *result.SourceOnly {
+			return nil, updateFailure(42, errors.New("prebuilt materials unavailable"))
 		}
-		// Once admitted, synchronously own and join the CLI, independent of HTTP
-		// cancellation. ServeHTTP retains actionMu through Run AND version readback.
-		// The CLI's 35-minute context kills and waits its Python publisher; surviving
-		// build grandchildren cannot publish. CLI/WebUI crash is NOT supervised here.
+		// Pin the checked stable version, never a request-controlled value.
+		if err := ctx.Err(); err != nil {
+			return nil, updateFailure(47, err)
+		}
+		// Once admitted, synchronously own and join the CLI independent of HTTP
+		// cancellation. actionMu is held through Run and independent readback.
+		// The CLI separately bounds and waits its sole Python publisher at 35m.
 		cmd = command(binary, "update", "--version", result.Latest)
 		cmd.Stdin = nil
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 		if err := cmd.Run(); err != nil {
-			return nil, errors.New("update install unavailable")
+			return nil, updateChildFailure(err)
 		}
-		verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer verifyCancel()
 		verify := commandContext(verifyCtx, binary, "version")
 		var version webBoundedOutput
 		verify.Stdout = &version
 		verify.Stderr = io.Discard
 		if err := verify.Run(); err != nil || version.overflow || strings.TrimSpace(string(version.b)) != result.Latest {
-			return nil, errors.New("updated executable version not confirmed")
+			return nil, updateFailure(46, errors.New("installed executable version not confirmed"))
 		}
 		response["status"] = "UPDATED"
+		response["installed"] = strings.TrimSpace(string(version.b))
+		response["available"] = false
 		response["updated"] = true
 		response["restartRequired"] = true
 	}

@@ -215,6 +215,10 @@ func execute(args []string) error {
 func main() {
 	if err := execute(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		code := 1
+		if len(os.Args) > 1 && os.Args[1] == "update" {
+			code = updateExitCode(err)
+		}
+		os.Exit(code)
 	}
 }

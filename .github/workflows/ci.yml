@@ -36,6 +36,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_binary_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/package_binary_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/update_binary_test.py
           bash -n install.sh
           bash -n install-control-helper.sh
       - run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...

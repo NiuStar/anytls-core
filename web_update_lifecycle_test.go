@@ -40,7 +40,7 @@ func TestWebUpdateLifecycleChild(t *testing.T) {
 	}
 	switch mode {
 	case "check":
-		fmt.Print(`{"current_version":"v1.0.0","latest_version":"v1.0.1","update_available":true,"source_only":true}`)
+		fmt.Print(`{"current_version":"v1.0.0","latest_version":"v1.0.1","update_available":true,"source_only":false}`)
 	case "install":
 		mark("ready")
 		wait("publish-gate")

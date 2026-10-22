@@ -3,11 +3,13 @@
 import argparse
 import contextlib
 import fcntl
+import gzip
 import signal
 import time
 import urllib.request
 
 import hashlib
+import http.client
 import importlib.util
 import os
 from pathlib import Path
@@ -139,6 +141,41 @@ def detect_arch(system, machine, runner=subprocess.run):
     return "amd64"
 
 
+class BinaryUnavailable(ValueError):
+    """A required platform package is absent, not malformed or duplicated."""
+
+
+class DownloadFailed(OSError):
+    """Only transport opening/reading failures, never local disk failures."""
+
+
+class UpdateFailed(Exception):
+    def __init__(self, code):
+        self.code = code
+        super().__init__("UPDATE_FAILED")
+
+
+def update_transport(transport):
+    @contextlib.contextmanager
+    def opened(url, kind):
+        # Enter/exit transport separately: exceptions thrown by the consumer's
+        # disk writes or validators must NEVER be relabelled as network errors.
+        with contextlib.ExitStack() as stack:
+            try:
+                src = stack.enter_context(transport(url, kind))
+            except (OSError, http.client.HTTPException) as exc:
+                raise DownloadFailed() from exc
+            class Response:
+                headers = getattr(src, "headers", {})
+                def read(self, size=-1):
+                    try:
+                        return src.read() if size < 0 else src.read(size)
+                    except (OSError, http.client.HTTPException) as exc:
+                        raise DownloadFailed() from exc
+            yield Response()
+    return opened
+
+
 def binary_release(version=None, transport=i.open_url, arch="arm64"):
     i.require(arch in ("arm64", "amd64"), "unsupported binary architecture")
     tag, page, assets = i.release(version, transport)
@@ -151,17 +188,19 @@ def binary_release(version=None, transport=i.open_url, arch="arm64"):
               release.get("html_url") == page, "binary release identity mismatch")
     entries = release.get("assets")
     i.require(isinstance(entries, list), "invalid binary release assets")
-    matches = [a for a in entries if isinstance(a, dict) and a.get("name") == name]
-    i.require(len(matches) == 1, "release has no unique macOS " + arch + " binary; legacy source-only/arm64-only releases are not compiled automatically")
-    url = "https://github.com/" + i.REPO + "/releases/download/" + tag + "/" + name
-    i.require(matches[0].get("browser_download_url") == url, "binary asset tag/URL mismatch")
-    assets[name] = i.trusted_url(url, "asset")
     ccs_name = corresponding_source(tag, arch)
-    ccs = [a for a in entries if isinstance(a, dict) and a.get("name") == ccs_name]
-    i.require(len(ccs) == 1, "release must provide corresponding source")
-    ccs_url = "https://github.com/" + i.REPO + "/releases/download/" + tag + "/" + ccs_name
-    i.require(ccs[0].get("browser_download_url") == ccs_url, "corresponding-source URL mismatch")
-    assets[ccs_name] = i.trusted_url(ccs_url, "asset")
+    missing = False
+    for asset_name in (name, ccs_name):
+        matches = [a for a in entries if isinstance(a, dict) and a.get("name") == asset_name]
+        i.require(len(matches) <= 1, "duplicate required binary release asset")
+        if not matches:
+            missing = True
+            continue
+        url = "https://github.com/" + i.REPO + "/releases/download/" + tag + "/" + asset_name
+        i.require(matches[0].get("browser_download_url") == url, "binary/corresponding-source asset tag/URL mismatch")
+        assets[asset_name] = i.trusted_url(url, "asset")
+    if missing:
+        raise BinaryUnavailable("release has no macOS " + arch + " binary/corresponding source; legacy source-only releases are not compiled automatically")
     return tag, page, assets
 
 
@@ -297,11 +336,11 @@ def configure_shell_path(home, env):
 def command_version(binary, tag, runner, env):
     result = runner([str(binary), "version"], check=True, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, timeout=20, env=env)
-    i.require(result.stdout.decode("utf-8").strip() == tag, "executable version mismatch; old executable preserved before publish")
+    i.require(result.stdout.decode("utf-8").strip() == tag, "executable version mismatch")
 
 
 def private_append(path):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(fd)
         i.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(), "unsafe installer log/lock file")
@@ -481,7 +520,94 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
         candidate.unlink(missing_ok=True)
 
 
+def update_only(args, transport=i.open_url, runner=subprocess.run, system=None, machine=None, euid=None, env=None):
+    """Unprivileged, prebuilt-only publisher; never enter full-install lifecycle."""
+    failure = 44
+    downloading = False
+    try:
+        i.require((system or platform.system()) == "Darwin", "macOS required")
+        i.require((os.geteuid() if euid is None else euid) != 0, "normal user required")
+        machine = machine or platform.machine()
+        arch = args.update_arch
+        i.require(arch in ("arm64", "amd64") and machine in ("arm64", "x86_64", "amd64"), "unsupported architecture")
+        # Go pins its OWN architecture. In particular amd64 under Rosetta stays
+        # amd64; do not call full install's hardware-preference detect_arch.
+        i.require(not args.check_download and args.arch is None, "incompatible update options")
+        i.validate_version(args.version)
+        app, target = Path(args.app_dir), Path(args.target)
+        i.require(app.is_absolute() and target.is_absolute() and target.parent == app and
+                  target.name in ("anytls", "anytls-macos"), "invalid update target")
+        i.require(stat.S_ISDIR(app.lstat().st_mode), "app must be real directory")
+        regular(target)
+        if env is None:
+            env = {k: os.environ[k] for k in ("HOME", "PATH", "LANG", "TMPDIR") if k in os.environ}
+        failure = 45
+        with installation_lock(app):
+            with tempfile.TemporaryDirectory(prefix=".anytls-update-", dir=app) as temp:
+                work = Path(temp)
+                failure = 44
+                downloading = True
+                tag, bundle, digest, commit = verified_download(work, args.version, update_transport(transport), arch=arch)
+                downloading = False
+                failure = 45
+                releases = app / "releases"
+                if releases.exists() or releases.is_symlink():
+                    i.require(stat.S_ISDIR(releases.lstat().st_mode), "unsafe release directory")
+                releases.mkdir(mode=0o700, exist_ok=True)
+                kept = releases / (tag + "-" + i.uuid.uuid4().hex)
+                kept.mkdir(mode=0o700)
+                # Copy all validated files, licenses, and exact release archives.
+                # Hash the sources BEFORE copying and independently reopen output.
+                for src in bundle.rglob("*"):
+                    dst = kept / src.relative_to(bundle)
+                    if src.is_dir():
+                        dst.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    else:
+                        regular(src)
+                        expected = sha256(src)
+                        dst.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        shutil.copyfile(src, dst)
+                        i.require(sha256(dst) == expected, "retained material SHA mismatch")
+                names = ("SHA256SUMS", "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz",
+                         "anytls-core-" + tag + "-source.tar.gz", corresponding_source(tag, arch))
+                for name in names:
+                    expected = sha256(work / name)
+                    shutil.copyfile(work / name, kept / name)
+                    i.require(sha256(kept / name) == expected, "retained archive SHA mismatch")
+                candidate = work / "candidate"
+                shutil.copyfile(kept / "bin/anytls-macos", candidate)
+                i.require(sha256(candidate) == digest, "candidate SHA mismatch")
+                candidate.chmod(0o700)
+                failure = 44
+                command_version(candidate, tag, runner, env)
+                failure = 45
+                regular(target)
+                backup = i.publish_binary(candidate, target, app)
+                failure = 46
+                command_version(target, tag, runner, env)
+                return {"version": tag, "source_commit": commit, "binary_sha256": digest,
+                        "status": "UPDATED", "restartRequired": True, "installed": tag,
+                        "backup": str(backup), "platform": "darwin-" + arch}
+    except BinaryUnavailable as exc:
+        raise UpdateFailed(42) from exc
+    except DownloadFailed as exc:
+        raise UpdateFailed(43) from exc
+    except (gzip.BadGzipFile, EOFError) as exc:
+        raise UpdateFailed(44 if downloading else failure) from exc
+    except FileNotFoundError as exc:
+        # Missing extracted mandatory file is invalid material, not disk-full.
+        raise UpdateFailed(44 if downloading else failure) from exc
+    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
+        # Download/extraction disk I/O is publication/storage, not transport.
+        code = 45 if downloading and isinstance(exc, OSError) else failure
+        raise UpdateFailed(code) from exc
+    except Exception as exc:
+        raise UpdateFailed(47) from exc
+
+
 def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=None, euid=None, home=None, tty=None, env=None):
+    if getattr(args, "update_only", False):
+        return update_only(args, transport, runner, system, machine, euid, env)
     home = Path.home() if home is None else Path(home)
     app = home / ".anytls"
     requested_arch = getattr(args, "arch", None)
@@ -533,15 +659,42 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            if "--update-only" in argv:
+                raise UpdateFailed(44)
+            super().error(message)
+    parser = Parser(description=__doc__)
     parser.add_argument("--version", type=i.validate_version, help="stable tag; default is latest stable release")
     parser.add_argument("--check-download", action="store_true", help="verify binary/source archives without executing code or changing configuration")
     parser.add_argument("--arch", choices=("arm64", "amd64"), help="only with --check-download: target archive architecture; default is native on macOS, arm64 elsewhere")
-    args = parser.parse_args(argv)
+    parser.add_argument("--update-only", action="store_true", help="replace only the existing app executable; no helper, configuration or restart")
+    parser.add_argument("--app-dir")
+    parser.add_argument("--target")
+    parser.add_argument("--update-arch", choices=("arm64", "amd64"))
+    try:
+        args = parser.parse_args(argv)
+    except UpdateFailed:
+        print("UPDATE_VALIDATION_FAILED", file=sys.stderr)
+        return 44
+    if args.update_only:
+        if not all((args.app_dir, args.target, args.update_arch, args.version)) or args.arch is not None or args.check_download:
+            print("UPDATE_VALIDATION_FAILED", file=sys.stderr)
+            return 44
+    elif any((args.app_dir, args.target, args.update_arch)):
+        parser.error("--app-dir, --target and --update-arch require --update-only")
     if args.arch is not None and not args.check_download:
         parser.error("--arch is allowed only with --check-download")
     try:
-        run(args)
+        result = run(args)
+        if args.update_only:
+            print(i.json.dumps(result, sort_keys=True))
+    except UpdateFailed as exc:
+        codes = {42: "UPDATE_BINARY_UNAVAILABLE", 43: "UPDATE_DOWNLOAD_FAILED", 44: "UPDATE_VALIDATION_FAILED",
+                 45: "UPDATE_PUBLISH_FAILED", 46: "UPDATE_VERIFY_FAILED", 47: "UPDATE_UNAVAILABLE"}
+        print(codes.get(exc.code, "UPDATE_UNAVAILABLE"), file=sys.stderr)
+        return exc.code if exc.code in codes else 47
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
         detail = str(exc) if type(exc) is ValueError else type(exc).__name__
         print("Binary installation failed: " + detail + "; no automatic source compilation or VPN stop/reload. Check release assets, platform, paths and local authorization. A successful helper change can precede a failed final publish; inspect `anytls helper status` before retrying.", file=sys.stderr)

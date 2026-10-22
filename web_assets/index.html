@@ -77,7 +77,7 @@
       </section>
       <section id="view-update" class="view" hidden>
         <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>
-        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">用户级安装 · 备份程序 · 不自动重启 VPN</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">升级后当前控制台进程仍运行旧版。请退出并重新运行 <code>anytls webui</code>；服务需另行重载。</div></div>
+        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">官方预编译 · 无需 Go 或系统授权 · 保留配置及程序备份</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result" role="status" aria-live="polite">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">更新仅替换磁盘程序，不自动重启控制台或 VPN，不调用特权助手。若提示需重启控制台，当前页面仍运行内存中的旧版；请在确认后另行重启控制台。VPN 未重载，不代表已运行新版。</div></div>
       </section>
     </div><footer>AnyTLS 本机控制台 <span>回环 HTTP 无 TLS · 不要转发端口</span></footer>
   </main>
