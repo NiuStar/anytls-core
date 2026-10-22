@@ -1,6 +1,6 @@
 # anytls-core
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前稳定版 **[v2026-10-22-04](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-22-04)** 提供 Intel（amd64）和 Apple Silicon（arm64）预编译安装包、启动／重载／保存应用的分阶段脱敏诊断，以及配置方案、节点延迟测试、32 MiB 配置与一次授权助手。该发行提交的分支／标签三平台 CI、双架构原生发行和六个公开附件下载核验通过；见 [公开核验与限制](docs/releases/v2026-10-22-04-public-validation.md)。详细诊断需要程序与受限助手配套更新，不代表此前用户启动失败的实际根因已确定。
+Go 编写的 macOS AnyTLS VPN 客户端。当前稳定版 **[v2026-10-22-05](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-22-05)** 提供 Intel（amd64）和 Apple Silicon（arm64）预编译安装包，新增最多8路并发节点测速、整数延迟与分色显示、全体取消及迟到结果隔离；保留分阶段脱敏诊断、配置方案、32 MiB 配置与一次授权助手。该发行提交的分支／标签三平台 CI、双架构原生发行和六个公开附件下载核验通过；见 [公开核验与限制](docs/releases/v2026-10-22-05-public-validation.md)。慢节点仍受真实网络超时影响，不承诺全部秒完；用户反馈的 DIRECT 实际故障仍未定位，本版不宣称修复。详细诊断需要程序与受限助手配套更新。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -40,6 +40,8 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 默认发布构建内嵌精简 sing-box 核心，无需独立 sing-box 可执行文件。保留外部核心构建模式用于对照和回退。本项目不是 SagerNet 官方应用。
 
 ## 功能
+
+- `v2026-10-22-05` 已发布最多8路并发测速、整数延迟分色、全体取消及迟到隔离；见 [版本说明](docs/releases/v2026-10-22-05.md) 与 [公开附件验收及DIRECT未关闭边界](docs/releases/v2026-10-22-05-public-validation.md)。
 
 - `v2026-10-22-04` 已发布启动／重载／保存自动应用的分阶段、脱敏诊断，区分主错误与恢复证据；见 [版本说明与旧助手兼容边界](docs/releases/v2026-10-22-04.md) 和 [公开附件验收](docs/releases/v2026-10-22-04-public-validation.md)。
 
