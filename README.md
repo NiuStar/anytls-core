@@ -41,6 +41,8 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 ## 功能
 
+- `v2026-10-22-03` 源码新增配置方案保存／复制／切换、编辑区复制和节点 TCP／AnyTLS HTTPS 延迟测试，见 [版本说明及验收边界](docs/releases/v2026-10-22-03.md)。公开可安装版本以 GitHub 最新稳定 Release 为准；未发布的源码不等于安装器已取得新版。
+
 - `anytls start / stop / status`：launchd 管理系统 TUN，本机 sudo 授权。
 - `anytls config`：终端策略组与节点选择，方向键、回车／空格确认；运行时可保存，`anytls reload` 受控重连后生效。
 - `anytls webui`：普通用户启动本机管理页 `http://127.0.0.1:18089`，账户 `admin`；`anytls password` 查看应用密码，`anytls password reset` 轮换并撤销旧会话。

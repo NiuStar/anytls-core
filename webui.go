@@ -49,6 +49,7 @@ type webConsole struct {
 	updateAction             func(context.Context, bool) (json.RawMessage, error)
 	importPending            *webImportCandidate // guarded by actionMu
 	importFetch              func(context.Context, string) ([]byte, error)
+	nodeProbe                func(context.Context, node, string) (float64, error)
 }
 
 func newWebConsole(config, password string, port int) *webConsole {
@@ -308,6 +309,9 @@ func (w *webConsole) pendingState() (bool, bool) {
 }
 func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSession) {
 	switch r.URL.Path {
+	case "/api/v1/profiles":
+		// getProfiles owns actionMu; acquiring it here would reject every list.
+		w.getProfiles(rw, r)
 	case "/api/v1/config/export":
 		w.exportCurrent(rw, r)
 	case "/api/v1/subscription":
@@ -354,7 +358,7 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 			resolved, err := resolveGroup(g.Name, nodes, doc.Groups)
 			list = append(list, map[string]any{"name": g.Name, "type": g.Type, "choices": g.Proxies, "selected": g.Selected, "resolved": resolved, "valid": err == nil})
 		}
-		webJSON(rw, 200, map[string]any{"groups": list})
+		webJSON(rw, 200, map[string]any{"groups": list, "etag": `"` + shaHex(b) + `"`})
 	case "/api/v1/rules":
 		b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
 		if err != nil {
@@ -453,6 +457,14 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/api/v1/profiles" && r.Method == "POST":
+		w.saveProfile(rw, r)
+	case r.URL.Path == "/api/v1/profiles/copy" && r.Method == "POST":
+		w.copyProfile(rw, r)
+	case r.URL.Path == "/api/v1/profiles/switch" && r.Method == "POST":
+		w.switchProfile(rw, r)
+	case r.URL.Path == "/api/v1/nodes/probe" && r.Method == "POST":
+		w.probeNodeHandler(rw, r)
 	case r.URL.Path == "/api/v1/import/export" && r.Method == "POST":
 		w.exportConverted(rw, r)
 	case r.URL.Path == "/api/v1/import/preview" && r.Method == "POST":
@@ -561,6 +573,19 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		if webDecode(rw, r, &in) != nil || in.Group == "" || in.Choice == "" {
 			webError(rw, 400, "INVALID_INPUT")
 			return
+		}
+		// Older clients omit If-Match; a supplied snapshot must still match
+		// before saving or consulting the running service.
+		if match := r.Header.Get("If-Match"); match != "" {
+			b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
+			if err != nil {
+				webError(rw, 500, "CONFIG_UNAVAILABLE")
+				return
+			}
+			if match != `"`+shaHex(b)+`"` {
+				webError(rw, 412, "CONFIG_CONFLICT")
+				return
+			}
 		}
 		before := w.fingerprint()
 		if err := saveGroupChoice(w.configPath, in.Group, in.Choice); err != nil {

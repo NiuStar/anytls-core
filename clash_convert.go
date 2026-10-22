@@ -26,6 +26,12 @@ var errWebConversionInvalid = errors.New("CONFIG_CONVERSION_INVALID")
 var errWebConversionTooLarge = errors.New("CONFIG_CONVERSION_TOO_LARGE")
 
 func webConversionErrorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "CONFIG_CONVERSION_TIMEOUT"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "CONFIG_CONVERSION_CANCELED"
+	}
 	if errors.Is(err, errWebConversionTooLarge) {
 		return errWebConversionTooLarge.Error()
 	}
@@ -64,7 +70,13 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 			conversionSet(root, "nodes", c.nodes)
 		}
 		beforeWarnings := len(r.Warnings)
+		if err := ctx.Err(); err != nil {
+			return nil, r, err
+		}
 		conversionSanitize(root, &r, remote)
+		if err := ctx.Err(); err != nil {
+			return nil, r, err
+		}
 		r.Converted = changed || len(r.Skipped) > 0 || len(r.Warnings) > beforeWarnings
 		if !r.Converted {
 			return input, r, nil
@@ -245,6 +257,9 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 			c.warn(conversionPublicField(key, i/2) + ": Clash control field is not applicable to native configuration")
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, r, err
+	}
 	conversionSanitize(out, &r, remote)
 	b, e := conversionMarshal(ctx, out)
 	if e != nil {
@@ -275,6 +290,9 @@ func conversionParseContext(ctx context.Context, input []byte) (*yaml.Node, bool
 		return nil, false, errWebConversionInvalid
 	}
 	if conversionExpansionCost(ctx, &doc, map[*yaml.Node]bool{}, map[*yaml.Node]int64{}) < 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		return nil, false, errWebConversionInvalid
 	}
 	changed := false

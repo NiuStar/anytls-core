@@ -41,13 +41,17 @@
       </section>
       <section id="view-nodes" class="view" hidden>
         <div class="page-heading"><h1>代理节点</h1><p class="muted">选择启动节点或编辑参数。保存到运行中的 VPN 会短暂重连。</p></div>
-        <div class="list-toolbar"><div class="search-field"><label for="nodes-search">搜索节点</label><input id="nodes-search" type="search" placeholder="名称、类型或服务器" autocomplete="off"></div><span id="nodes-count" class="hint" aria-live="polite">尚未读取</span><button id="refresh-nodes">刷新节点</button></div><div id="nodes-list" class="stack"></div><p class="footnote">列表只显示密码是否已配置。新增节点与高级参数请在原始 YAML 中编辑。</p>
+        <div class="list-toolbar"><div class="search-field"><label for="nodes-search">搜索节点</label><input id="nodes-search" type="search" placeholder="名称、类型或服务器" autocomplete="off"></div><span id="nodes-count" class="hint" aria-live="polite">尚未读取</span><button id="refresh-nodes">刷新节点</button><button id="probe-all" disabled>全部代理延迟</button><button id="cancel-probes" hidden>取消测速</button></div><div id="nodes-list" class="stack"></div><p class="footnote">延迟单位为 ms，不是 Mbps / 带宽测速。代理延迟通过实际 AnyTLS 访问固定的 https://www.gstatic.com/generate_204；不切换 VPN 或自动选择节点。TCP 延迟只检查端口连接，不验证认证或 VPN 就绪。每节点最多等待 8 秒，批量按顺序测试；跳过证书校验的节点仍有中间人风险。结果仅保留在本次页面内存。新增节点与高级参数请在原始 YAML 中编辑。</p>
       </section>
       <section id="view-groups" class="view" hidden>
         <div class="page-heading"><h1>策略组</h1><p class="muted">选择配置出口后点击保存。运行中自动应用，未运行时仅保存。</p></div><div class="section-label">磁盘配置 <span id="groups-count" class="hint">尚未读取</span></div><div id="groups-list" class="stack group-grid"></div><p class="footnote">配置出口由磁盘配置解析，不代表当前运行快照或网络连通性。</p>
       </section>
       <section id="view-config" class="view" hidden>
         <div class="page-heading"><h1>配置与规则</h1><p class="muted">保存前校验语法、分组与规则，保留未知字段。</p></div>
+        <section class="panel profiles-panel" aria-labelledby="profiles-heading">
+          <div class="panel-toolbar"><div><h3 id="profiles-heading">配置方案</h3><span class="hint">保存磁盘上的当前配置，不包含编辑区未保存草稿。方案列表仅显示名称、时间与当前标记。</span></div><button id="refresh-profiles">刷新方案</button></div>
+          <div class="profiles-body"><div class="profile-create"><label for="profile-name">新方案名称</label><input id="profile-name" autocomplete="off" placeholder="例如：家庭网络"><button id="save-profile">保存当前为方案</button></div><p id="profiles-status" class="hint" role="status">尚未读取方案</p><div id="profiles-list" class="stack"></div><p class="hint">切换前保留旧配置备份；运行中的 VPN 会自动应用并短暂重连，未运行时仅保存。切换会清空编辑草稿和导入预览。</p></div>
+        </section>
         <section class="panel import-panel" aria-labelledby="import-heading">
           <div class="panel-toolbar"><div><h3 id="import-heading">导入配置</h3><span class="hint">先预览，再备份并替换。运行中的 VPN 会自动重连。</span></div></div>
           <div class="import-body">
@@ -69,7 +73,7 @@
           </div>
         </section>
         <div class="panel rules-panel"><div class="panel-toolbar"><h3>分流规则</h3><button id="load-rules">查看规则列表</button></div><ol id="rules-list" class="rules-list"></ol></div>
-        <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开或导出后包含节点密码，仅限本机登录用户。导出当前磁盘配置，不包含未保存草稿。</span></div><div class="action-bar"><button id="export-current" type="button">导出当前配置</button><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
+        <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开或导出后包含节点密码，仅限本机登录用户。导出当前磁盘配置，不包含未保存草稿；复制编辑区包含未保存草稿。</span></div><div class="action-bar"><button id="copy-editor" type="button" disabled>复制编辑区</button><button id="export-current" type="button">导出当前配置</button><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
       </section>
       <section id="view-update" class="view" hidden>
         <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>

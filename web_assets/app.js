@@ -2,8 +2,10 @@
 // No HTML strings are populated from API data. Credentials remain in memory only.
 const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
+let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeController=null;
 const messages = {
- CONFIG_CONVERSION_TOO_LARGE:'转换后的配置超过 32 MiB，未生成预览或修改原配置；规则未被删除或去重。', CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
+ PROFILE_INVALID:'方案名称或标识无效，请检查后重试。', PROFILE_NOT_FOUND:'方案已不存在，请刷新方案列表。', PROFILE_CONFLICT:'配置或方案已改变，请刷新后再切换。', PROFILE_STORE_UNAVAILABLE:'方案存储不可用，请检查本机目录权限。', PROFILE_SAVE_FAILED:'方案保存失败，请检查本机目录权限后刷新确认。', PROFILE_SWITCH_FAILED_ROLLED_BACK:'方案切换失败，已恢复旧配置；请检查配置后重试。', PROFILE_STATE_UNCERTAIN:'严重警告：方案切换恢复未能确认，配置与运行状态未知。请检查本机配置与备份，不要继续覆盖。',
+ CONFIG_CONVERSION_TIMEOUT:'订阅已进入配置转换，但获取远程规则集或展开转换超过处理期限。不是订阅格式判定失败；原配置未改变，请检查规则集网络连接。', CONFIG_CONVERSION_CANCELED:'配置转换已取消，未生成预览，原配置未改变。', CONFIG_CONVERSION_TOO_LARGE:'转换后的配置超过 32 MiB，未生成预览或修改原配置；规则未被删除或去重。', CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
  IMPORT_URL_UNSAFE:'订阅地址不安全：仅允许 HTTPS 443 和公网地址，不能访问本机、内网或元数据服务。', IMPORT_TOO_LARGE:'导入内容为空或超过配置大小限制（32 MiB）。', IMPORT_REMOTE_FILE_REFERENCE:'订阅包含不能使用的本机文件引用，请检查 CA 或规则的实际路径字段；provider 缓存路径不会读取本机文件。', CONFIG_CONVERSION_UNSUPPORTED:'处理后没有可用配置，未生成可导入或导出的预览。请查看下方原因与跳过清单。', IMPORT_NO_SELECTABLE_NODES:'没有完整可选的 AnyTLS 节点，请检查服务器、端口和密码。', IMPORT_CONFIRMATION_REQUIRED:'请重新预览并明确确认替换配置。', IMPORT_WRITE_FAILED_ROLLED_BACK:'导入写入失败，已核对恢复原配置、选择与订阅。请检查目录权限后重新预览。', IMPORT_STATE_UNCERTAIN:'严重警告：导入恢复未能确认，配置与运行状态未知。请检查本机配置及 import-backups 备份，不要继续覆盖。', SUBSCRIPTION_NOT_CONFIGURED:'尚未保存订阅，请输入 HTTPS 订阅地址并预览导入。', SELECTION_UNAVAILABLE:'启动节点选择文件不可读取，请在本机检查权限或文件类型。',
  IMPORT_FORMAT_UNSUPPORTED:'格式不支持：请提供 Clash / Mihomo 或 AnyTLS 原生 YAML；暂不支持 URI 或 Base64。', IMPORT_INVALID:'导入配置无效或超过 32 MiB，请检查 YAML、节点与规则。', IMPORT_FETCH_FAILED:'订阅获取失败，请检查 HTTPS 地址与网络后重试。', IMPORT_SOURCE_REJECTED:'订阅来源被拒绝，请使用允许访问的 HTTPS 地址。', IMPORT_CONFLICT:'当前配置已更改，请重新预览后导入。', IMPORT_PREVIEW_EXPIRED:'预览已过期，请重新预览。', IMPORT_BACKUP_FAILED:'备份失败，未继续导入。请检查应用目录权限。', IMPORT_WRITE_FAILED:'配置写入未完成，请重新读取配置并确认当前状态。', IMPORT_ROLLBACK_FAILED:'严重警告：导入回退失败，配置与运行状态未知。请在本机检查配置、备份和 VPN；不要继续覆盖保存。', SUBSCRIPTION_UNAVAILABLE:'已保存订阅不可用，请重新输入 HTTPS 订阅地址。',
  HELPER_CONFIG_MISMATCH:'助手绑定的配置与当前控制台不一致。请确认 VPN 状态，并在当前安装目录重新执行 anytls helper install。', HELPER_UNAVAILABLE:'特权助手未安装或不可用。请在这台 Mac 的终端运行 anytls helper install，一次系统授权后即可自动控制。', FORBIDDEN:'特权助手拒绝当前用户，请用安装助手时授权的账户操作。', PREFLIGHT_FAILED:'配置预检失败，未停止现有 VPN。请检查节点、证书和规则。', STOP_FAILED:'停止或路由恢复检查失败，未继续启动。', START_FAILED:'新配置启动失败，请检查 VPN 状态和连接配置。', STATE_FAILED:'助手无法确认服务状态。', BUSY:'助手正在执行另一项操作，请等待。', SERVICE_ACTION_FAILED:'服务操作未完成，请检查助手状态。',
@@ -45,6 +47,7 @@ function renderServiceButtons() {
 // This flag permits existing skip-cert-verify nodes, never enables it on others.
 function saveBody(body) {return {...body,confirm_insecure:true};}
 function savedFeedback(data) {
+ if(data.changed){invalidateNodes();invalidateGroups();clearProfiles();}
  const result=data.apply_status;
  const applied=result==='APPLIED';
  const failed=data.changed && !applied && result!=='SAVED_STOPPED';
@@ -63,11 +66,12 @@ async function refreshAfterSave(refresh) {
 function notice(text, failure = false) { $('notice').textContent=text; $('notice').classList.toggle('failure',failure); $('notice').hidden=!text; }
 async function operation(label, fn) {
  if (busy) return;
- busy=true; const enabled=[...document.querySelectorAll('button')].filter(b=>!b.disabled); enabled.forEach(b=>b.disabled=true); notice(label+'，请稍候…');
- try { await fn(); if ($('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { notice(e.message, true); }
- finally { busy=false; enabled.forEach(b=>{if(b.isConnected)b.disabled=false;}); if (!etag) $('save-config').disabled=true; $('run-update').disabled=!updateAvailable; renderServiceButtons(); renderImportButtons(); }
+ const session=sessionGeneration;
+ busy=true; const enabled=[...document.querySelectorAll('button')].filter(b=>!b.disabled); enabled.forEach(b=>b.disabled=true); renderExtraButtons();notice(label+'，请稍候…');
+ try { await fn(); if (session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(session===sessionGeneration)notice(e.message, true); }
+ finally { busy=false; enabled.forEach(b=>{if(b.isConnected)b.disabled=false;}); if (!etag) $('save-config').disabled=true; $('run-update').disabled=!updateAvailable; renderServiceButtons(); renderImportButtons();renderExtraButtons(); }
 }
-function showLogin() {clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';updateAvailable=false;$('yaml-editor').value='';$('yaml-editor').disabled=true;$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';closeDrawer();}
+function showLogin() {sessionGeneration++;invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';updateAvailable=false;$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
 async function enterConsole(data) {csrf=data.csrf;$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';await status();}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';try{await enterConsole(await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}}));}catch(e){$('password').value='';$('login-error').textContent=e.message;}finally{button.disabled=false;}});
 $('logout').addEventListener('click',()=>operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();}));
@@ -94,8 +98,8 @@ for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>
  currentView=button.dataset.view;for(const section of document.querySelectorAll('.view'))section.hidden=section.id!=='view-'+currentView;
  for(const nav of document.querySelectorAll('[data-view]')){nav.classList.toggle('active',nav===button);if(nav===button)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');}
  $('page-title').textContent=button.textContent.trim();closeDrawer();notice('');
- if(currentView==='nodes')loadNodes().catch(e=>notice(e.message,true));
- if(currentView==='config')loadSubscription();
+ if(currentView==='nodes'&&!busy)loadNodes().catch(e=>notice(e.message,true));
+ if(currentView==='config'){loadSubscription();if(!busy)loadProfiles().catch(e=>notice(e.message,true));}
  if(currentView==='groups')loadGroups().catch(e=>notice(e.message,true));
 };
 for(const button of document.querySelectorAll('[data-service]'))button.onclick=()=>{
@@ -115,15 +119,31 @@ function filterNodes(){
  empty.textContent=rows.length?'没有匹配的节点，请清除或修改搜索。':'没有节点。请在配置页编辑原始 YAML。';empty.hidden=shown>0;
 }
 $('nodes-search').addEventListener('input',filterNodes);
-async function loadNodes(){const result=await api('/nodes');const target=$('nodes-list');target.replaceChildren();nodesLoaded=true;
+async function loadNodes(){const request=++nodesRequest,session=sessionGeneration;cancelProbes();nodesEtag='';renderExtraButtons();let result;try{result=await api('/nodes');}catch(e){if(request===nodesRequest&&session===sessionGeneration)invalidateNodes();throw e;}if(request!==nodesRequest||session!==sessionGeneration||!csrf)return;if(!Array.isArray(result.nodes)||typeof result.etag!=='string'||!result.etag){invalidateNodes();throw new Error('节点列表响应不完整，请重新读取。');}const target=$('nodes-list');target.replaceChildren();nodesLoaded=true;nodesEtag=result.etag;
  for(const n of result.nodes){const row=element('article',undefined,'item'),content=element('div',undefined,'item-content');row.nodeSearch=n;row.classList.toggle('selected',Boolean(n.selected));const heading=element('div',undefined,'node-heading');heading.append(element('strong',n.name),element('span',n.type,'badge'));if(n.selected)heading.append(element('span','当前启动节点','badge current'));if(n.skipVerify)heading.append(element('span','跳过证书校验 · 风险','badge risky'));content.append(heading,element('p',n.server+':'+n.port+' · '+(n.hasPassword?'已配置密码':'未配置密码'),'node-meta'));row.append(content);const choose=element('button',n.selected?'当前启动节点':'设为启动节点');choose.disabled=!n.selectable||n.selected;choose.onclick=()=>operation('保存节点选择',async()=>{const saved=await api('/nodes/selection',{method:'POST',body:saveBody({name:n.name})});savedFeedback(saved);await refreshAfterSave(loadNodes);}); row.append(choose);
+ const probes=element('div',undefined,'node-probes'),probeResult=element('p','尚未测速','probe-result');probeResult.setAttribute('role','status');row.probeResult=probeResult;row.probeName=n.name;
+ for(const [mode,label] of [['https','代理延迟'],['tcp','TCP延迟']]){const button=element('button',label);button.type='button';button.dataset.probe=mode;button.onclick=()=>startProbes([row],mode);probes.append(button);}probes.append(probeResult);row.append(probes);
  const edit=element('details');const summary=element('summary','编辑节点参数');edit.append(summary);
  const form=element('form');form.className='node-form';
  const inputs={};for(const [key,title,value,type] of [['server','服务器',n.server,'text'],['port','端口',n.port,'number'],['sni','SNI',n.sni||'','text'],['password','新节点密码（留空保留）','','password']]){const label=element('label',title);const input=element('input');input.type=type;input.value=value;input.autocomplete=key==='password'?'new-password':'off';input.setAttribute('aria-label',title);if(key==='port'){input.min='1';input.max='65535';}if(key==='server'||key==='port')input.required=true;label.append(input);form.append(label);inputs[key]=input;}
- const submit=element('button','保存节点参数');submit.type='submit';form.append(submit);form.onsubmit=event=>{event.preventDefault();operation('保存节点参数',async()=>{const saved=await api('/nodes',{method:'PUT',headers:{'If-Match':result.etag},body:saveBody({name:n.name,server:inputs.server.value,port:Number(inputs.port.value),sni:inputs.sni.value,password:inputs.password.value})});inputs.password.value='';savedFeedback(saved);await refreshAfterSave(loadNodes);});};edit.append(form);row.append(edit);target.append(row);}filterNodes();}
+ const submit=element('button','保存节点参数');submit.type='submit';form.append(submit);form.onsubmit=event=>{event.preventDefault();operation('保存节点参数',async()=>{const saved=await api('/nodes',{method:'PUT',headers:{'If-Match':result.etag},body:saveBody({name:n.name,server:inputs.server.value,port:Number(inputs.port.value),sni:inputs.sni.value,password:inputs.password.value})});inputs.password.value='';savedFeedback(saved);await refreshAfterSave(loadNodes);});};edit.append(form);row.append(edit);target.append(row);}filterNodes();renderExtraButtons();}
 $('refresh-nodes').onclick=()=>operation('刷新节点',loadNodes);
-async function loadGroups(){const result=await api('/groups');const target=$('groups-list');target.replaceChildren();$('groups-count').textContent=result.groups.length+' 个分组';if(!result.groups.length){target.append(element('p','没有策略分组。直接在节点页选择启动节点，或在 YAML 中添加分组。','empty-state'));return;}
- for(const g of result.groups){const row=element('article',undefined,'item'),content=element('div',undefined,'item-content');content.append(element('strong',g.name),element('p',g.valid?'配置出口：'+g.resolved:'当前选择无效，请修复配置'));const select=element('select');select.setAttribute('aria-label',g.name+'的选择');for(const name of g.choices||[]){const option=element('option',name);option.value=name;option.selected=name===g.selected;select.append(option);}const save=element('button','保存选择');save.onclick=()=>operation('保存分组',async()=>{const saved=await api('/groups/selection',{method:'POST',body:saveBody({group:g.name,choice:select.value})});savedFeedback(saved);await refreshAfterSave(loadGroups);});row.append(content,select,save);target.append(row);}}
+function invalidateGroups(){groupsRequest++;groupsEtag='';$('groups-list').replaceChildren();$('groups-count').textContent='尚未读取';}
+async function loadGroups(){
+ const request=++groupsRequest,session=sessionGeneration;groupsEtag='';$('groups-list').replaceChildren();$('groups-count').textContent='正在读取…';
+ const current=()=>request===groupsRequest&&session===sessionGeneration&&Boolean(csrf);
+ let result;try{result=await api('/groups');}catch(e){if(current()){invalidateGroups();throw e;}return;}
+ if(!current())return;
+ if(!Array.isArray(result.groups)||typeof result.etag!=='string'||!result.etag){invalidateGroups();throw new Error('策略组响应不完整，请重新读取。');}
+ groupsEtag=result.etag;const target=$('groups-list');$('groups-count').textContent=result.groups.length+' 个分组';
+ if(!result.groups.length){target.append(element('p','没有策略分组。直接在节点页选择启动节点，或在 YAML 中添加分组。','empty-state'));return;}
+ for(const g of result.groups){
+  const row=element('article',undefined,'item'),content=element('div',undefined,'item-content');content.append(element('strong',g.name),element('p',g.valid?'配置出口：'+g.resolved:'当前选择无效，请修复配置'));
+  const select=element('select');select.setAttribute('aria-label',g.name+'的选择');for(const name of g.choices||[]){const option=element('option',name);option.value=name;option.selected=name===g.selected;select.append(option);}
+  const save=element('button','保存选择');save.dataset.groupSave='';save.disabled=busy;save.onclick=()=>{if(!current()||groupsEtag!==result.etag)return;operation('保存分组',async()=>{if(!current()||groupsEtag!==result.etag)return;const saved=await api('/groups/selection',{method:'POST',headers:{'If-Match':result.etag},body:saveBody({group:g.name,choice:select.value})});if(session!==sessionGeneration||!csrf)return;savedFeedback(saved);await refreshAfterSave(loadGroups);});};
+  row.append(content,select,save);target.append(row);
+ }
+}
 $('load-rules').onclick=()=>operation('读取规则',async()=>{const data=await api('/rules');$('rules-list').replaceChildren(...data.rules.map(rule=>element('li',rule)));if(!data.rules.length)$('rules-list').append(element('li','没有分流规则。'));});
 $('load-config').onclick=()=>{if(etag&& !confirm('重新读取会丢弃编辑区尚未保存的修改。继续？'))return;operation('读取原始配置',async()=>{const data=await api('/config');$('yaml-editor').value=data.yaml;etag=data.etag;$('yaml-editor').disabled=false;$('save-config').disabled=false;$('editor-info').textContent='已读取配置（含节点密码）。保存后，运行中的 VPN 会自动重新连接以应用配置。';});};
 $('save-config').onclick=()=>operation('校验并保存配置',async()=>{const data=await api('/config',{method:'PUT',headers:{'If-Match':etag},body:saveBody({yaml:$('yaml-editor').value})});etag=data.etag;$('editor-info').textContent=data.changed?'已保存并读回校验；未知字段、注释和原始文字保留。':'内容未变化，没有重写文件。';savedFeedback(data);await refreshAfterSave();});
@@ -149,7 +169,7 @@ function clearImportSecrets(){
  for(const id of ['import-yaml','subscription-url','import-file']) $(id).value='';
  $('subscription-status').textContent='尚未读取订阅状态';renderImportButtons();
 }
-function clearConfigDraft(){etag='';$('yaml-editor').value='';$('yaml-editor').disabled=true;$('save-config').disabled=true;}
+function clearConfigDraft(){etag='';$('yaml-editor').value='';$('yaml-editor').disabled=true;$('save-config').disabled=true;renderExtraButtons();}
 async function loadSubscription(){
  const request=++subscriptionRequest,session=csrf;
  $('subscription-status').textContent='正在读取订阅状态…';
@@ -255,5 +275,86 @@ $('export-current').onclick=()=>{
  return operation('导出当前配置',async()=>{const session=csrf,data=await api('/config/export');if(csrf!==session||!csrf)throw new Error('会话已改变，未下载配置。');const report=conversionReport(data.conversion);if(report.issues.length)throw new Error(messages.CONFIG_CONVERSION_UNSUPPORTED);if(report.warnings.length||report.skipped.length){renderConversion(report);$('import-preview').hidden=false;}downloadConfig(data);notice('已导出磁盘上的当前 AnyTLS 配置（含节点密码），未更改或应用配置。'+(report.warnings.length||report.skipped.length?' 转换差异与跳过：'+[...report.warnings,...report.skipped].join('；'):''));});
 };
 $('check-update').onclick=()=>operation('检查新版本',async()=>{const data=await api('/update-check');$('update-result').textContent=JSON.stringify(data,null,2);updateAvailable=data.available===true;$('run-update').disabled=!updateAvailable;});
+function renderExtraButtons(){
+ $('profile-name').disabled=busy||!csrf;
+ for(const id of ['save-profile','refresh-profiles'])$(id).disabled=busy||!csrf;
+ for(const button of document.querySelectorAll('[data-profile-action]'))button.disabled=busy||!csrf||!profilesEtag;
+ $('copy-editor').disabled=busy||!csrf||!etag;
+ for(const button of document.querySelectorAll('[data-group-save]'))button.disabled=busy||!csrf||!groupsEtag;
+ $('probe-all').disabled=busy||!csrf||!nodesEtag||!$('nodes-list').querySelectorAll('article').length;
+ for(const button of document.querySelectorAll('[data-probe]'))button.disabled=busy||!csrf||!nodesEtag;
+ $('cancel-probes').hidden=!probeRunning;$('cancel-probes').disabled=!probeRunning;
+}
+function clearProfiles(){profilesRequest++;profilesEtag='';$('profiles-list').replaceChildren();$('profiles-status').textContent='尚未读取方案';renderExtraButtons();}
+function displayTime(value){const date=new Date(value);return typeof value==='string'&&!Number.isNaN(date.getTime())?date.toLocaleString():'时间未知';}
+async function loadProfiles(){
+ const request=++profilesRequest,session=sessionGeneration;profilesEtag='';$('profiles-list').replaceChildren();$('profiles-status').textContent='正在读取方案…';renderExtraButtons();
+ try{
+  const data=await api('/profiles');if(request!==profilesRequest||session!==sessionGeneration||!csrf)return;
+  if(!Array.isArray(data.profiles)||typeof data.etag!=='string'||!data.etag||data.profiles.some(p=>typeof p.id!=='string'||typeof p.name!=='string'||typeof p.current!=='boolean'))throw new Error('方案列表响应不完整，请刷新。');
+  profilesEtag=data.etag;$('profiles-status').textContent=data.profiles.length+' 个方案 · 当前标记按磁盘配置判断';
+  for(const profile of data.profiles){
+   const row=element('article',undefined,'item'),content=element('div',undefined,'item-content'),heading=element('div',undefined,'node-heading');
+   heading.append(element('strong',profile.name));if(profile.current)heading.append(element('span','当前配置','badge current'));
+   content.append(heading,element('p','创建于 '+displayTime(profile.created_at)));row.append(content);
+   const copy=element('button','复制为新方案');copy.dataset.profileAction='copy';copy.onclick=()=>{if(busy)return;const name=prompt('新方案名称（复制此方案，不切换配置）：',profile.name+' 副本');if(name===null||!name.trim())return;operation('复制方案',async()=>{const session=sessionGeneration;await api('/profiles/copy',{method:'POST',body:{id:profile.id,name:name.trim()}});if(session!==sessionGeneration||!csrf)return;notice('方案已复制，未切换配置。');await loadProfiles();});};
+   const change=element('button','切换');change.dataset.profileAction='switch';change.onclick=()=>switchProfile(profile.id);row.append(copy,change);$('profiles-list').append(row);
+  }
+ }catch(e){if(request===profilesRequest&&session===sessionGeneration){clearProfiles();$('profiles-status').textContent='方案状态未知，请刷新后再操作。';throw e;}}
+ finally{renderExtraButtons();}
+}
+$('refresh-profiles').onclick=()=>operation('刷新方案',loadProfiles);
+$('save-profile').onclick=()=>{if(busy)return;const name=$('profile-name').value.trim();if(!name){notice('请输入新方案名称。',true);return;}return operation('保存磁盘配置为方案',async()=>{const session=sessionGeneration;await api('/profiles',{method:'POST',body:{name}});if(session!==sessionGeneration||!csrf)return;$('profile-name').value='';notice('磁盘上的当前配置已保存为方案；未保存编辑未包含，也未切换 VPN。');await loadProfiles();});};
+function invalidateConfigViews(){clearImportSecrets();clearConfigDraft();invalidateNodes();invalidateGroups();clearProfiles();$('rules-list').replaceChildren();}
+function switchProfile(id){
+ if(busy||!profilesEtag||!confirm('切换会备份旧配置，并清空编辑草稿和导入预览。运行中的 VPN 会自动应用，期间短暂断网重连；未运行时仅保存。继续？'))return;
+ const expected=profilesEtag;
+ return operation('切换方案',async()=>{
+  const session=sessionGeneration,editor=$('yaml-editor'),editorDisabled=editor.disabled;editor.disabled=true;importCommitting=true;renderImportButtons();
+  try{
+   let data;try{data=await api('/profiles/switch',{method:'POST',headers:{'If-Match':expected},body:{id,confirm_insecure:true,confirm_replace:true}});}catch(error){
+    if(session!==sessionGeneration||!csrf)return;
+    if(error.code==='PROFILE_STATE_UNCERTAIN'||!error.code){invalidateConfigViews();serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('editor-info').textContent=messages.PROFILE_STATE_UNCERTAIN;}
+    else clearProfiles();throw error;
+   }
+   if(session!==sessionGeneration||!csrf)return;
+   invalidateConfigViews();$('editor-info').textContent='方案已切换；编辑草稿已清空，需要编辑时请重新打开配置。';savedFeedback(data);await refreshAfterSave(async()=>{await loadProfiles();await loadSubscription();});
+  }finally{importCommitting=false;if(session===sessionGeneration&&etag)editor.disabled=editorDisabled;renderImportButtons();renderExtraButtons();}
+ });
+}
+$('copy-editor').onclick=async()=>{
+ if(busy||!etag||!csrf||!confirm('复制内容包含节点密码及编辑区未保存的草稿，不是磁盘版本。请勿公开分享。继续复制？'))return;
+ const session=sessionGeneration,text=$('yaml-editor').value;
+ try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw new Error('clipboard unavailable');await navigator.clipboard.writeText(text);if(session===sessionGeneration&&csrf)notice('已复制编辑区配置文本（含节点密码及未保存草稿）；未保存或应用。');}
+ catch{if(session!==sessionGeneration||!csrf)return;const editor=$('yaml-editor');editor.focus();editor.select();notice('浏览器未允许自动复制，尚未复制。已选中编辑区，请按 ⌘C / Ctrl+C 手动复制（含节点密码）。',true);}
+};
+function cancelProbes(){probeGeneration++;if(probeController)probeController.abort();probeController=null;for(const row of $('nodes-list').querySelectorAll('article'))if(row.probeResult&&row.probeResult.dataset.pending==='true'){row.probeResult.textContent='测速已取消，未获得结果。';row.probeResult.dataset.pending='false';}}
+function invalidateNodes(){nodesRequest++;cancelProbes();nodesEtag='';nodesLoaded=false;$('nodes-list').replaceChildren();$('nodes-count').textContent='尚未读取';renderExtraButtons();}
+$('cancel-probes').onclick=()=>{cancelProbes();notice('已取消测速，不再测试后续节点。');};
+$('probe-all').onclick=()=>startProbes([...$('nodes-list').querySelectorAll('article')],'https');
+function startProbes(rows,mode){
+ if(busy||!csrf||!nodesEtag||!rows.length)return;
+ const generation=++probeGeneration,session=sessionGeneration,expected=nodesEtag;
+ const valid=()=>generation===probeGeneration&&session===sessionGeneration&&csrf&&expected===nodesEtag;
+ return operation(rows.length>1?'顺序测试全部代理延迟':'测试节点延迟',async()=>{
+  probeRunning=true;renderExtraButtons();let completed=0;
+  try{for(const row of rows){
+   if(!valid()||!row.isConnected)break;
+   const output=row.probeResult,label=mode==='tcp'?'TCP 延迟':'代理延迟';output.textContent=label+' · 正在测试…';output.dataset.pending='true';
+   const controller=new AbortController();probeController=controller;let timedOut=false;const timer=setTimeout(()=>{timedOut=true;controller.abort();},8000);
+   try{
+    const data=await api('/nodes/probe',{method:'POST',headers:{'If-Match':expected},body:{name:row.probeName,mode,confirm_insecure:true},signal:controller.signal});
+    if(!valid()||!row.isConnected)break;
+    if(data.config_etag!==expected){invalidateNodes();notice('配置已改变，旧测速结果已丢弃。请刷新节点。',true);break;}
+    if(data.name!==row.probeName||data.mode!==mode||!['OK','FAILED','TIMEOUT','UNSUPPORTED'].includes(data.status)||data.status==='OK'&&(!Number.isFinite(data.latency_ms)||data.latency_ms<0))throw new Error('测速响应不完整，未获得可靠结果。');
+    const states={FAILED:'失败',TIMEOUT:'超时',UNSUPPORTED:'不支持'};
+    output.textContent=label+' · '+(data.status==='OK'?data.latency_ms+' ms':states[data.status])+' · '+displayTime(data.checked_at)+(data.risk_insecure?' · 跳过证书校验风险':'');completed++;
+   }catch(error){if(!valid()||!row.isConnected)break;if(error.code==='CONFIG_CONFLICT'||error.code==='PROFILE_CONFLICT'){invalidateNodes();notice('配置已改变，请刷新节点后重新测速。',true);break;}output.textContent=label+' · '+(timedOut?'超时（8 秒），未获得结果。':error.message);}
+   finally{clearTimeout(timer);output.dataset.pending='false';if(probeController===controller)probeController=null;}
+  }
+  if(valid())notice('延迟测试结束：收到 '+completed+' / '+rows.length+' 个结果；未切换节点或 VPN。');
+  }finally{probeRunning=false;probeController=null;renderExtraButtons();}
+ });
+}
 $('run-update').onclick=()=>{if(!confirm('将检查并安装官方更新、保留现有配置，不自动重启服务。继续？'))return;operation('安装更新',async()=>{const data=await api('/update',{method:'POST',body:{confirm:true}});$('update-result').textContent=JSON.stringify(data,null,2);});};
 (async()=>{try{await enterConsole(await api('/session'));}catch{showLogin();}})();

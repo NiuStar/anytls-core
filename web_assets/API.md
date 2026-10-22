@@ -28,8 +28,13 @@
 | GET /nodes | `{nodes:[{name,type,server,port,hasPassword,selectable,skipVerify,sni,selected}],etag}` |
 | POST /nodes/selection | `{name}`；实际 saveSelection + readback → `{ok,changed,pendingReload}` |
 | PUT /nodes | `{name,server,port,password,sni}` + If-Match；空 password 保留；只编辑既有显式节点，保留未知字段/注释，拒绝共享 alias 目标 → `{ok,changed,etag,pendingReload}` |
-| GET /groups | `{groups:[{name,type,choices,selected,resolved,valid}]}` |
-| POST /groups/selection | `{group,choice}`；复用真实 saveGroupChoice + readback → `{ok,changed,pendingReload}`；同值不写 |
+| POST /nodes/probe | `{name,mode:"tcp"或"https",confirm_insecure:true}` + If-Match；精确当前配置节点、8秒有界；结果含mode/status/latency_ms/checked_at/config_etag，失败不返回虚假0ms；不保存或切换节点。TCP不等于AnyTLS认证／网络可用；HTTPS通过实际AnyTLS访问固定204目标，不是带宽测速。 |
+| GET /profiles | 私有方案元数据列表及当前config etag，不返回配置、密码或订阅令牌。 |
+| POST /profiles | `{name}`；保存磁盘当前配置、选择与私有订阅为不可变方案，不包含未保存编辑草稿。 |
+| POST /profiles/copy | `{id,name}`；复制已有方案为新ID，不改变当前配置或VPN。 |
+| POST /profiles/switch | `{id,confirm_replace:true,confirm_insecure:true}` + If-Match；校验、备份、一起切换配置／选择／订阅、读回；失败回滚／不确定独立报告，成功沿现有saved/applied链。 |
+| GET /groups | `{groups:[{name,type,choices,selected,resolved,valid}],etag}`；etag 来自解析策略组的同一份配置字节 |
+| POST /groups/selection | `{group,choice}`；新控制台携带读取时的 If-Match，冲突返回412 CONFIG_CONFLICT且不写入／不调用服务；省略header保留旧客户端兼容。复用真实 saveGroupChoice + readback → `{ok,changed,pendingReload}`；同值不写 |
 | GET /rules | `{rules:[原始规则字符串]}`，登录后明确读取，UI 以 textContent 展示 |
 | GET /config | 显式敏感编辑操作 → `{yaml,etag}`，同时 ETag header；etag 是双引号包裹的完整原文件 SHA256 |
 | PUT /config | `{yaml}` + `If-Match: "SHA256"`；无 header 428，冲突412，无效422；同目录0600原子写入并读回 → `{ok,changed,etag,pendingReload}` |
