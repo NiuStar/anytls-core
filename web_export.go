@@ -10,7 +10,7 @@ import (
 // runtime action. Subscription addresses and private metadata are not included.
 func webExportJSON(rw http.ResponseWriter, b []byte, report webConversionReport) {
 	rw.Header().Set("Cache-Control", "no-store")
-	webJSON(rw, http.StatusOK, map[string]any{"yaml": string(b), "filename": "anytls-config.yaml", "format": "anytls-native", "conversion":report})
+	webJSON(rw, http.StatusOK, map[string]any{"yaml": string(b), "filename": "anytls-config.yaml", "format": "anytls-native", "conversion": report})
 }
 
 func (w *webConsole) exportConverted(rw http.ResponseWriter, r *http.Request) {
@@ -58,7 +58,7 @@ func (w *webConsole) exportCurrent(rw http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	converted, report, err := webConvertConfiguration(ctx, b, false, noFetch)
 	if err != nil {
-		webError(rw, 422, "CONFIG_CONVERSION_INVALID")
+		webError(rw, 422, webConversionErrorCode(err))
 		return
 	}
 	if len(report.Issues) > 0 {

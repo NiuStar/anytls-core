@@ -11,7 +11,7 @@
 
 允许 Host 恰为 `127.0.0.1:PORT`、`localhost:PORT`、`[::1]:PORT`。监听本身仍仅 IPv4 loopback。所有 POST/PUT（含登录）必须单个 `Origin: http://与Host完全相同`；无 Origin 的 API 客户端同样拒绝，不提供 CORS。敏感 GET 需登录且不缓存。
 
-登录之外的 POST/PUT 必须 Cookie + `X-CSRF-Token`；令牌由登录或登录后 session GET 的 JSON 返回，未写 localStorage。JSON 请求需 Content-Type application/json；未知字段及多个 JSON 值拒绝。普通 JSON 上限 16KiB，完整配置 JSON 上限 24MiB（解码 YAML 再按既有 4MiB 上限）。登录每分钟 5 次失败后阻断一分钟。
+登录之外的 POST/PUT 必须 Cookie + `X-CSRF-Token`；令牌由登录或登录后 session GET 的 JSON 返回，未写 localStorage。JSON 请求需 Content-Type application/json；未知字段及多个 JSON 值拒绝。普通 JSON 上限 16KiB；仅 PUT `/api/v1/config` 和 POST `/api/v1/import/preview` 的完整配置 JSON 上限为 `6 × 32MiB + 16KiB`（最坏 JSON 转义及信封开销），解码 YAML 和转换输出均限制为 32MiB。转换输出超限返回 `CONFIG_CONVERSION_TOO_LARGE`，不删除或去重规则来缩小配置。登录每分钟 5 次失败后阻断一分钟。
 
 所有错误为受控 `{ "error": "CODE" }`，不返回底层日志、配置片段或密码。原始配置是唯一明确展示节点密码的页面操作，仅已登录用户可读。普通节点只给 hasPassword，不给密码或逐密码摘要。
 

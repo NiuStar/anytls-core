@@ -55,7 +55,7 @@
             <p class="hint import-format">自动测速、故障切换等策略如需降为手动 select，会在预览中列出差异；导入时再明确确认。预览和导出均不会应用配置。</p>
             <div class="import-tabs" role="tablist" aria-label="导入来源"><button id="import-tab-local" role="tab" aria-selected="true" aria-controls="import-local" type="button">文件 / 粘贴 YAML</button><button id="import-tab-url" role="tab" aria-selected="false" aria-controls="import-url-panel" tabindex="-1" type="button">HTTPS 订阅</button></div>
             <div id="import-local" role="tabpanel" aria-labelledby="import-tab-local">
-              <label for="import-file">配置文件</label><input id="import-file" type="file" accept=".yaml,.yml" aria-describedby="import-file-help"><p id="import-file-help" class="hint">最大 4 MiB；服务器仍会校验大小与内容。选中文件优先于粘贴内容。</p>
+              <label for="import-file">配置文件</label><input id="import-file" type="file" accept=".yaml,.yml" aria-describedby="import-file-help"><p id="import-file-help" class="hint">最大 32 MiB；服务器仍会校验大小与内容。选中文件优先于粘贴内容。</p>
               <label for="import-yaml">或粘贴 YAML</label><textarea id="import-yaml" spellcheck="false" autocomplete="off" placeholder="粘贴要导入的配置，不会自动读取现有密码"></textarea>
               <p class="hint">文件与粘贴导入默认保留已保存的订阅。</p>
             </div>

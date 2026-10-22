@@ -211,10 +211,10 @@ func TestSnapshotSourceExclusiveLeaves(t *testing.T) {
 // These business regressions compile against the frozen 67-file predecessor.
 func TestSnapshotBoundedConfig(t *testing.T) {
 	binary, config, core, root := caSnapshotFixture(t, "")
-	data := append([]byte("proxies: []\n#"), bytes.Repeat([]byte("x"), 4<<20)...)
+	data := append([]byte("proxies: []\n#"), bytes.Repeat([]byte("x"), snapshotConfigLimit)...)
 	runtimeWrite(t, config, data, 0600)
 	if err := stagePrivateRun(binary, config, core, root); err == nil {
-		t.Fatal("snapshot accepted config above documented 4MiB bound")
+		t.Fatal("snapshot accepted config above documented 32MiB bound")
 	}
 }
 

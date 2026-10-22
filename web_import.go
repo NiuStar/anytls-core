@@ -393,7 +393,7 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 	}
 	converted, conversion, convertErr := webConvertConfiguration(ctx, b, raw != "", fetch)
 	if convertErr != nil {
-		webError(rw, 422, "CONFIG_CONVERSION_INVALID")
+		webError(rw, 422, webConversionErrorCode(convertErr))
 		return
 	}
 	if len(conversion.Issues) > 0 {

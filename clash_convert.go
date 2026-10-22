@@ -23,12 +23,20 @@ type webConversionReport struct {
 }
 
 var errWebConversionInvalid = errors.New("CONFIG_CONVERSION_INVALID")
+var errWebConversionTooLarge = errors.New("CONFIG_CONVERSION_TOO_LARGE")
+
+func webConversionErrorCode(err error) string {
+	if errors.Is(err, errWebConversionTooLarge) {
+		return errWebConversionTooLarge.Error()
+	}
+	return errWebConversionInvalid.Error()
+}
 
 func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fetch func(context.Context, string) ([]byte, error)) ([]byte, webConversionReport, error) {
 	r := webConversionReport{Warnings: []string{}, Issues: []string{}, Skipped: []string{}}
 	root, changed, err := conversionParseContext(ctx, input)
 	if err != nil {
-		return nil, r, errWebConversionInvalid
+		return nil, r, err
 	}
 	native, clash := conversionField(root, "nodes") != nil, conversionField(root, "proxies") != nil || conversionField(root, "proxy-providers") != nil
 	if native && clash {
@@ -63,7 +71,7 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 		}
 		b, e := conversionMarshal(ctx, root)
 		if e != nil {
-			return nil, r, errWebConversionInvalid
+			return nil, r, e
 		}
 		return b, r, nil
 	}
@@ -240,7 +248,7 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 	conversionSanitize(out, &r, remote)
 	b, e := conversionMarshal(ctx, out)
 	if e != nil {
-		return nil, r, errWebConversionInvalid
+		return nil, r, e
 	}
 	return b, r, nil
 }
@@ -252,6 +260,12 @@ func conversionParse(input []byte) (*yaml.Node, bool, error) {
 }
 
 func conversionParseContext(ctx context.Context, input []byte) (*yaml.Node, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if int64(len(input)) > snapshotConfigLimit {
+		return nil, false, errWebConversionTooLarge
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(input))
 	var doc, extra yaml.Node
 	if e := dec.Decode(&doc); e != nil {
@@ -260,7 +274,7 @@ func conversionParseContext(ctx context.Context, input []byte) (*yaml.Node, bool
 	if e := dec.Decode(&extra); e != io.EOF {
 		return nil, false, errWebConversionInvalid
 	}
-	if len(input) > int(snapshotConfigLimit) || conversionExpansionCost(ctx, &doc, map[*yaml.Node]bool{}, map[*yaml.Node]int64{}) < 0 {
+	if conversionExpansionCost(ctx, &doc, map[*yaml.Node]bool{}, map[*yaml.Node]int64{}) < 0 {
 		return nil, false, errWebConversionInvalid
 	}
 	changed := false

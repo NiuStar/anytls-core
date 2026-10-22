@@ -12,7 +12,7 @@ import (
 
 const (
 	snapshotAppLimit       = 128 << 20
-	snapshotConfigLimit    = 4 << 20
+	snapshotConfigLimit    = 32 << 20
 	snapshotSelectedLimit  = 64 << 10
 	snapshotRuleLimit      = 32 << 20
 	snapshotCALimit        = 1 << 20

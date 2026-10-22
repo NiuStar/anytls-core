@@ -44,25 +44,47 @@ func conversionExpansionCost(ctx context.Context, n *yaml.Node, active map[*yaml
 type conversionWriter struct {
 	ctx  context.Context
 	data bytes.Buffer
+	err  error
 }
 
 func (w *conversionWriter) Write(p []byte) (int, error) {
-	if w.ctx.Err() != nil || int64(w.data.Len())+int64(len(p)) > snapshotConfigLimit {
-		return 0, errWebConversionInvalid
+	if w.err != nil {
+		return 0, w.err
+	}
+	if err := w.ctx.Err(); err != nil {
+		w.err = err
+		return 0, err
+	}
+	if int64(w.data.Len())+int64(len(p)) > snapshotConfigLimit {
+		w.err = errWebConversionTooLarge
+		return 0, w.err
 	}
 	return w.data.Write(p)
 }
 func conversionMarshal(ctx context.Context, n *yaml.Node) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if conversionExpansionCost(ctx, n, map[*yaml.Node]bool{}, map[*yaml.Node]int64{}) < 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Cycles remain invalid, not size failures; expansion cost conflates both.
 		return nil, errWebConversionInvalid
 	}
 	w := &conversionWriter{ctx: ctx}
 	enc := yaml.NewEncoder(w)
 	enc.SetIndent(4)
 	if err := enc.Encode(n); err != nil {
+		if w.err != nil {
+			return nil, w.err
+		}
 		return nil, errWebConversionInvalid
 	}
 	if err := enc.Close(); err != nil {
+		if w.err != nil {
+			return nil, w.err
+		}
 		return nil, errWebConversionInvalid
 	}
 	return w.data.Bytes(), nil

@@ -110,10 +110,10 @@ func webDecode(rw http.ResponseWriter, r *http.Request, dst any) error {
 	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		return errors.New("JSON required")
 	}
-	// JSON escaping can expand the 4MiB config by up to six times.
+	// JSON escaping can expand each config byte sixfold; allow envelope overhead.
 	limit := int64(16 << 10)
 	if (r.URL.Path == "/api/v1/config" && r.Method == "PUT") || (r.URL.Path == "/api/v1/import/preview" && r.Method == "POST") {
-		limit = 24 << 20
+		limit = 6*snapshotConfigLimit + (16 << 10)
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(rw, r.Body, limit))
 	dec.DisallowUnknownFields()

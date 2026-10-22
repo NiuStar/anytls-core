@@ -3,9 +3,9 @@
 const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 const messages = {
- CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
- IMPORT_URL_UNSAFE:'订阅地址不安全：仅允许 HTTPS 443 和公网地址，不能访问本机、内网或元数据服务。', IMPORT_TOO_LARGE:'导入内容为空或超过配置大小限制（4 MiB）。', IMPORT_REMOTE_FILE_REFERENCE:'订阅包含不能使用的本机文件引用，请检查 CA 或规则的实际路径字段；provider 缓存路径不会读取本机文件。', CONFIG_CONVERSION_UNSUPPORTED:'处理后没有可用配置，未生成可导入或导出的预览。请查看下方原因与跳过清单。', IMPORT_NO_SELECTABLE_NODES:'没有完整可选的 AnyTLS 节点，请检查服务器、端口和密码。', IMPORT_CONFIRMATION_REQUIRED:'请重新预览并明确确认替换配置。', IMPORT_WRITE_FAILED_ROLLED_BACK:'导入写入失败，已核对恢复原配置、选择与订阅。请检查目录权限后重新预览。', IMPORT_STATE_UNCERTAIN:'严重警告：导入恢复未能确认，配置与运行状态未知。请检查本机配置及 import-backups 备份，不要继续覆盖。', SUBSCRIPTION_NOT_CONFIGURED:'尚未保存订阅，请输入 HTTPS 订阅地址并预览导入。', SELECTION_UNAVAILABLE:'启动节点选择文件不可读取，请在本机检查权限或文件类型。',
- IMPORT_FORMAT_UNSUPPORTED:'格式不支持：请提供 Clash / Mihomo 或 AnyTLS 原生 YAML；暂不支持 URI 或 Base64。', IMPORT_INVALID:'导入配置无效或超过 4 MiB，请检查 YAML、节点与规则。', IMPORT_FETCH_FAILED:'订阅获取失败，请检查 HTTPS 地址与网络后重试。', IMPORT_SOURCE_REJECTED:'订阅来源被拒绝，请使用允许访问的 HTTPS 地址。', IMPORT_CONFLICT:'当前配置已更改，请重新预览后导入。', IMPORT_PREVIEW_EXPIRED:'预览已过期，请重新预览。', IMPORT_BACKUP_FAILED:'备份失败，未继续导入。请检查应用目录权限。', IMPORT_WRITE_FAILED:'配置写入未完成，请重新读取配置并确认当前状态。', IMPORT_ROLLBACK_FAILED:'严重警告：导入回退失败，配置与运行状态未知。请在本机检查配置、备份和 VPN；不要继续覆盖保存。', SUBSCRIPTION_UNAVAILABLE:'已保存订阅不可用，请重新输入 HTTPS 订阅地址。',
+ CONFIG_CONVERSION_TOO_LARGE:'转换后的配置超过 32 MiB，未生成预览或修改原配置；规则未被删除或去重。', CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
+ IMPORT_URL_UNSAFE:'订阅地址不安全：仅允许 HTTPS 443 和公网地址，不能访问本机、内网或元数据服务。', IMPORT_TOO_LARGE:'导入内容为空或超过配置大小限制（32 MiB）。', IMPORT_REMOTE_FILE_REFERENCE:'订阅包含不能使用的本机文件引用，请检查 CA 或规则的实际路径字段；provider 缓存路径不会读取本机文件。', CONFIG_CONVERSION_UNSUPPORTED:'处理后没有可用配置，未生成可导入或导出的预览。请查看下方原因与跳过清单。', IMPORT_NO_SELECTABLE_NODES:'没有完整可选的 AnyTLS 节点，请检查服务器、端口和密码。', IMPORT_CONFIRMATION_REQUIRED:'请重新预览并明确确认替换配置。', IMPORT_WRITE_FAILED_ROLLED_BACK:'导入写入失败，已核对恢复原配置、选择与订阅。请检查目录权限后重新预览。', IMPORT_STATE_UNCERTAIN:'严重警告：导入恢复未能确认，配置与运行状态未知。请检查本机配置及 import-backups 备份，不要继续覆盖。', SUBSCRIPTION_NOT_CONFIGURED:'尚未保存订阅，请输入 HTTPS 订阅地址并预览导入。', SELECTION_UNAVAILABLE:'启动节点选择文件不可读取，请在本机检查权限或文件类型。',
+ IMPORT_FORMAT_UNSUPPORTED:'格式不支持：请提供 Clash / Mihomo 或 AnyTLS 原生 YAML；暂不支持 URI 或 Base64。', IMPORT_INVALID:'导入配置无效或超过 32 MiB，请检查 YAML、节点与规则。', IMPORT_FETCH_FAILED:'订阅获取失败，请检查 HTTPS 地址与网络后重试。', IMPORT_SOURCE_REJECTED:'订阅来源被拒绝，请使用允许访问的 HTTPS 地址。', IMPORT_CONFLICT:'当前配置已更改，请重新预览后导入。', IMPORT_PREVIEW_EXPIRED:'预览已过期，请重新预览。', IMPORT_BACKUP_FAILED:'备份失败，未继续导入。请检查应用目录权限。', IMPORT_WRITE_FAILED:'配置写入未完成，请重新读取配置并确认当前状态。', IMPORT_ROLLBACK_FAILED:'严重警告：导入回退失败，配置与运行状态未知。请在本机检查配置、备份和 VPN；不要继续覆盖保存。', SUBSCRIPTION_UNAVAILABLE:'已保存订阅不可用，请重新输入 HTTPS 订阅地址。',
  HELPER_CONFIG_MISMATCH:'助手绑定的配置与当前控制台不一致。请确认 VPN 状态，并在当前安装目录重新执行 anytls helper install。', HELPER_UNAVAILABLE:'特权助手未安装或不可用。请在这台 Mac 的终端运行 anytls helper install，一次系统授权后即可自动控制。', FORBIDDEN:'特权助手拒绝当前用户，请用安装助手时授权的账户操作。', PREFLIGHT_FAILED:'配置预检失败，未停止现有 VPN。请检查节点、证书和规则。', STOP_FAILED:'停止或路由恢复检查失败，未继续启动。', START_FAILED:'新配置启动失败，请检查 VPN 状态和连接配置。', STATE_FAILED:'助手无法确认服务状态。', BUSY:'助手正在执行另一项操作，请等待。', SERVICE_ACTION_FAILED:'服务操作未完成，请检查助手状态。',
  AUTH_REQUIRED:'登录已过期，请重新登录。', INVALID_CREDENTIALS:'账户或应用专用密码不正确。', LOGIN_THROTTLED:'尝试次数过多，请一分钟后重试。', SESSION_LIMIT:'登录会话已达上限，请退出其他会话或轮换密码。',
  INVALID_ORIGIN:'请求来源不匹配，请直接使用本机地址打开控制台。', CSRF_REQUIRED:'登录校验已失效，请重新登录。', CONFIG_CONFLICT:'配置已被其他编辑器修改。请复制你的修改，重新读取后合并。', IF_MATCH_REQUIRED:'请先读取原始配置，再保存。', CONFIG_VALIDATION_FAILED:'配置校验失败：请检查 YAML、节点类型、组选择、规则顺序及引用文件。文件未保存。', CONFIG_UNAVAILABLE:'无法读取应用目录下的配置文件。', CONFIG_INVALID:'配置无法解析，请在本机检查 YAML。', GROUP_SELECTION_REJECTED:'不能保存这个选择，请检查分组成员与循环引用。', NODE_SELECTION_REJECTED:'节点不可选，请补全 AnyTLS 节点参数。', ACTION_BUSY:'另一项操作正在执行，请等待完成。', INVALID_INPUT:'输入格式不正确。', UPDATE_UNAVAILABLE:'更新功能不可用：当前程序未提供有效更新结果，或网络/版本校验失败。', SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE:'操作未完成：管理员授权被取消、缺少图形会话或服务操作失败。请在终端检查服务；网页不会接收系统密码。', SERVICE_STATE_NOT_CONFIRMED:'操作后未能确认真实服务状态，请在本机检查。'
@@ -128,7 +128,7 @@ $('load-rules').onclick=()=>operation('读取规则',async()=>{const data=await 
 $('load-config').onclick=()=>{if(etag&& !confirm('重新读取会丢弃编辑区尚未保存的修改。继续？'))return;operation('读取原始配置',async()=>{const data=await api('/config');$('yaml-editor').value=data.yaml;etag=data.etag;$('yaml-editor').disabled=false;$('save-config').disabled=false;$('editor-info').textContent='已读取配置（含节点密码）。保存后，运行中的 VPN 会自动重新连接以应用配置。';});};
 $('save-config').onclick=()=>operation('校验并保存配置',async()=>{const data=await api('/config',{method:'PUT',headers:{'If-Match':etag},body:saveBody({yaml:$('yaml-editor').value})});etag=data.etag;$('editor-info').textContent=data.changed?'已保存并读回校验；未知字段、注释和原始文字保留。':'内容未变化，没有重写文件。';savedFeedback(data);await refreshAfterSave();});
 let importGeneration=0, importPreview=null, importMode='local', subscriptionConfigured=false, subscriptionRequest=0, importCommitting=false;
-const importLimit=4*1024*1024;
+const importLimit=32*1024*1024;
 function renderImportButtons(){
  for(const id of ['import-yaml','subscription-url','import-file']) $(id).disabled=importCommitting;
  if(importCommitting) $('yaml-editor').disabled=true;
@@ -170,7 +170,7 @@ for(const name of ['local','url']){
  tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||busy)return;event.preventDefault();const next=event.key==='Home'?'local':event.key==='End'?'url':name==='local'?'url':'local';setImportMode(next);$('import-tab-'+next).focus();});
 }
 for(const id of ['import-yaml','subscription-url']) $(id).addEventListener('input',invalidateImport);
-$('import-file').addEventListener('change',()=>{invalidateImport();const file=$('import-file').files[0];if(file&&(!/\.ya?ml$/i.test(file.name)||file.size>importLimit))$('import-source-status').textContent='请选择不超过 4 MiB 的 .yaml / .yml 文件。';});
+$('import-file').addEventListener('change',()=>{invalidateImport();const file=$('import-file').files[0];if(file&&(!/\.ya?ml$/i.test(file.name)||file.size>importLimit))$('import-source-status').textContent='请选择不超过 32 MiB 的 .yaml / .yml 文件。';});
 function readImportFile(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=reader.onabort=()=>reject(new Error('文件读取失败，请重新选择。'));reader.readAsText(file);});}
 function conversionReport(value){
  if(!value||!['clash','native'].includes(value.format)||typeof value.converted!=='boolean'||!['warnings','issues'].every(key=>Array.isArray(value[key])&&value[key].every(item=>typeof item==='string')))throw new Error('转换报告不完整，请重新预览。');
@@ -192,11 +192,11 @@ function previewImport(useSaved=false){return operation('预览导入',async()=>
   if(parsed.protocol!=='https:')throw new Error('订阅仅支持 HTTPS。');body={url};
  }else{
   const file=$('import-file').files[0];let yaml;
-  if(file){if(!/\.ya?ml$/i.test(file.name))throw new Error(messages.IMPORT_FORMAT_UNSUPPORTED);if(file.size>importLimit)throw new Error('文件超过 4 MiB，未发送。服务器仍会独立校验大小。');yaml=await readImportFile(file);}
+  if(file){if(!/\.ya?ml$/i.test(file.name))throw new Error(messages.IMPORT_FORMAT_UNSUPPORTED);if(file.size>importLimit)throw new Error('文件超过 32 MiB，未发送。服务器仍会独立校验大小。');yaml=await readImportFile(file);}
   else yaml=$('import-yaml').value;
   if(generation!==importGeneration||!csrf){notice('输入已改变，请重新预览。');return;}
   if(!yaml.trim())throw new Error('请选择 YAML 文件或粘贴配置。');
-  if(new TextEncoder().encode(yaml).length>importLimit)throw new Error('配置超过 4 MiB，未发送。服务器仍会独立校验大小。');body={yaml};
+  if(new TextEncoder().encode(yaml).length>importLimit)throw new Error('配置超过 32 MiB，未发送。服务器仍会独立校验大小。');body={yaml};
  }
  if(generation!==importGeneration||!csrf)return;
  let data;try{data=await api('/import/preview',{method:'POST',body});}
