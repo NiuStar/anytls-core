@@ -33,7 +33,8 @@ python3 -I scripts/install-binary.py --check-download --version v1.2.3
 python3 -I scripts/install-binary.py --check-download --arch amd64 # 仅校验Intel包，不执行
 ```
 
-本地需同时保有可信 `scripts/install.py`。检查模式可在非 macOS 上运行，使用
+本地需同时保有可信 `scripts/install.py`。检查模式不启动任何子进程：macOS默认按当前Python进程架构选包（Rosetta下可用`--arch arm64`指定检查原生包），非macOS默认arm64；实际安装才通过sysctl确认硬件，不能将探测失败当作Intel。
+检查模式可在非 macOS 上运行，使用
 临时目录下载并校验二进制和完整对应源码附件，验证包结构、版本、manifest、
 Mach-O 头及二进制摘要；输出 JSON 的 `download_verified: true` 和
 `executed: false`。**不运行二进制、不调用 helper、不创建应用目录、配置或 PATH
