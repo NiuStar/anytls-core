@@ -9,7 +9,10 @@ import (
 
 // Only allowlisted stage codes cross the HTTP boundary. Never forward helper
 // messages or wrapped tool output, which may contain private configuration.
-type webControlError struct{ Code string }
+type webControlError struct {
+	Code        string
+	Diagnostics *startDiagnostics
+}
 
 func (e *webControlError) Error() string { return e.Code }
 func webControlFailureCode(err error) string {
@@ -62,7 +65,7 @@ func webControlAction(ctx context.Context, config, action string, allow bool, re
 		if code == "" {
 			code = "HELPER_UNAVAILABLE"
 		}
-		return &webControlError{Code: code}
+		return &webControlError{Code: code, Diagnostics: result.Diagnostics}
 	}
 	if result.ConfigIdentity == "" {
 		return &webControlError{Code: "HELPER_UNAVAILABLE"}

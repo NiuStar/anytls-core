@@ -246,7 +246,7 @@ func checkProxyInactive() error {
 	}
 	for _, key := range []string{"HTTPEnable", "HTTPSEnable", "SOCKSEnable"} {
 		if strings.Contains(out, key+" : 1") {
-			return errors.New("system proxy active; turn it off before starting TUN")
+			return &systemProxyActiveError{}
 		}
 	}
 	return nil

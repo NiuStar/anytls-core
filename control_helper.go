@@ -34,14 +34,15 @@ type controlHelperRegistration struct {
 	Home   string `json:"home"`
 }
 type controlHelperResponse struct {
-	OK             bool   `json:"ok"`
-	Code           string `json:"code"`
-	Message        string `json:"message"`
-	Loaded         bool   `json:"loaded"`
-	Running        bool   `json:"running"`
-	HelperVersion  string `json:"helper_version"`
-	HelperSHA256   string `json:"helper_sha256"`
-	ConfigIdentity string `json:"config_identity"`
+	OK             bool              `json:"ok"`
+	Code           string            `json:"code"`
+	Message        string            `json:"message"`
+	Loaded         bool              `json:"loaded"`
+	Running        bool              `json:"running"`
+	HelperVersion  string            `json:"helper_version"`
+	HelperSHA256   string            `json:"helper_sha256"`
+	ConfigIdentity string            `json:"config_identity"`
+	Diagnostics    *startDiagnostics `json:"diagnostics,omitempty"`
 }
 type controlHelperWireRequest struct {
 	Action        string `json:"action"`
@@ -51,6 +52,9 @@ type controlHelperWireRequest struct {
 // A single JSON object followed by EOF. Clients half-close their write side;
 // this rejects trailing values without waiting for an unbounded stream.
 func controlHelperDecode(r io.Reader, fields map[string]any) error {
+	return controlHelperDecodeOptional(r, fields, "")
+}
+func controlHelperDecodeOptional(r io.Reader, fields map[string]any, optional string) error {
 	b, err := io.ReadAll(io.LimitReader(r, controlHelperJSONLimit+1))
 	if err != nil || len(b) > controlHelperJSONLimit {
 		return errors.New("invalid IPC frame")
@@ -84,7 +88,7 @@ func controlHelperDecode(r io.Reader, fields map[string]any) error {
 		return errors.New("trailing input")
 	}
 	for key := range fields {
-		if !seen[key] {
+		if !seen[key] && key != optional {
 			return errors.New("missing field")
 		}
 	}
@@ -177,26 +181,41 @@ func (s *controlHelperServer) execute(q controlHelperWireRequest) controlHelperR
 		defer cancel()
 		if q.Action == "start" || q.Action == "reload" {
 			if err := s.preflight(ctx, q.AllowInsecure); err != nil {
-				return controlHelperFailure("PREFLIGHT_FAILED")
+				reply := controlHelperFailure("PREFLIGHT_FAILED")
+				reply.Diagnostics = diagnosticFromError(err, strings.ToUpper(q.Action), "HELPER_PREFLIGHT", "PREFLIGHT_REJECTED")
+				return reply
 			}
 		}
 		if q.Action == "reload" {
 			loaded, _, err := s.state()
 			if err != nil {
-				return controlHelperFailure("STATE_FAILED")
+				reply := controlHelperFailure("STATE_FAILED")
+				reply.Diagnostics = diagnosticFromError(err, "RELOAD", "JOB", "JOB_STATE_UNAVAILABLE")
+				return reply
 			}
 			if !loaded {
-				return controlHelperFailure("PREFLIGHT_FAILED")
+				reply := controlHelperFailure("PREFLIGHT_FAILED")
+				reply.Diagnostics = diagnosticFromError(errors.New("job not loaded"), "RELOAD", "JOB", "JOB_NOT_LOADED")
+				return reply
 			}
 		}
 		if q.Action == "stop" || q.Action == "reload" {
 			if err := s.stop(ctx); err != nil {
-				return controlHelperFailure("STOP_FAILED")
+				reply := controlHelperFailure("STOP_FAILED")
+				reply.Diagnostics = diagnosticFromError(err, strings.ToUpper(q.Action), "STOP", "STOP_FAILED")
+				if q.Action == "reload" {
+					// STOP's receipt-only success does not complete the outer RELOAD.
+					reply.Diagnostics.Outcome = "FAILED"
+					reply.Diagnostics.Stage, reply.Diagnostics.Reason = "STOP", "STOP_FAILED"
+				}
+				return reply
 			}
 		}
 		if q.Action == "start" || q.Action == "reload" {
 			if err := s.start(ctx, q.AllowInsecure); err != nil {
-				return controlHelperFailure("START_FAILED")
+				reply := controlHelperFailure("START_FAILED")
+				reply.Diagnostics = diagnosticFromError(err, strings.ToUpper(q.Action), "UNKNOWN", "UNKNOWN")
+				return reply
 			}
 		}
 	}
@@ -431,8 +450,8 @@ func controlHelperExchange(ctx context.Context, c net.Conn, q controlHelperWireR
 	if err = half.CloseWrite(); err != nil {
 		return r, errors.New("control helper request completion failed")
 	}
-	err = controlHelperDecode(c, map[string]any{"ok": &r.OK, "code": &r.Code, "message": &r.Message, "loaded": &r.Loaded, "running": &r.Running, "helper_version": &r.HelperVersion, "helper_sha256": &r.HelperSHA256, "config_identity": &r.ConfigIdentity})
-	if err != nil {
+	err = controlHelperReadResponse(c, &r)
+	if err != nil || !r.Diagnostics.valid(r.OK) {
 		return controlHelperResponse{}, errors.New("HELPER_UNAVAILABLE: incompatible or invalid control helper response; reinstall with anytls helper install locally")
 	}
 	if r.ConfigIdentity != "" {

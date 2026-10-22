@@ -17,17 +17,18 @@ import (
 // Concrete per-invocation dependencies; fixtures only use their own TempDir.
 // The privileged entry points and fixed launchd label cannot be overridden.
 type serviceLifecycle struct {
-	root    string
-	tool    func(context.Context, string, ...string) (string, error)
-	state   func() (bool, bool, error)
-	route   func(string) (string, error)
-	dns     func() ([]string, error)
-	proxy   func() error
-	stage   func(string, string, string, string) error
-	remove  func(string) error
-	pause   func()
-	owned   *snapshotRootIdentity
-	receipt *serviceDiagnostic
+	root       string
+	tool       func(context.Context, string, ...string) (string, error)
+	state      func() (bool, bool, error)
+	route      func(string) (string, error)
+	dns        func() ([]string, error)
+	proxy      func() error
+	stage      func(string, string, string, string) error
+	remove     func(string) error
+	pause      func()
+	owned      *snapshotRootIdentity
+	receipt    *serviceDiagnostic
+	diagnostic *startDiagnostics
 }
 
 func newServiceLifecycle(root string) serviceLifecycle {
@@ -152,7 +153,7 @@ func (d serviceLifecycle) baseline() (networkBaseline, []string, error) {
 	}
 	servers, _, err := serviceOutbounds(filepath.Join(d.root, "config.yaml"), true)
 	if err != nil {
-		return b, nil, lifecycleFailure("restoration scope not verified", err)
+		return b, nil, d.failure("CONFIG", "CONFIG_COMPILE_FAILED", lifecycleFailure("restoration scope not verified", err))
 	}
 	if b.Version == 0 {
 		if len(servers) != 1 || servers[0] != b.Server {
@@ -178,10 +179,13 @@ func (d serviceLifecycle) serverRoutes(b networkBaseline, servers []string) erro
 			d.receipt.active.Servers = "FAILED"
 		}
 		if err != nil {
-			return lifecycleFailure("server route probe failed", err)
+			return d.failure("SERVER_ROUTE", "SERVER_ROUTE_UNAVAILABLE", lifecycleFailure("server route probe failed", err))
 		}
 		if !physicalInterface(iface) || iface != b.Servers[server] {
-			return errors.New("server route differs from original physical interface")
+			if d.receipt != nil && d.receipt.active == &d.receipt.Restore && d.receipt.diagnostic != nil {
+				d.receipt.diagnostic.Restoration = "FAILED"
+			}
+			return d.failure("SERVER_ROUTE", "SERVER_ROUTE_CHANGED", errors.New("server route differs from original physical interface"))
 		}
 		if d.receipt != nil {
 			d.receipt.server(i, "VERIFIED")
@@ -193,6 +197,13 @@ func (d serviceLifecycle) serverRoutes(b networkBaseline, servers []string) erro
 	return nil
 }
 func (d serviceLifecycle) restored(b networkBaseline, servers []string) error {
+	var diagnostic *startDiagnostics
+	if d.receipt != nil {
+		diagnostic = d.receipt.diagnostic
+	}
+	if diagnostic != nil {
+		diagnostic.Restoration = "UNKNOWN"
+	}
 	if d.receipt != nil {
 		d.receipt.Restore = diagnosticUnknown()
 		d.receipt.active = &d.receipt.Restore
@@ -208,6 +219,9 @@ func (d serviceLifecycle) restored(b networkBaseline, servers []string) error {
 		return lifecycleFailure("job state probe failed", err)
 	}
 	if loaded || running {
+		if diagnostic != nil {
+			diagnostic.Restoration = "FAILED"
+		}
 		return errors.New("job still loaded")
 	}
 	if d.receipt != nil {
@@ -219,6 +233,9 @@ func (d serviceLifecycle) restored(b networkBaseline, servers []string) error {
 		return lifecycleFailure("public route probe failed", err)
 	}
 	if !physicalInterface(iface) || iface != b.PublicInterface {
+		if diagnostic != nil {
+			diagnostic.Restoration = "FAILED"
+		}
 		return errors.New("public route not restored")
 	}
 	if d.receipt != nil {
@@ -235,30 +252,48 @@ func (d serviceLifecycle) restored(b networkBaseline, servers []string) error {
 		return lifecycleFailure("DNS probe failed", err)
 	}
 	if len(dns) == 0 || !slices.Equal(dns, b.DNS) {
+		if diagnostic != nil {
+			diagnostic.Restoration = "FAILED"
+		}
 		return errors.New("DNS not restored")
 	}
 	if d.receipt != nil {
 		d.receipt.Restore.DNS = "VERIFIED"
 	}
+	if diagnostic != nil {
+		diagnostic.Restoration = "VERIFIED"
+	}
 	return nil
 }
 func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool) (result error) {
 	r := newDiagnostic("START")
+	d.diagnostic = newStartDiagnostics("START")
+	r.diagnostic = d.diagnostic
 	d.receipt = r
 	defer r.finish(d.root, &result)
 	r.Baseline.Job = "FAILED"
+	d.diagnostic.Job = "UNKNOWN"
 	loaded, running, err := d.state()
 	if err != nil {
-		return lifecycleFailure("job state probe failed", err)
+		return d.failure("JOB", "JOB_STATE_UNAVAILABLE", lifecycleFailure("job state probe failed", err))
 	}
 	r.Baseline.Job = "UNLOADED"
+	d.diagnostic.Job = "UNLOADED"
 	if loaded || running {
 		r.Baseline.Job = "LOADED"
-		return errors.New("AnyTLS job already loaded; run 'anytls stop' before starting")
+		d.diagnostic.Job = "NOT_RUNNING"
+		if running {
+			d.diagnostic.Job = "RUNNING"
+		}
+		return d.failure("JOB", "JOB_ALREADY_LOADED", errors.New("AnyTLS job already loaded; run 'anytls stop' before starting"))
 	}
 	// Do not claim an existing directory or delete its diagnostic evidence.
 	if _, err := os.Lstat(d.root); !errors.Is(err, os.ErrNotExist) {
-		return lifecycleFailure("private snapshot already exists or is unavailable", err)
+		reason := "SNAPSHOT_UNAVAILABLE"
+		if err == nil {
+			reason = "SNAPSHOT_EXISTS"
+		}
+		return d.failure("SNAPSHOT", reason, lifecycleFailure("private snapshot already exists or is unavailable", err))
 	}
 	r.phase = "STAGING_FAILED"
 	attempted := false
@@ -266,6 +301,9 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 	defer func() {
 		if result == nil || preserveExisting {
 			return
+		}
+		if d.diagnostic.Reason == "NONE" {
+			d.diagnostic.fail("UNKNOWN", "UNKNOWN", result)
 		}
 		if attempted {
 			r.Rollback = "FAILED"
@@ -278,21 +316,26 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 		}
 		loaded, running, err := d.state()
 		if err != nil {
+			d.diagnostic.Cleanup = "UNKNOWN"
 			result = errors.Join(result, lifecycleFailure("cleanup job state unavailable; snapshot retained", err))
 			return
 		}
 		if loaded || running {
+			d.diagnostic.Cleanup = "UNKNOWN"
 			result = errors.Join(result, errors.New("cleanup job may be loaded; snapshot retained"))
 			return
 		}
 		if d.owned == nil {
+			d.diagnostic.Cleanup = "UNKNOWN"
 			result = errors.Join(result, errors.New("snapshot ownership unavailable; retained"))
 			return
 		}
 		if err := d.owned.remove(d.remove); err != nil {
+			d.diagnostic.Cleanup = "FAILED"
 			result = errors.Join(result, lifecycleFailure("private snapshot cleanup failed", err))
 		} else {
 			r.Snapshot = "REMOVED"
+			d.diagnostic.Cleanup = "VERIFIED"
 		}
 	}()
 	if err := d.stage(binary, config, core, d.root); err != nil {
@@ -308,26 +351,31 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 			r.Snapshot = "STAGING_INCOMPLETE"
 		}
 		preserveExisting = errors.Is(err, os.ErrExist)
-		return lifecycleFailure("private snapshot staging failed", err)
+		return d.failure("SNAPSHOT", "SNAPSHOT_STAGE_FAILED", lifecycleFailure("private snapshot staging failed", err))
 	}
 	if d.owned == nil || d.owned.info == nil {
 		d.owned, err = snapshotRootAt(d.root)
 	}
 	if err != nil {
-		return err
+		return d.failure("SNAPSHOT", "SNAPSHOT_IDENTITY_FAILED", err)
 	}
 	if err := d.owned.check(); err != nil {
-		return err
+		return d.failure("SNAPSHOT", "SNAPSHOT_IDENTITY_FAILED", err)
 	}
 	r.capture(d.root)
 	r.Snapshot = "STAGED"
 	// Stage first: compile the actual private inputs before baseline or control.
 	servers, insecure, err := serviceOutbounds(filepath.Join(d.root, "config.yaml"), allowInsecure)
 	if err != nil {
-		return err
+		return d.failure("CONFIG", "CONFIG_COMPILE_FAILED", err)
 	}
 	if err := d.proxy(); err != nil {
-		return lifecycleFailure("system proxy preflight failed", err)
+		reason := "PROXY_STATE_UNAVAILABLE"
+		var active *systemProxyActiveError
+		if errors.As(err, &active) {
+			reason = "SYSTEM_PROXY_ACTIVE"
+		}
+		return d.failure("PROXY", reason, lifecycleFailure("system proxy preflight failed", err))
 	}
 	baseline := networkBaseline{Version: 1, Servers: map[string]string{}, Server: servers[0]}
 	r.serverScope(len(servers), "NOT_EXECUTED")
@@ -336,10 +384,10 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 		r.server(i, "FAILED")
 		iface, err := d.route(server)
 		if err != nil {
-			return lifecycleFailure("server route preflight failed", err)
+			return d.failure("SERVER_ROUTE", "SERVER_ROUTE_UNAVAILABLE", lifecycleFailure("server route preflight failed", err))
 		}
 		if !physicalInterface(iface) {
-			return errors.New("server route is not on physical interface")
+			return d.failure("SERVER_ROUTE", "SERVER_ROUTE_NOT_PHYSICAL", errors.New("server route is not on physical interface"))
 		}
 		baseline.Servers[server] = iface
 		r.server(i, "CAPTURED_PHYSICAL")
@@ -349,48 +397,51 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 	baseline.ServerInterface = baseline.Servers[baseline.Server]
 	baseline.PublicInterface, err = d.route("1.1.1.1")
 	if err != nil {
-		return lifecycleFailure("public route preflight failed", err)
+		return d.failure("PUBLIC_ROUTE", "PUBLIC_ROUTE_UNAVAILABLE", lifecycleFailure("public route preflight failed", err))
 	}
 	r.Baseline.Public = "CAPTURED"
 	r.Baseline.DNS = "FAILED"
 	baseline.DNS, err = d.dns()
 	if err != nil {
-		return lifecycleFailure("DNS preflight failed", err)
+		return d.failure("DNS", "DNS_STATE_UNAVAILABLE", lifecycleFailure("DNS preflight failed", err))
 	}
 	if err := validBaseline(baseline); err != nil {
-		return err
+		if len(baseline.DNS) == 0 {
+			return d.failure("DNS", "DNS_EVIDENCE_EMPTY", err)
+		}
+		return d.failure("BASELINE", "BASELINE_INVALID", err)
 	}
 	r.Baseline.DNS = "CAPTURED"
 	raw, err := json.Marshal(baseline)
 	if err != nil {
-		return lifecycleFailure("baseline encoding failed", err)
+		return d.failure("BASELINE", "BASELINE_WRITE_FAILED", lifecycleFailure("baseline encoding failed", err))
 	}
 	if err := os.WriteFile(filepath.Join(d.root, serviceBaselineName), raw, 0600); err != nil {
-		return lifecycleFailure("baseline write failed", err)
+		return d.failure("BASELINE", "BASELINE_WRITE_FAILED", lifecycleFailure("baseline write failed", err))
 	}
 	// Recompile the staged bytes, not user config: confirm actual launch scope.
 	if _, _, err := d.baseline(); err != nil {
-		return err
+		return d.failure("BASELINE", "BASELINE_INVALID", err)
 	}
 	plist, err := servicePlist(filepath.Join(d.root, "anytls-macos"), filepath.Join(d.root, "config.yaml"), filepath.Join(d.root, "sing-box"), filepath.Join(d.root, serviceLogName), insecure)
 	if err != nil {
-		return err
+		return d.failure("PLIST", "PLIST_CREATE_FAILED", err)
 	}
 	servicePath := filepath.Join(d.root, "anytls.plist")
 	f, err := os.OpenFile(servicePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return lifecycleFailure("plist create failed", err)
+		return d.failure("PLIST", "PLIST_CREATE_FAILED", lifecycleFailure("plist create failed", err))
 	}
 	_, writeErr := f.WriteString(plist)
 	closeErr := f.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
-		return lifecycleFailure("plist write/close failed", err)
+		return d.failure("PLIST", "PLIST_WRITE_FAILED", lifecycleFailure("plist write/close failed", err))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_, err = d.tool(ctx, "/usr/bin/plutil", "-lint", servicePath)
 	cancel()
 	if err != nil {
-		return lifecycleFailure("invalid launchd plist", err)
+		return d.failure("PLIST", "PLIST_INVALID", lifecycleFailure("invalid launchd plist", err))
 	}
 	r.phase = "BOOTSTRAP_FAILED"
 	ctx, cancel = context.WithTimeout(context.Background(), 8*time.Second)
@@ -398,7 +449,7 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 	_, err = d.tool(ctx, "/bin/launchctl", "bootstrap", "system", servicePath)
 	cancel()
 	if err != nil {
-		return lifecycleFailure("launchd bootstrap failed", err)
+		return d.failure("BOOTSTRAP", "LAUNCHD_BOOTSTRAP_FAILED", lifecycleFailure("launchd bootstrap failed", err))
 	}
 	r.phase = "READINESS_FAILED"
 	r.active = &r.BeforeHTTPS
@@ -408,22 +459,28 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 			r.Servers[j].Readiness = "NOT_EXECUTED"
 		}
 		r.BeforeHTTPS.Job = "FAILED"
+		d.diagnostic.Job = "UNKNOWN"
 		loaded, running, err := d.state()
 		if err != nil {
-			return lifecycleFailure("readiness job probe failed", err)
+			return d.failure("READINESS", "READINESS_JOB_UNAVAILABLE", lifecycleFailure("readiness job probe failed", err))
 		}
 		r.BeforeHTTPS.Job = "NOT_RUNNING"
+		d.diagnostic.Job = "NOT_RUNNING"
 		if loaded && running {
 			r.BeforeHTTPS.Job = "RUNNING"
+			d.diagnostic.Job = "RUNNING"
 		}
 		r.BeforeHTTPS.Public = "FAILED"
+		d.diagnostic.Tun = "UNKNOWN"
 		target, err := d.route("1.1.1.1")
 		if err != nil {
-			return lifecycleFailure("readiness public route probe failed", err)
+			return d.failure("READINESS", "READINESS_ROUTE_UNAVAILABLE", lifecycleFailure("readiness public route probe failed", err))
 		}
 		r.BeforeHTTPS.Public = "NOT_TUN"
+		d.diagnostic.Tun = "NOT_TUN"
 		if strings.HasPrefix(target, "utun") {
 			r.BeforeHTTPS.Public = "TUN"
+			d.diagnostic.Tun = "TUN"
 		}
 		if err := d.serverRoutes(baseline, servers); err != nil {
 			return err
@@ -439,22 +496,30 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 			r.HTTPS = "SUCCEEDED_SAME_INVOCATION"
 			r.active = &r.AfterHTTPS
 			r.AfterHTTPS.Job = "FAILED"
+			d.diagnostic.Job = "UNKNOWN"
 			// Re-read after the blocking HTTPS probe; PID alone never establishes ready.
 			l, runningFinal, err := d.state()
 			if err != nil {
-				return lifecycleFailure("readiness final job probe failed", err)
+				return d.failure("READINESS", "READINESS_JOB_UNAVAILABLE", lifecycleFailure("readiness final job probe failed", err))
 			}
 			r.AfterHTTPS.Job = "NOT_RUNNING"
+			d.diagnostic.Job = "NOT_RUNNING"
 			if l && runningFinal {
 				d.receipt.AfterHTTPS.Job = "RUNNING"
+				d.diagnostic.Job = "RUNNING"
 			}
 			d.receipt.AfterHTTPS.Public = "FAILED"
+			d.diagnostic.Tun = "UNKNOWN"
 			finalTarget, routeErr := d.route("1.1.1.1")
 			if routeErr != nil {
-				return lifecycleFailure("readiness final public route probe failed", routeErr)
+				return d.failure("READINESS", "READINESS_ROUTE_UNAVAILABLE", lifecycleFailure("readiness final public route probe failed", routeErr))
+			}
+			d.diagnostic.Tun = "NOT_TUN"
+			if strings.HasPrefix(finalTarget, "utun") {
+				d.diagnostic.Tun = "TUN"
 			}
 			if !l || !runningFinal || finalTarget != target {
-				return errors.New("readiness changed during HTTPS probe")
+				return d.failure("READINESS", "READINESS_CHANGED", errors.New("readiness changed during HTTPS probe"))
 			}
 			r.AfterHTTPS.Public = "VERIFIED_SAME_TUN"
 			if err := d.serverRoutes(baseline, servers); err != nil {
@@ -463,10 +528,10 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 			r.AfterHTTPS.DNS = "FAILED"
 			dns, err := d.dns()
 			if err != nil {
-				return lifecycleFailure("readiness DNS probe failed", err)
+				return d.failure("DNS", "DNS_STATE_UNAVAILABLE", lifecycleFailure("readiness DNS probe failed", err))
 			}
 			if len(dns) == 0 {
-				return errors.New("readiness DNS evidence unavailable")
+				return d.failure("DNS", "DNS_EVIDENCE_EMPTY", errors.New("readiness DNS evidence unavailable"))
 			}
 			r.AfterHTTPS.DNS = "OBSERVED_NONEMPTY"
 			r.Readiness = "NETWORK_VERIFIED"
@@ -477,7 +542,16 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 			d.pause()
 		}
 	}
-	return errors.New("TUN did not become ready")
+	reason := "READINESS_UNKNOWN"
+	switch {
+	case d.diagnostic.Job == "NOT_RUNNING" && d.diagnostic.Tun == "NOT_TUN":
+		reason = "PROCESS_AND_TUN_NOT_READY"
+	case d.diagnostic.Job == "NOT_RUNNING":
+		reason = "PROCESS_NOT_RUNNING"
+	case d.diagnostic.Tun == "NOT_TUN":
+		reason = "TUN_NOT_READY"
+	}
+	return d.failure("READINESS", reason, errors.New("TUN did not become ready"))
 }
 
 // Retry only curl's transient transport failures, never TLS verification,
@@ -501,31 +575,52 @@ func (d serviceLifecycle) httpsExitProbe(parent context.Context, target string, 
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(last, lifecycleFailure("HTTPS exit probe cancelled", err))
+			return errors.Join(last, d.failure("HTTPS", "CANCELLED", lifecycleFailure("HTTPS exit probe cancelled", err)))
 		}
 		if attempt > 0 {
 			if err := checkRead(); err != nil {
-				return errors.Join(last, lifecycleFailure("HTTPS retry deadline unavailable", err))
+				return errors.Join(last, d.failure("READINESS", "CANCELLED", lifecycleFailure("HTTPS retry deadline unavailable", err)))
+			}
+			if d.diagnostic != nil {
+				d.diagnostic.Job = "UNKNOWN"
 			}
 			loaded, running, err := d.state()
 			if err != nil {
-				return errors.Join(last, lifecycleFailure("readiness retry job probe failed", err))
+				return errors.Join(last, d.failure("READINESS", "READINESS_JOB_UNAVAILABLE", lifecycleFailure("readiness retry job probe failed", err)))
+			}
+			if d.diagnostic != nil {
+				d.diagnostic.Job = "UNLOADED"
+				if loaded {
+					d.diagnostic.Job = "NOT_RUNNING"
+				}
+				if loaded && running {
+					d.diagnostic.Job = "RUNNING"
+				}
 			}
 			if !loaded || !running {
-				return errors.Join(last, errors.New("readiness changed before HTTPS retry"))
+				return errors.Join(last, d.failure("READINESS", "READINESS_CHANGED", errors.New("readiness changed before HTTPS retry")))
 			}
 			if err := checkRead(); err != nil {
-				return errors.Join(last, lifecycleFailure("HTTPS retry deadline unavailable", err))
+				return errors.Join(last, d.failure("READINESS", "CANCELLED", lifecycleFailure("HTTPS retry deadline unavailable", err)))
+			}
+			if d.diagnostic != nil {
+				d.diagnostic.Tun = "UNKNOWN"
 			}
 			current, err := d.route("1.1.1.1")
 			if err != nil {
-				return errors.Join(last, lifecycleFailure("readiness retry public route probe failed", err))
+				return errors.Join(last, d.failure("READINESS", "READINESS_ROUTE_UNAVAILABLE", lifecycleFailure("readiness retry public route probe failed", err)))
+			}
+			if d.diagnostic != nil {
+				d.diagnostic.Tun = "NOT_TUN"
+				if strings.HasPrefix(current, "utun") {
+					d.diagnostic.Tun = "TUN"
+				}
 			}
 			if current != target {
-				return errors.Join(last, errors.New("readiness changed before HTTPS retry"))
+				return errors.Join(last, d.failure("READINESS", "READINESS_CHANGED", errors.New("readiness changed before HTTPS retry")))
 			}
 			if err := ctx.Err(); err != nil {
-				return errors.Join(last, lifecycleFailure("HTTPS exit probe cancelled", err))
+				return errors.Join(last, d.failure("HTTPS", "CANCELLED", lifecycleFailure("HTTPS exit probe cancelled", err)))
 			}
 			// Check cancellation between individual server route reads too.
 			route := d.route
@@ -540,25 +635,25 @@ func (d serviceLifecycle) httpsExitProbe(parent context.Context, target string, 
 				return errors.Join(last, err)
 			}
 			if err := ctx.Err(); err != nil {
-				return errors.Join(last, lifecycleFailure("HTTPS exit probe cancelled", err))
+				return errors.Join(last, d.failure("HTTPS", "CANCELLED", lifecycleFailure("HTTPS exit probe cancelled", err)))
 			}
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
 		probe, err := d.tool(probeCtx, "/usr/bin/curl", "--noproxy", "*", "-4", "-fsS", "--connect-timeout", "5", "--max-time", "12", "https://api.ipify.org")
 		probeCancel()
 		if ctx.Err() != nil {
-			return errors.Join(lifecycleFailure("HTTPS exit probe failed", err), lifecycleFailure("HTTPS exit probe cancelled", ctx.Err()))
+			return errors.Join(lifecycleFailure("HTTPS exit probe failed", err), d.failure("HTTPS", "CANCELLED", lifecycleFailure("HTTPS exit probe cancelled", ctx.Err())))
 		}
 		if err == nil {
 			if net.ParseIP(strings.TrimSpace(probe)) == nil {
-				return errors.New("HTTPS exit probe returned invalid address")
+				return d.failure("HTTPS", "HTTPS_RESPONSE_INVALID", errors.New("HTTPS exit probe returned invalid address"))
 			}
 			return nil
 		}
 		last = lifecycleFailure("HTTPS exit probe failed", err)
 		var exit interface{ ExitCode() int }
 		if !errors.As(err, &exit) {
-			return last
+			return d.failure("HTTPS", httpsFailureReason(last), last)
 		}
 		code := exit.ExitCode()
 		category := "non-retryable"
@@ -578,14 +673,16 @@ func (d serviceLifecycle) httpsExitProbe(parent context.Context, target string, 
 		}
 		last = lifecycleFailure(fmt.Sprintf("HTTPS exit probe failed (curl exit %d: %s; attempt %d/3)", code, category, attempt+1), err)
 		if category == "non-retryable" || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return last
+			return d.failure("HTTPS", httpsFailureReason(last), last)
 		}
 	}
-	return last
+	return d.failure("HTTPS", httpsFailureReason(last), last)
 }
 
 func (d serviceLifecycle) stop() (result error) {
 	r := newDiagnostic("STOP")
+	r.diagnostic = newStartDiagnostics("STOP")
+	d.diagnostic = nil
 	d.receipt = r
 	defer r.finish(d.root, &result)
 	return d.stopObserved(r)
@@ -605,10 +702,17 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 	if err != nil {
 		return lifecycleFailure("job state probe failed; stop not attempted", err)
 	}
+	if r.diagnostic != nil {
+		r.diagnostic.Restoration = "UNKNOWN"
+		r.diagnostic.Cleanup = "UNKNOWN"
+	}
 	if !loaded && !running {
 		if _, err := os.Lstat(d.root); errors.Is(err, os.ErrNotExist) {
 			r.Stopped = "VERIFIED"
 			r.Snapshot = "ABSENT"
+			if r.diagnostic != nil {
+				r.diagnostic.Cleanup = "VERIFIED"
+			}
 			r.Restoration = "UNAVAILABLE_NO_BASELINE"
 			fmt.Println("AnyTLS TUN stopped")
 			return nil
@@ -653,9 +757,15 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 					return errors.New("snapshot ownership unavailable; retained")
 				}
 				if err := d.owned.remove(d.remove); err != nil {
+					if r.diagnostic != nil {
+						r.diagnostic.Cleanup = "FAILED"
+					}
 					return lifecycleFailure("restoration verified but snapshot cleanup failed", err)
 				}
 				r.Snapshot = "REMOVED"
+				if r.diagnostic != nil {
+					r.diagnostic.Cleanup = "VERIFIED"
+				}
 				fmt.Println("AnyTLS TUN stopped; all server/public routes and DNS restoration verified")
 				return nil
 			}

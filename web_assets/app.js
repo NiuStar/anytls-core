@@ -12,6 +12,50 @@ const messages = {
  AUTH_REQUIRED:'登录已过期，请重新登录。', INVALID_CREDENTIALS:'账户或应用专用密码不正确。', LOGIN_THROTTLED:'尝试次数过多，请一分钟后重试。', SESSION_LIMIT:'登录会话已达上限，请退出其他会话或轮换密码。',
  INVALID_ORIGIN:'请求来源不匹配，请直接使用本机地址打开控制台。', CSRF_REQUIRED:'登录校验已失效，请重新登录。', CONFIG_CONFLICT:'配置已被其他编辑器修改。请复制你的修改，重新读取后合并。', IF_MATCH_REQUIRED:'请先读取原始配置，再保存。', CONFIG_VALIDATION_FAILED:'配置校验失败：请检查 YAML、节点类型、组选择、规则顺序及引用文件。文件未保存。', CONFIG_UNAVAILABLE:'无法读取应用目录下的配置文件。', CONFIG_INVALID:'配置无法解析，请在本机检查 YAML。', GROUP_SELECTION_REJECTED:'不能保存这个选择，请检查分组成员与循环引用。', NODE_SELECTION_REJECTED:'节点不可选，请补全 AnyTLS 节点参数。', ACTION_BUSY:'另一项操作正在执行，请等待完成。', INVALID_INPUT:'输入格式不正确。', UPDATE_UNAVAILABLE:'更新功能不可用：当前程序未提供有效更新结果，或网络/版本校验失败。', SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE:'操作未完成：管理员授权被取消、缺少图形会话或服务操作失败。请在终端检查服务；网页不会接收系统密码。', SERVICE_STATE_NOT_CONFIRMED:'操作后未能确认真实服务状态，请在本机检查。'
 };
+// Fixed vocabulary only: never display raw helper/tool errors or unknown enum values.
+const diagnosticStages = {
+ NONE:['无','核实当前服务状态。'], HELPER_PREFLIGHT:['助手预检','核实助手绑定与配置预检结果。'], JOB:['服务作业','核实本机服务管理器的加载与运行状态。'], SNAPSHOT:['启动快照','核实本机快照状态与目录权限；不要删除快照。'], CONFIG:['配置编译','核实配置及其引用资源；编译失败不等于密码错误。'], PROXY:['系统代理','检查系统 HTTP、HTTPS、SOCKS 代理设置。'], SERVER_ROUTE:['服务器路由','核实服务器物理出口及旁路路由。'], PUBLIC_ROUTE:['公共路由','核实公共路由读取结果。'], DNS:['DNS 状态','核实本机 DNS 设置与读取结果。'], BASELINE:['网络基线','核实网络基线的完整性与目录权限。'], PLIST:['服务描述','核实本机服务描述生成与校验结果。'], BOOTSTRAP:['服务注册','核实服务管理器注册结果；尚不能确定系统根因。'], READINESS:['启动就绪','核实进程与 TUN 路由的当前状态。'], HTTPS:['出口 HTTPS 检查','核实出口 HTTPS 的 DNS、连接及证书链；不代表节点认证失败。'], STOP:['停止与恢复','核实停止链及路由、DNS 恢复证据。'], DIAGNOSTIC:['诊断保存','核实诊断保存权限与当前应用状态。'], UNKNOWN:['未知','核实当前服务状态；现有证据不足以确定原因。']
+};
+const diagnosticReasons = {
+ NONE:['NONE','无失败原因'], PREFLIGHT_REJECTED:['HELPER_PREFLIGHT','助手预检拒绝'],
+ JOB_STATE_UNAVAILABLE:['JOB','服务作业状态不可读取'], JOB_ALREADY_LOADED:['JOB','服务作业已加载或运行'], JOB_NOT_LOADED:['JOB','服务作业尚未加载'],
+ SNAPSHOT_EXISTS:['SNAPSHOT','启动快照已存在'], SNAPSHOT_UNAVAILABLE:['SNAPSHOT','快照状态不可读取'], SNAPSHOT_STAGE_FAILED:['SNAPSHOT','快照创建或资源准备失败'], SNAPSHOT_IDENTITY_FAILED:['SNAPSHOT','快照身份校验失败'],
+ CONFIG_COMPILE_FAILED:['CONFIG','配置编译失败'], SYSTEM_PROXY_ACTIVE:['PROXY','系统代理已启用'], PROXY_STATE_UNAVAILABLE:['PROXY','系统代理状态不可读取'],
+ SERVER_ROUTE_UNAVAILABLE:['SERVER_ROUTE','服务器路由不可读取'], SERVER_ROUTE_NOT_PHYSICAL:['SERVER_ROUTE','服务器出口不是物理接口'], SERVER_ROUTE_CHANGED:['SERVER_ROUTE','服务器旁路路由已变化'], PUBLIC_ROUTE_UNAVAILABLE:['PUBLIC_ROUTE','公共路由不可读取'],
+ DNS_STATE_UNAVAILABLE:['DNS','DNS 状态不可读取'], DNS_EVIDENCE_EMPTY:['DNS','未取得 DNS 列表'], BASELINE_INVALID:['BASELINE','网络基线读取或校验失败'], BASELINE_WRITE_FAILED:['BASELINE','网络基线保存失败'],
+ PLIST_CREATE_FAILED:['PLIST','服务描述创建失败'], PLIST_WRITE_FAILED:['PLIST','服务描述写入或关闭失败'], PLIST_INVALID:['PLIST','服务描述校验失败'], LAUNCHD_BOOTSTRAP_FAILED:['BOOTSTRAP','服务注册失败'],
+ READINESS_JOB_UNAVAILABLE:['READINESS','就绪检查无法读取作业状态'], READINESS_ROUTE_UNAVAILABLE:['READINESS','就绪检查无法读取路由'], READINESS_CHANGED:['READINESS','就绪检查期间进程或 TUN 路由发生变化'], PROCESS_NOT_RUNNING:['READINESS','观察结束时进程未运行'], TUN_NOT_READY:['READINESS','观察结束时 TUN 未就绪'], PROCESS_AND_TUN_NOT_READY:['READINESS','观察结束时进程与 TUN 均未就绪'], READINESS_UNKNOWN:['READINESS','缺少可信的就绪观察'],
+ HTTPS_DNS_FAILED:['HTTPS','出口 HTTPS DNS 解析失败'], HTTPS_CONNECT_FAILED:['HTTPS','出口 HTTPS 连接失败'], HTTPS_TIMEOUT:['HTTPS','出口 HTTPS 检查超时'], HTTPS_TLS_HANDSHAKE_FAILED:['HTTPS','出口 HTTPS TLS 握手失败'], HTTPS_CERTIFICATE_FAILED:['HTTPS','出口 HTTPS 证书验证失败'], HTTPS_HTTP_FAILED:['HTTPS','出口 HTTPS HTTP 响应失败'], HTTPS_EMPTY_RESPONSE:['HTTPS','出口 HTTPS 响应为空'], HTTPS_RECEIVE_FAILED:['HTTPS','出口 HTTPS 接收失败'], HTTPS_RESPONSE_INVALID:['HTTPS','出口 HTTPS 响应不是有效 IP'], HTTPS_FAILED:['HTTPS','出口 HTTPS 检查失败，具体原因未知'],
+ STOP_FAILED:['STOP','停止或恢复链未成功'], RECEIPT_WRITE_FAILED:['DIAGNOSTIC','诊断回执保存失败'], UNKNOWN:['UNKNOWN','原因未知']
+};
+const recoveryLabels={NOT_ATTEMPTED:'未尝试',VERIFIED:'已验证',FAILED:'失败',UNKNOWN:'未知'};
+const receiptLabels={NOT_ATTEMPTED:'未尝试',WRITTEN:'已写入',FAILED:'失败',UNKNOWN:'未知'};
+const serviceErrorCodes=new Set(['HELPER_CONFIG_MISMATCH','HELPER_UNAVAILABLE','FORBIDDEN','PREFLIGHT_FAILED','STOP_FAILED','START_FAILED','STATE_FAILED','BUSY','SERVICE_ACTION_FAILED','SERVICE_ACTION_FAILED_OR_AUTHORIZATION_UNAVAILABLE','SERVICE_STATE_NOT_CONFIRMED']);
+const own=(object,key)=>Object.prototype.hasOwnProperty.call(object,key);
+function validDiagnostics(d, operation, success) {
+ const fields=['schema','operation','outcome','stage','reason','rollback','restoration','cleanup','receipt','job','tun'];
+ if(!d||typeof d!=='object'||Array.isArray(d)||Object.keys(d).length!==fields.length||!fields.every(k=>own(d,k))||d.schema!==1||!fields.slice(1).every(k=>typeof d[k]==='string'))return false;
+ if(!['START','RELOAD','STOP'].includes(d.operation)||(operation&&d.operation!==operation)||!own(diagnosticStages,d.stage)||!['SUCCEEDED','FAILED','CANCELLED','UNKNOWN'].includes(d.outcome))return false;
+ if(!['rollback','restoration','cleanup'].every(k=>typeof d[k]==='string'&&own(recoveryLabels,d[k]))||typeof d.receipt!=='string'||!own(receiptLabels,d.receipt)||!['NOT_OBSERVED','RUNNING','NOT_RUNNING','UNLOADED','UNKNOWN'].includes(d.job)||!['NOT_OBSERVED','TUN','NOT_TUN','UNKNOWN'].includes(d.tun))return false;
+ const matched=typeof d.reason==='string'&&own(diagnosticReasons,d.reason)&&diagnosticReasons[d.reason][0]===d.stage;
+ if(success)return d.outcome==='SUCCEEDED'&&d.stage==='NONE'&&d.reason==='NONE';
+ if(d.outcome==='SUCCEEDED')return d.stage==='DIAGNOSTIC'&&d.reason==='RECEIPT_WRITE_FAILED'&&d.receipt==='FAILED';
+ if(d.outcome==='UNKNOWN')return d.stage==='UNKNOWN'&&d.reason==='UNKNOWN';
+ if(d.outcome==='CANCELLED')return d.reason==='CANCELLED'&&d.stage!=='NONE';
+ return matched&&d.stage!=='UNKNOWN'&&d.reason!=='NONE'&&d.reason!=='RECEIPT_WRITE_FAILED';
+}
+function serviceFeedback(code,data,operation) {
+ if(typeof code!=='string'||!serviceErrorCodes.has(code))return '';
+ const coarse='错误码：'+code;
+ if(!own(data,'diagnostics'))return coarse+'\n助手未提供详细原因；可能为旧版助手\n下一步：核实当前服务与配置状态；现有证据不足以确定原因。';
+ const d=data.diagnostics;
+ if(!validDiagnostics(d,operation,false))return coarse+'\n诊断数据无效，未采用详细原因或恢复结论。\n下一步：核实助手与当前服务状态。';
+ const action={START:'启动',RELOAD:'重载',STOP:'停止'}[d.operation];
+ const result=d.outcome==='SUCCEEDED'?action+'操作已成功，但诊断保存失败，应用状态仍须核实（SUCCEEDED）。':d.outcome==='CANCELLED'?'操作已取消。':d.outcome==='UNKNOWN'?'操作结果未知。':'操作失败。';
+ const reason=d.reason==='CANCELLED'?'操作已取消':diagnosticReasons[d.reason][1];
+ const observations={NOT_OBSERVED:'未观察',RUNNING:'运行中',NOT_RUNNING:'未运行',UNLOADED:'未加载',UNKNOWN:'未知',TUN:'已接管',NOT_TUN:'未接管'};
+ return [coarse,result,'阶段：'+diagnosticStages[d.stage][0]+'；原因：'+reason,'回滚：'+recoveryLabels[d.rollback]+'；网络恢复：'+recoveryLabels[d.restoration],'快照清理：'+recoveryLabels[d.cleanup]+'；诊断回执：'+receiptLabels[d.receipt],'作业观察：'+observations[d.job]+'；TUN 观察：'+observations[d.tun],'下一步：'+diagnosticStages[d.stage][1]+(d.restoration==='FAILED'||d.restoration==='UNKNOWN'?' 网络恢复尚未确认，请核实路由与 DNS。':'')+(d.operation==='RELOAD'?' 新启动回滚不代表旧 VPN 已恢复。':'')].join('\n');
+}
 async function api(path, options = {}) {
  const headers = new Headers(options.headers || {});
  if (options.body !== undefined) { headers.set('Content-Type','application/json'); options.body = JSON.stringify(options.body); }
@@ -20,7 +64,9 @@ async function api(path, options = {}) {
  let data; try { data = await response.json(); } catch { throw new Error('服务器未返回有效数据。'); }
  if (!response.ok) {
   if (response.status === 401 && path !== '/login') showLogin();
-  const error=new Error(messages[data.error] || '操作失败（'+response.status+'）。请检查本机配置或命令行状态。'); error.code=data.error; error.details=data; throw error;
+  const serviceOperation={'/service/start':'START','/service/reload':'RELOAD','/service/stop':'STOP'}[path];
+  const feedback=serviceOperation?serviceFeedback(data.error,data,serviceOperation):'';
+  const error=new Error(feedback || (typeof data.error==='string'&&own(messages,data.error)?messages[data.error]:'操作失败（'+response.status+'）。请检查本机配置或命令行状态。')); error.code=data.error; error.details=data; throw error;
  }
  return data;
 }
@@ -51,8 +97,9 @@ function savedFeedback(data) {
  const result=data.apply_status;
  const applied=result==='APPLIED';
  const failed=data.changed && !applied && result!=='SAVED_STOPPED';
- const text=!data.changed?'配置未变化，没有重新连接。':applied?'配置已保存并自动生效。':result==='SAVED_STOPPED'?'配置已保存；VPN 未运行，下次启动时生效。':'配置已保存，但自动应用未完成。请检查系统授权或配置；当前连接状态以概览为准。';
- notice(text+(data.apply_error&&messages[data.apply_error]?' '+messages[data.apply_error]:''),Boolean(failed));
+ const text=!data.changed?'配置未变化，没有重新连接。':applied?'配置已保存并自动生效。':result==='SAVED_STOPPED'?'配置已保存；VPN 未运行，下次启动时生效。':'配置已保存，但自动应用未完成；配置尚未确认生效，当前连接状态以概览为准。';
+ const detail=failed?serviceFeedback(data.apply_error,data,'RELOAD'):'';
+ notice(text+(detail?'\n'+detail:data.apply_error&&typeof data.apply_error==='string'&&own(messages,data.apply_error)?' '+messages[data.apply_error]:''),Boolean(failed));
 }
 async function refreshAfterSave(refresh) {
  const savedNotice=$('notice').textContent;
@@ -63,7 +110,7 @@ async function refreshAfterSave(refresh) {
  if (!serviceState) warning+=(warning?' ':'')+'服务状态刷新失败，请稍后确认。';
  notice(savedNotice+(warning?' '+warning:''),savedFailure||Boolean(warning));
 }
-function notice(text, failure = false) { $('notice').textContent=text; $('notice').classList.toggle('failure',failure); $('notice').hidden=!text; }
+function notice(text, failure = false) { $('notice').style.whiteSpace='pre-line'; $('notice').textContent=text; $('notice').classList.toggle('failure',failure); $('notice').hidden=!text; }
 async function operation(label, fn) {
  if (busy) return;
  const session=sessionGeneration;

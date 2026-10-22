@@ -69,6 +69,7 @@ type serviceDiagnostic struct {
 	ServerCount   int                `json:"server_count"`
 	ServerDetails string             `json:"server_details"`
 	active        *diagnosticEvidence
+	diagnostic    *startDiagnostics
 	phase         string
 }
 
@@ -268,13 +269,31 @@ func (r *serviceDiagnostic) write(root string) error {
 	return os.Rename(f.Name(), p)
 }
 func (r *serviceDiagnostic) finish(root string, result *error) {
+	d := r.diagnostic
+	if d != nil {
+		if *result != nil && d.Reason == "NONE" {
+			stage, reason := "UNKNOWN", "UNKNOWN"
+			if r.Operation == "STOP" {
+				stage, reason = "STOP", "STOP_FAILED"
+			}
+			d.fail(stage, reason, *result)
+		}
+		switch r.Rollback {
+		case "SUCCEEDED":
+			d.Rollback = "VERIFIED"
+		case "FAILED":
+			d.Rollback = "FAILED"
+		}
+	}
 	if *result == nil {
 		r.Outcome = "SUCCEEDED"
 		r.Code = "NONE"
 	} else {
 		r.Outcome = "FAILED"
 		r.Code = r.phase
-		if errors.Is(*result, context.Canceled) || errors.Is(*result, context.DeadlineExceeded) {
+		if d != nil {
+			r.Outcome = d.Outcome
+		} else if errors.Is(*result, context.Canceled) || errors.Is(*result, context.DeadlineExceeded) {
 			r.Outcome = "CANCELLED"
 			r.Code = "CANCELLED"
 		}
@@ -283,7 +302,18 @@ func (r *serviceDiagnostic) finish(root string, result *error) {
 		outcome := "lifecycle failed; diagnostic receipt write failed"
 		if *result == nil {
 			outcome = "lifecycle succeeded; diagnostic receipt write failed"
+			if d != nil {
+				d.Stage, d.Reason = "DIAGNOSTIC", "RECEIPT_WRITE_FAILED"
+			}
+		}
+		if d != nil {
+			d.Receipt = "FAILED"
 		}
 		*result = errors.Join(*result, lifecycleFailure(outcome, err))
+	} else if d != nil {
+		d.Receipt = "WRITTEN"
+	}
+	if *result != nil && d != nil {
+		*result = &startDiagnosticError{*d, *result}
 	}
 }

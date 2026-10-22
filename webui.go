@@ -409,6 +409,7 @@ func (w *webConsole) saved() { w.metaMu.Lock(); w.pending = true; w.metaMu.Unloc
 func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, changed bool, etag string, consent bool) {
 	status, applied := "NO_CHANGE", false
 	applyError := ""
+	var diagnostics *startDiagnostics
 	if changed {
 		w.saved()
 		loaded, running, err := w.state()
@@ -429,6 +430,7 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 				cancel()
 				if err != nil {
 					applyError = webControlFailureCode(err)
+					diagnostics = webControlDiagnostics(err)
 				}
 				if err == nil {
 					loaded, running, err = w.state()
@@ -447,6 +449,9 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 	result := map[string]any{"ok": true, "saved": true, "changed": changed, "applied": applied, "apply_status": status, "pendingReload": pending, "pendingKnown": known}
 	if applyError != "" {
 		result["apply_error"] = applyError
+	}
+	if diagnostics != nil {
+		result["diagnostics"] = diagnostics
 	}
 	if etag != "" {
 		rw.Header().Set("ETag", etag)
@@ -659,7 +664,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
 		if err := w.serviceAction(ctx, action, in.ConfirmInsecure); err != nil {
-			webError(rw, 503, webControlFailureCode(err))
+			webJSON(rw, 503, webControlErrorBody(err))
 			return
 		}
 		// Read actual launchd state. Do not infer ready/TUN health from the child exit.
