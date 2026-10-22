@@ -111,14 +111,28 @@ def detect_arch(system, machine, runner=subprocess.run):
     i.require(machine in ("x86_64", "amd64"), "unsupported macOS architecture")
     # A translated Python reports x86_64 on Apple Silicon. Prefer native arm64.
     hardware_intel = False
+    translation_zero = False
+    missing = set()
     for key in ("hw.optional.arm64", "sysctl.proc_translated"):
-        result = runner(["/usr/sbin/sysctl", "-in", key], stdout=subprocess.PIPE,
+        result = runner(["/usr/sbin/sysctl", "-n", key], stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE, timeout=5, check=False)
         value = result.stdout.strip()
         if result.returncode == 0 and value == b"1":
             return "arm64"
         if key == "hw.optional.arm64" and result.returncode == 0 and value == b"0":
             hardware_intel = True
+        # -n (without -i) preserves ENOENT as an exact missing-key diagnostic.
+        # Never confuse permission errors, empty success or malformed output
+        # with a legitimately absent Apple Silicon capability/translation key.
+        if key == "sysctl.proc_translated" and result.returncode == 0 and value == b"0":
+            translation_zero = True
+        expected = ("sysctl: unknown oid '" + key + "'").encode()
+        if result.returncode == 1 and not value and getattr(result, "stderr", b"").strip() == expected:
+            missing.add(key)
+    if not hardware_intel and "hw.optional.arm64" in missing and (translation_zero or "sysctl.proc_translated" in missing):
+        result = runner(["/usr/sbin/sysctl", "-n", "hw.optional.x86_64"], stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=5, check=False)
+        hardware_intel = result.returncode == 0 and result.stdout.strip() == b"1"
     i.require(hardware_intel, "cannot establish native macOS architecture; no download or installation performed")
     return "amd64"
 

@@ -423,6 +423,24 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.app.exists())
         self.webui_factory.assert_not_called()
 
+    def test_intel_missing_keys_complete_install_selects_intel(self):
+        self.use_intel_fixture()
+        self.processes = []
+        def runner(args, **kwargs):
+            if args[0] == "/usr/sbin/sysctl":
+                key = args[-1]
+                if key == "hw.optional.x86_64":
+                    return types.SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b"")
+                return types.SimpleNamespace(returncode=1, stdout=b"", stderr=("sysctl: unknown oid '" + key + "'").encode())
+            return self.runner(args, **kwargs)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = b.run(types.SimpleNamespace(version=TAG, check_download=False), self.transport, runner,
+                           system="Darwin", machine="x86_64", euid=501, home=self.home, tty=lambda: io.BytesIO())
+        self.assertEqual(result["platform"], "darwin-amd64")
+        self.assertTrue(result["executed"])
+        self.assertIn(self.url(self.binary_name), self.calls)
+        self.webui_factory.return_value.restart.assert_called_once()
+
     def test_install_arch_override_rejected_even_if_matching_host(self):
         for arch in ("arm64", "amd64"):
             args = types.SimpleNamespace(version=TAG, check_download=False, arch=arch)
@@ -510,7 +528,32 @@ class ArchitectureTests(unittest.TestCase):
             for values, expected in (((b"0\n", b"0\n"), "amd64"), ((b"1\n",), "arm64"), ((b"0\n", b"1\n"), "arm64")):
                 runner = mock.Mock(side_effect=[types.SimpleNamespace(stdout=v, returncode=0) for v in values])
                 self.assertEqual(b.detect_arch("Darwin", machine, runner), expected)
-                self.assertEqual([call.args[0] for call in runner.call_args_list], [["/usr/sbin/sysctl", "-in", key] for key in ("hw.optional.arm64", "sysctl.proc_translated")[:len(values)]])
+                self.assertEqual([call.args[0] for call in runner.call_args_list], [["/usr/sbin/sysctl", "-n", key] for key in ("hw.optional.arm64", "sysctl.proc_translated")[:len(values)]])
+
+    def test_intel_missing_arm_keys_uses_affirmative_x86_probe(self):
+        def runner(args, **kwargs):
+            key = args[-1]
+            if key == "hw.optional.x86_64":
+                return types.SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b"")
+            return types.SimpleNamespace(returncode=1, stdout=b"", stderr=("sysctl: unknown oid '" + key + "'\n").encode())
+        self.assertEqual(b.detect_arch("Darwin", "x86_64", runner), "amd64")
+        bad = lambda *a, **k: types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"sysctl: permission denied")
+        with self.assertRaisesRegex(ValueError, "cannot establish"):
+            b.detect_arch("Darwin", "x86_64", bad)
+
+    def test_missing_capability_with_translation_signals(self):
+        for translated, expected in ((b"0", "amd64"), (b"1", "arm64")):
+            def runner(args, **kwargs):
+                key = args[-1]
+                if key == "hw.optional.arm64":
+                    return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"sysctl: unknown oid 'hw.optional.arm64'")
+                return types.SimpleNamespace(returncode=0, stdout=translated if key == "sysctl.proc_translated" else b"1", stderr=b"")
+            self.assertEqual(b.detect_arch("Darwin", "x86_64", runner), expected)
+        for detail in (b"sysctl: permission denied", b"sysctl: operation not permitted", b"sysctl: unknown oid 'OTHER'"):
+            def runner(args, **kwargs):
+                return types.SimpleNamespace(returncode=1, stdout=b"", stderr=detail)
+            with self.assertRaisesRegex(ValueError, "cannot establish"):
+                b.detect_arch("Darwin", "x86_64", runner)
 
     def test_cli_arch_check_only(self):
         with mock.patch.object(b, "run") as run:
