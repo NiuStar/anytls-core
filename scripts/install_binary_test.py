@@ -461,7 +461,7 @@ class InstallerTests(unittest.TestCase):
         with mock.patch.object(b, "configure_shell_path", side_effect=AssertionError("check-only configured PATH")), \
                 mock.patch.object(b.pwd, "getpwuid", side_effect=AssertionError("check-only shell lookup")), \
                 contextlib.redirect_stdout(io.StringIO()):
-            b.run(types.SimpleNamespace(version=TAG, check_download=True), self.transport,
+            b.run(types.SimpleNamespace(version=TAG, check_download=True, arch="arm64"), self.transport,
                   runner=lambda *a, **k: self.fail("process"), home=self.home)
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.home.iterdir()})
 
