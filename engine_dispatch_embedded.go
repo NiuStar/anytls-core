@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+
 	"github.com/NiuStar/anytls-core/internal/engine"
 )
 
@@ -31,7 +33,12 @@ func validateCoreFlag(fs *flag.FlagSet) error {
 
 // Signals belong to the executable, never the engine library. Preserve every
 // Run error, including cancellation joined with a cleanup failure (exit 1).
-func dispatchEngine(command string, b []byte, _, _ string) error {
+func dispatchEngine(command string, b []byte, config, core string) error {
+	return dispatchCompiledEngine(command, compiledRuntime{JSON: b}, config, core, false)
+}
+
+func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ string, recordService bool) error {
+	b := compiled.JSON
 	if err := engine.Check(context.Background(), b); err != nil {
 		return err
 	}
@@ -41,5 +48,20 @@ func dispatchEngine(command string, b []byte, _, _ string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return engine.Run(ctx, b)
+	var input *engine.RecordsInput
+	if recordService && command == "run" {
+		writer, err := openRunRecords(config, compiled)
+		if err == nil && writer != nil {
+			input = &engine.RecordsInput{Manifest: compiled.Manifest, Sink: writer, StopAdmission: writer.StopAdmission}
+			defer func() {
+				writer.StopAdmission()
+				cleanup, cancel := context.WithTimeout(context.Background(), cr.TelemetryTimeout)
+				defer cancel()
+				writer.Shutdown(cleanup)
+			}()
+		} else {
+			fmt.Fprintln(os.Stderr, "connection recording unavailable")
+		}
+	}
+	return engine.RunWithRecords(ctx, b, input)
 }

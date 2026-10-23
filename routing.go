@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
 
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,6 +22,10 @@ func applyRouting(path string, nodes []node, selected node, cfg map[string]any, 
 }
 
 func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg map[string]any, allowInsecure bool) error {
+	return applyRoutingRecords(path, b, nodes, selected, cfg, allowInsecure, nil)
+}
+
+func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg map[string]any, allowInsecure bool, manifest *cr.Manifest) error {
 	var doc struct {
 		Rules     []string               `yaml:"rules"`
 		Groups    []proxyGroup           `yaml:"proxy-groups"`
@@ -37,6 +43,10 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 			return err
 		}
 	}
+	if manifest != nil {
+		manifest.Outbounds = append(manifest.Outbounds, nodeOrigin(manifest, nodes, selected.Name, "anytls-out"))
+		manifest.FinalOrigin = routeOrigin(manifest, nodes, -1, string(cr.RuleDefault), "", selected.Name, selected.Name, "anytls-out", []cr.GroupEdge{})
+	}
 	if len(doc.Rules) == 0 {
 		return nil
 	}
@@ -52,6 +62,9 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 		excluded = append(excluded, inbound["route_exclude_address"].([]string)...)
 	}
 	rules := []any{map[string]any{"action": "sniff"}}
+	if manifest != nil {
+		manifest.Rules = append(manifest.Rules, syntheticOrigin("sniff", cr.SyntheticSniff))
+	}
 	matched := false
 	addDirect := false
 	loadedSets := map[string]bool{}
@@ -104,6 +117,11 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 				}
 				sets = append(sets, set)
 				loadedSets[value] = true
+				// loadRuleSet validated SHA against the same handle used for inline rules.
+				if manifest != nil {
+					sum := spec.SHA256
+					manifest.CapturedSources = append(manifest.CapturedSources, cr.CapturedSource{Kind: cr.SourceRuleSet, Ordinal: len(sets) - 1, Present: true, SHA256: &sum})
+				}
 			}
 		case "MATCH":
 		default:
@@ -114,9 +132,13 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 				cfg["dns"] = map[string]any{"servers": []any{map[string]any{"type": "https", "tag": "secure-dns", "server": "1.1.1.1", "tls": map[string]any{"server_name": "cloudflare-dns.com"}, "detour": "anytls-out"}}, "final": "secure-dns"}
 			}
 			rules = append(rules, map[string]any{"action": "resolve", "server": "secure-dns", "strategy": "prefer_ipv4"})
+			if manifest != nil {
+				manifest.Rules = append(manifest.Rules, syntheticOrigin("resolve", cr.SyntheticResolve))
+			}
 		}
 		tag := ""
-		resolved, err := resolveGroup(target, nodes, doc.Groups)
+		configuredTarget := target
+		resolved, edges, err := resolveGroupPath(target, nodes, doc.Groups)
 		if err != nil {
 			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
@@ -127,6 +149,9 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 			if !addDirect {
 				outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
 				addDirect = true
+				if manifest != nil {
+					manifest.Outbounds = append(manifest.Outbounds, nodeOrigin(manifest, nodes, "DIRECT", tag))
+				}
 			}
 		case "REJECT":
 			if kind == "MATCH" {
@@ -163,9 +188,22 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 					excluded = append(excluded, built["inbounds"].([]any)[0].(map[string]any)["route_exclude_address"].([]string)...)
 				}
 				active[target] = tag
+				if manifest != nil {
+					manifest.Outbounds = append(manifest.Outbounds, nodeOrigin(manifest, nodes, target, tag))
+				}
+			}
+		}
+		var origin cr.RouteProjection
+		if manifest != nil {
+			origin = routeOrigin(manifest, nodes, i, kind, value, configuredTarget, target, tag, edges)
+			if kind == "RULE-SET" && target != "REJECT" {
+				origin.RuleSet = &cr.RuleSetProjection{Label: value, SHA256: doc.Sets[value].SHA256}
 			}
 		}
 		if kind == "MATCH" {
+			if manifest != nil {
+				manifest.FinalOrigin = origin
+			}
 			route["final"] = tag
 			continue
 		}
@@ -187,12 +225,22 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 			rule["outbound"] = tag
 		}
 		rules = append(rules, rule)
+		if manifest != nil {
+			action := "route"
+			if target == "REJECT" {
+				action = "reject"
+			}
+			manifest.Rules = append(manifest.Rules, cr.RuleOrigin{Type: "default", ActionType: action, ExpectedOutbound: tag, Synthetic: cr.SyntheticNone, Route: origin})
+		}
 	}
 	if !matched {
 		return errors.New("routing rules require a final MATCH target")
 	}
 	if len(sets) > 0 {
 		rules = append(rules[:1], append([]any{map[string]any{"protocol": []string{"dns"}, "action": "hijack-dns"}}, rules[1:]...)...)
+		if manifest != nil {
+			manifest.Rules = append(manifest.Rules[:1], append([]cr.RuleOrigin{syntheticOrigin("hijack-dns", cr.SyntheticHijack)}, manifest.Rules[1:]...)...)
+		}
 		if dns, ok := cfg["dns"].(map[string]any); ok {
 			dns["reverse_mapping"] = true
 		}

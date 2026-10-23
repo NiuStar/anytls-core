@@ -123,15 +123,17 @@ async function operation(label, fn) {
  try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
  finally { finish(); }
 }
-function showLogin() {sessionGeneration++;invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
-async function enterConsole(data) {csrf=data.csrf;$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';await status();}
+function showLogin() {recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
+async function enterConsole(data) {csrf=data.csrf;$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';try{await enterConsole(await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}}));}catch(e){$('password').value='';$('login-error').textContent=e.message;}finally{button.disabled=false;}});
-$('logout').addEventListener('click',()=>operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();}));
+$('logout').addEventListener('click',()=>{cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
 async function status() {
  if (!csrf || polling) return;
  polling=true;
  try {
   const state=await api('/status');serviceState=state;renderServiceButtons();
+  const transport=state.transport==='lan-http'?'局域网 HTTP 无 TLS · 凭据未经传输加密 · 不要转发端口':state.transport==='loopback-http'?'回环 HTTP 无 TLS · 不要转发端口':'传输方式未知';
+  $('transport-footer').textContent=transport;$('transport-badge').textContent=transport;
   const unavailable=state.availability!=='AVAILABLE';
   const title=unavailable?'状态不可用':state.running?'VPN 已启动':state.loaded?'VPN 已加载 · 未运行':'VPN 未启动';
   syncServiceUI(state,title);
@@ -147,7 +149,7 @@ function closeDrawer(){document.body.classList.remove('drawer-open');$('drawer-s
 $('drawer-toggle').onclick=()=>{const open=!document.body.classList.contains('drawer-open');document.body.classList.toggle('drawer-open',open);$('drawer-shade').hidden=!open;$('drawer-toggle').setAttribute('aria-expanded',String(open));};
 $('drawer-shade').onclick=closeDrawer;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer();});
 for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>{
- currentView=button.dataset.view;for(const section of document.querySelectorAll('.view'))section.hidden=section.id!=='view-'+currentView;
+ currentView=button.dataset.view;cancelRecords(true);if(currentView==='connections')openRecords();for(const section of document.querySelectorAll('.view'))section.hidden=section.id!=='view-'+currentView;
  for(const nav of document.querySelectorAll('[data-view]')){nav.classList.toggle('active',nav===button);if(nav===button)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');}
  $('page-title').textContent=button.textContent.trim();closeDrawer();notice('');
  if(currentView==='nodes'&&!busy)loadNodes().catch(e=>notice(e.message,true));
@@ -459,5 +461,148 @@ function startProbes(rows,mode){
   }finally{if(probeBatch===batch){probeBatch=null;probeRunning=false;renderExtraButtons();}}
  });
 }
+// One displayed page, three fixed binding/cursor anchors; no page/run cache.
+let recordsEpoch=0,recordsOwner=null,recordsTimer=null,recordsBinding=null,recordsPrevious=null,recordsAfter='0',recordsPageAfter='0',recordsNext='0',recordsHigh='0',recordsManual=false,recordsMore=false,recordsStopped=false;
+const recordsLimit=100;
+const recordsErrors={INVALID_REQUEST:'分页参数无效。',FORBIDDEN:'记录读取的用户或来源未获授权。',BUSY:'记录读取忙碌；文件操作结束前不会释放名额。',STALE_GENERATION:'历史身份已失效，已清空归属；请明确选择最新历史重新发现。',TELEMETRY_UNAVAILABLE:'连接记录不可用；这不等于没有流量。',STORE_INVALID:'历史存储未通过校验；未采用任何记录。',UNSUPPORTED:'当前助手不支持连接记录；不会安装、更新或重载。'};
+function recordsVisible(){return Boolean(csrf)&&currentView==='connections'&&!document.hidden&&!$('console-view').hidden;}
+function recordsResetFilters(){
+ $('records-search').value='';$('records-protocol').value='all';$('records-exit').value='all';
+}
+function recordsFilter(){
+ const query=$('records-search').value.trim().toLocaleLowerCase(),protocol=$('records-protocol').value,exit=$('records-exit').value;
+ const rows=$('records-rows').children;let matched=0;
+ for(const row of rows){row.hidden=!(row.textContent.toLocaleLowerCase().includes(query)&&(protocol==='all'||row.dataset.protocol===protocol)&&(exit==='all'||row.dataset.exit===exit));if(!row.hidden)matched++;}
+ $('records-count').textContent='本页匹配 '+matched+' / 已加载 '+rows.length+' 条';
+ if(rows.length){$('records-empty').hidden=matched>0;$('records-empty').textContent='本页没有匹配记录。请清除筛选，或翻页查看其他历史；这不是无流量的证明。';}
+ $('records-clear').disabled=!query&&protocol==='all'&&exit==='all';
+}
+for(const id of ['records-search','records-protocol','records-exit'])$(id).addEventListener(id==='records-search'?'input':'change',recordsFilter);
+$('records-clear').onclick=()=>{recordsResetFilters();recordsFilter();$('records-search').focus();};
+function recordsEmpty(text){
+ $('records-rows').replaceChildren();$('records-empty').hidden=false;$('records-empty').textContent=text;recordsFilter();
+}
+function recordsClear(){
+ recordsBinding=null;recordsPrevious=null;recordsAfter='0';recordsPageAfter='0';recordsNext='0';recordsHigh='0';recordsMore=false;
+ $('records-status').textContent='尚未读取；归属与连续性 UNKNOWN，不代表没有流量。';
+ recordsEmpty('尚未读取。点击“最新历史”读取；这不是无流量的证明。');$('records-identity').textContent='';$('records-coverage-detail').textContent='尚未取得覆盖证据。';$('records-gap').textContent='连续性：UNKNOWN · DNS：UNKNOWN';recordsButtons();
+}
+function cancelRecords(clear=true){
+ recordsEpoch++;if(recordsTimer!==null){clearTimeout(recordsTimer);recordsTimer=null;}
+ const owner=recordsOwner;recordsOwner=null;if(owner){clearTimeout(owner.timeout);owner.controller.abort();}
+ if(clear)recordsClear();recordsButtons();
+}
+function recordsButtons(){
+ const enabled=recordsVisible()&&!recordsStopped&&!recordsOwner;
+ $('records-results').setAttribute('aria-busy',String(Boolean(recordsOwner)));
+ $('records-latest').disabled=!recordsVisible();
+ $('records-prior').disabled=!enabled||!recordsPrevious;
+ $('records-start').disabled=!enabled||!recordsBinding;
+ $('records-back').disabled=!enabled||!recordsBinding||recordsPageAfter==='0';
+ $('records-next').disabled=!enabled||!recordsBinding||!recordsMore;
+}
+function recordsSame(a,b){return a&&b&&a.instance_id===b.instance_id&&a.generation===b.generation&&a.manifest_id===b.manifest_id;}
+function recordsTakeBinding(p){return {instance_id:p.instance_id,generation:p.generation,manifest_id:p.manifest_id};}
+function recordsValidBinding(b){return b&&/^[0-9a-f]{32}$/.test(b.instance_id)&&/^[0-9a-f]{32}$/.test(b.generation)&&/^[0-9a-f]{64}$/.test(b.manifest_id);}
+function recordsDecimal(s){return typeof s==='string'&&/^(0|[1-9][0-9]*)$/.test(s)&&BigInt(s)<=18446744073709551615n;}
+function recordsRender(p,after){
+ recordsAfter=after;recordsPageAfter=after;recordsNext=p.next_after;recordsHigh=p.high_water_seq;recordsMore=p.has_more;recordsPrevious=p.previous_binding;
+ const status=$('records-status');status.replaceChildren();
+ status.append(element('span',recordsManual?'手动历史':'最新已记录历史','records-mode'));
+ for(const [label,value] of [['采集',p.collection],['时效',p.freshness],['来源',p.provenance_status]])status.append(element('span',label+' '+(value??'UNKNOWN'),'badge records-status-badge'));
+ status.append(element('span','更新于 '+displayTime(p.timestamp)+' · 非当前 VPN 状态','hint'));
+ $('records-identity').textContent='Run '+p.instance_id+' · generation '+p.generation+' · manifest '+p.manifest_id+' · runtime '+p.runtime_sha256+' · '+p.history_kind;
+ const coverage=p.coverage;
+ $('records-gap').textContent=(coverage.gap?'GAP · 记录有缺口 / 不确定性':'覆盖仍不完整')+' · 连续性 '+coverage.continuity+' · DNS：UNKNOWN';
+ $('records-coverage-detail').textContent='已知丢失 '+(coverage.lost_total??'UNKNOWN')+' · loss epoch '+(coverage.loss_epoch??'UNKNOWN')+' · pending '+(p.pending??'UNKNOWN')+(coverage.counter_saturated?' · 计数已饱和':'')+' · 丢失原因 '+Object.entries(coverage.loss_reasons).map(([k,v])=>k+':'+(v??'UNKNOWN')).join(' / ');
+ const rows=[];
+ const unknown=value=>value===null||value===undefined||value===''?'UNKNOWN':String(value);
+ const destination=d=>d?unknown(d.host)+' / '+unknown(d.ip)+' : '+unknown(d.port)+' · '+unknown(d.host_source):'UNKNOWN';
+ for(const record of p.records){
+  const r=record.route,d=record.destination,row=element('tr');
+  row.dataset.protocol=record.network;row.dataset.exit=r.evidence==='VERIFIED'&&r.terminal_kind==='DIRECT'?'direct':r.evidence==='VERIFIED'&&r.terminal_kind==='NODE'?'proxy':'unknown';
+  const source=r.evidence==='VERIFIED'?(r.kind==='DEFAULT_SELECTED'?'默认选中（无 MATCH）':r.kind+' · 源序号 '+(r.source_index===null?'UNKNOWN':String(r.source_index+1)))+' · '+(r.condition?r.condition.value:'')+(r.rule_set?' · 集合 '+r.rule_set.label:''):'来源未知 · '+r.evidence;
+  const path=r.group_path?r.group_path.map(edge=>edge.group+' → '+edge.selected).join(' / ')||'无策略组':'UNKNOWN';
+  const terminal=row.dataset.exit==='direct'?'直连 · DIRECT':row.dataset.exit==='proxy'?unknown(r.final_node_label):'出口未知 · UNKNOWN';
+  const cell=(label)=>{const td=element('td');td.dataset.label=label;row.append(td);return td;};
+  const target=cell('目标 / 协议');target.append(element('strong',d.host||d.ip||'目标未知','records-target'),element('span',unknown(d.ip)+' : '+unknown(d.port),'records-secondary'),element('span',String(record.network).toUpperCase(),'badge'));
+  const details=element('details',undefined,'records-detail');details.append(element('summary','查看来源与详情'));
+  const dl=element('dl');
+  for(const [label,value] of [['观察',record.hook+' / '+record.network],['目标来源',d.host_source],['原始目标 origin',destination(record.origin_destination)],['路由原始目标',destination(record.route_original_destination)],['规则来源',source],['来源 ID',unknown(r.source_id)],['规则集 SHA',r.rule_set?r.rule_set.sha256:'UNKNOWN'],['策略组路径',path],['配置目标',unknown(r.configured_target)],['最终节点',unknown(r.final_node_label)],['节点 ID',unknown(r.final_node_id)],['实际出口',unknown(r.outbound_tag)+' / '+unknown(r.outbound_type)],['证据',r.evidence+' / '+unknown(r.terminal_kind)],['选择代次',unknown(r.selection_generation)],['观察 ID',unknown(record.observation_id)],['状态边界','ROUTED · connected / active / duration / ended_at / error UNKNOWN']])dl.append(element('dt',label),element('dd',value));
+  details.append(dl);target.append(details);
+  cell('命中规则').append(element('span',source,'records-rule'));
+  const exit=cell('出口');exit.append(element('strong',terminal),element('span',row.dataset.exit==='proxy'?'代理路由 · NODE':row.dataset.exit==='direct'?'直连路由选择':'未归类为直连或代理','records-secondary'));
+  const time=cell('时间 / 状态');time.append(element('span',displayTime(record.observed_at)+' / '+record.seq,'records-time'),element('span','ROUTED','badge records-routed'),element('span','仅路由观察 · 非已连接','records-secondary'));
+  rows.push(row);
+ }
+ $('records-rows').replaceChildren(...rows);$('records-empty').hidden=rows.length>0;
+ $('records-empty').textContent='本页没有已提交的观察；不代表没有流量。可稍候刷新或查看上一 Run。';recordsFilter();recordsButtons();
+}
+function openRecords(){
+ cancelRecords(true);recordsManual=false;recordsStopped=false;
+ if(recordsVisible())recordsFetch(true);recordsButtons();
+}
+async function recordsFetch(discovery=false){
+ if(!recordsVisible()||recordsStopped||recordsOwner)return;
+ if(recordsTimer!==null){clearTimeout(recordsTimer);recordsTimer=null;}
+ discovery=discovery||!recordsBinding;
+ const epoch=recordsEpoch,auth=sessionGeneration,binding=recordsBinding?{...recordsBinding}:null,after=recordsAfter;
+ const owner={controller:new AbortController(),timeout:null};recordsOwner=owner;
+ recordsButtons();if(!$('records-rows').children.length)recordsEmpty('正在读取本页… 请稍候；没有记录不代表没有流量。');
+ const current=()=>recordsOwner===owner&&epoch===recordsEpoch&&auth===sessionGeneration&&recordsVisible()&&!recordsStopped;
+ const query=new URLSearchParams({after:discovery?'0':after,limit:String(recordsLimit)});
+ if(!discovery&&binding)for(const [k,v]of Object.entries(binding))query.set(k,v);
+ let nextDiscovery=false,rearm=true;
+ owner.timeout=setTimeout(()=>owner.controller.abort(),5000);
+ try{
+  const response=await fetch('/api/v1/connections?'+query,{method:'GET',headers:{'X-AnyTLS-Origin':location.origin},credentials:'same-origin',cache:'no-store',redirect:'error',signal:owner.controller.signal});
+  const p=await response.json();if(!current())return;if(owner.controller.signal.aborted)throw new Error('记录读取超时，未采用迟到响应。');
+  if(!response.ok){
+   if(response.status===401){showLogin();return;}
+   const code=p&&p.error_code;
+   if(code==='STALE_GENERATION'){recordsClear();recordsStopped=true;rearm=false;$('records-status').textContent=recordsErrors.STALE_GENERATION;return;}
+   throw new Error(own(recordsErrors,code)?recordsErrors[code]:'连接记录不可用；未采用响应，不代表没有流量。');
+  }
+  if(p.schema_version!==1||!recordsValidBinding(p)||!recordsDecimal(p.next_after)||!recordsDecimal(p.high_water_seq)||!Array.isArray(p.records)||p.records.length>recordsLimit||typeof p.has_more!=='boolean'||!p.coverage||p.coverage.complete!==false||!p.dns||p.dns.status!=='UNKNOWN'||!['LAST_RECORDED','HISTORICAL'].includes(p.history_kind))throw new Error('记录响应无效，归属与连续性未知。');
+  if(discovery){
+   if(p.records.length||p.next_after!=='0')throw new Error('发现响应无效，未采用记录。');
+   if(binding&&!recordsManual&&!recordsSame(binding,p)){
+    recordsClear();recordsStopped=true;rearm=false;$('records-status').textContent='发现新的历史代次，旧页已清空。请选择“最新历史”确认查看；不会将旧记录重新归属。';return;
+   }
+   if(!binding){recordsBinding=recordsTakeBinding(p);recordsRender(p,'0');}
+   nextDiscovery=false;
+  }else{
+   if(!recordsSame(binding,p)||!recordsSame(binding,recordsBinding)||after!==recordsAfter||p.records.length&&(p.records[0].seq!==(BigInt(after)+1n).toString()||p.records[p.records.length-1].seq!==p.next_after)||!p.records.length&&p.next_after!==after)throw new Error('历史身份或分页游标不匹配，未采用记录。');
+   recordsRender(p,after);
+   // Automatic latest-history paging still waits one second after completion.
+   // Manual navigation polls its selected page, never silently jumps to latest.
+   if(!recordsManual&&p.has_more)recordsAfter=p.next_after;
+   nextDiscovery=!recordsManual;
+  }
+ }catch(error){
+  if(current()){
+   recordsEmpty('记录不可用，不代表没有流量。请稍候自动重试，或点击“最新历史”；持续失败请在本机检查助手与历史目录权限。');$('records-identity').textContent='';$('records-coverage-detail').textContent='本次读取未取得可信覆盖证据。';$('records-gap').textContent='GAP / UNKNOWN · DNS：UNKNOWN';
+   $('records-status').textContent=owner.controller.signal.aborted?'记录读取超过 5 秒，现有状态未知。':error.message;
+  }
+ }finally{
+  clearTimeout(owner.timeout);
+  // An old finally cannot own the new controller/timer after cancel→restart.
+  if(recordsOwner===owner){recordsOwner=null;if(epoch===recordsEpoch&&auth===sessionGeneration&&recordsVisible()&&!recordsStopped&&rearm)recordsTimer=setTimeout(()=>{recordsTimer=null;recordsFetch(nextDiscovery);},1000);recordsButtons();}
+ }
+}
+function recordsNavigate(kind){
+ const binding=kind==='prior'?recordsPrevious:recordsBinding;if(!binding)return;
+ let after='0';
+ if(kind==='next')after=recordsNext;
+ if(kind==='back'){const n=BigInt(recordsPageAfter)-BigInt(recordsLimit);after=(n>0n?n:0n).toString();}
+ cancelRecords(false);recordsBinding={...binding};recordsManual=true;recordsStopped=false;recordsAfter=after;
+ recordsEmpty('正在读取所选历史页…');$('records-identity').textContent='';recordsFetch(false);
+}
+$('records-latest').onclick=openRecords;
+for(const kind of ['prior','start','back','next'])$('records-'+kind).onclick=()=>recordsNavigate(kind);
+document.addEventListener('visibilitychange',()=>{
+ if(document.hidden){cancelRecords(false);recordsEmpty('读取已暂停。返回页面后重新读取；不代表没有流量。');$('records-identity').textContent='';$('records-status').textContent='页面已隐藏，读取已取消；状态 UNKNOWN。';$('records-gap').textContent='连续性：UNKNOWN · DNS：UNKNOWN';}
+ else if(currentView==='connections'&&csrf){recordsFetch(true);}
+});
 $('run-update').onclick=()=>updateOperation(true);
 (async()=>{try{await enterConsole(await api('/session'));}catch{showLogin();}})();

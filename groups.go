@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 )
 
 func readYAML(path string, v any) error {
@@ -157,20 +159,26 @@ type fileRuleSet struct {
 func shaHex(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 
 func resolveGroup(name string, nodes []node, groups []proxyGroup) (string, error) {
+	terminal, _, err := resolveGroupPath(name, nodes, groups)
+	return terminal, err
+}
+
+func resolveGroupPath(name string, nodes []node, groups []proxyGroup) (string, []cr.GroupEdge, error) {
+	edges := []cr.GroupEdge{}
 	seen := map[string]bool{}
 	for {
 		if name == "DIRECT" || name == "REJECT" {
-			return name, nil
+			return name, edges, nil
 		}
 		if seen[name] {
-			return "", fmt.Errorf("cyclic group %q", name)
+			return "", nil, fmt.Errorf("cyclic group %q", name)
 		}
 		seen[name] = true
 		var group *proxyGroup
 		for i := range groups {
 			if groups[i].Name == name {
 				if group != nil {
-					return "", fmt.Errorf("duplicate group %q", name)
+					return "", nil, fmt.Errorf("duplicate group %q", name)
 				}
 				group = &groups[i]
 			}
@@ -178,20 +186,20 @@ func resolveGroup(name string, nodes []node, groups []proxyGroup) (string, error
 		if group == nil {
 			n, err := choose(nodes, name)
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
-			return n.Name, nil
+			return n.Name, edges, nil
 		}
 		for _, n := range nodes {
 			if n.Name == name {
-				return "", fmt.Errorf("group/node name collision %q", name)
+				return "", nil, fmt.Errorf("group/node name collision %q", name)
 			}
 		}
 		if group.Type != "select" {
-			return "", fmt.Errorf("unsupported group type %q", group.Type)
+			return "", nil, fmt.Errorf("unsupported group type %q", group.Type)
 		}
 		if group.Selected == "" {
-			return "", fmt.Errorf("group %q needs explicit selected member", name)
+			return "", nil, fmt.Errorf("group %q needs explicit selected member", name)
 		}
 		found := false
 		for _, p := range group.Proxies {
@@ -200,8 +208,9 @@ func resolveGroup(name string, nodes []node, groups []proxyGroup) (string, error
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("group %q selected member is not in proxies", name)
+			return "", nil, fmt.Errorf("group %q selected member is not in proxies", name)
 		}
+		edges = append(edges, cr.GroupEdge{Group: name, Selected: group.Selected})
 		name = group.Selected
 	}
 }

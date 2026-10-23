@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+func dispatchCompiledEngine(command string, compiled compiledRuntime, config, core string, recordService bool) error {
+	if recordService && command == "run" {
+		fmt.Fprintln(os.Stderr, "connection recording unavailable")
+	}
+	return dispatchEngine(command, compiled.JSON, config, core)
+}
+
 func externalCoreRequired() bool { return true }
 
 func validateCoreFlag(_ *flag.FlagSet) error { return nil }

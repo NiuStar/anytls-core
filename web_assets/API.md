@@ -13,7 +13,7 @@
 
 登录之外的 POST/PUT 必须 Cookie + `X-CSRF-Token`；令牌由登录或登录后 session GET 的 JSON 返回，未写 localStorage。JSON 请求需 Content-Type application/json；未知字段及多个 JSON 值拒绝。普通 JSON 上限 16KiB；仅 PUT `/api/v1/config` 和 POST `/api/v1/import/preview` 的完整配置 JSON 上限为 `6 × 32MiB + 16KiB`（最坏 JSON 转义及信封开销），解码 YAML 和转换输出均限制为 32MiB。转换输出超限返回 `CONFIG_CONVERSION_TOO_LARGE`，不删除或去重规则来缩小配置。登录每分钟 5 次失败后阻断一分钟。
 
-所有错误为受控 `{ "error": "CODE" }`，不返回底层日志、配置片段或密码。原始配置是唯一明确展示节点密码的页面操作，仅已登录用户可读。普通节点只给 hasPassword，不给密码或逐密码摘要。
+所有普通错误为受控 `{ "error": "CODE" }`；连接记录通过认证后的分页/来源/助手错误使用共享严格 `{ "schema_version": 1, "error_code": "ENUM" }`（认证/Host/方法外层仍沿用普通错误）。不返回底层日志、配置片段或密码。原始配置是唯一明确展示节点密码的页面操作，仅已登录用户可读。普通节点只给 hasPassword，不给密码或逐密码摘要。
 
 ## API v1
 
@@ -39,6 +39,7 @@
 | GET /config | 显式敏感编辑操作 → `{yaml,etag}`，同时 ETag header；etag 是双引号包裹的完整原文件 SHA256 |
 | PUT /config | `{yaml}` + `If-Match: "SHA256"`；无 header 428，冲突412，无效422；同目录0600原子写入并读回 → `{ok,changed,etag,pendingReload}` |
 | POST /service/start, /service/stop, /service/reload | `{confirm_insecure:false}`；只布尔同意，不接收命令；原生授权及 launchd 状态读回 → `{ok,loaded,running,pendingReload,readiness}` |
+| GET /connections | 连接记录只读页，必须 Cookie + 精确 `X-AnyTLS-Origin: http://Host` + `Sec-Fetch-Site: same-origin`；可选 Origin 存在时同样精确验证。query 仅 after（canonical uint64 十进制字符串，默认0）、limit（1..500，默认100）、完整 instance_id/generation/manifest_id；拒绝未知/重复/部分绑定。无绑定仅发现无行；有绑定不回退最新。严格共享 PageResponse，≤1MiB，无 LIVE/connected 声明；失败400 INVALID_REQUEST、403 FORBIDDEN、409 BUSY/STALE_GENERATION、503 TELEMETRY_UNAVAILABLE/STORE_INVALID/UNSUPPORTED。认证先于 helper，no-store；不持 action 锁，不安装/更新/reload，不读当前 YAML 回填历史。 |
 | GET /version | `{version}` 是当前控制台进程版本，不假冒活动快照版本 |
 | GET /update-check | 固定自身 `update --check` 有界子进程；保持 sibling 五字段 CLI contract，只输出 `{status,current,installed,latest,available,sourceOnly,updated,restartRequired}`。current 永远是本 WebUI 内存版本，installed 是磁盘 sibling 报告；不相同时 restartRequired=true，status=RESTART_REQUIRED（可安装更新时优先 UPDATE_AVAILABLE）。响应丢失后重查仍保留重启提示。 |
 | POST /update | `{confirm:true}`；先固定自身 check，再 `update --version CHECKED_VERSION` 用户级子进程；丢弃输出，执行替换后自身 `version`（独立20秒期限）读回匹配才报告 UPDATED，installed=目标版本、restartRequired=true；不重启WebUI/VPN。失败503，只投影固定错误码 UPDATE_CHECK_FAILED(40)、UPDATE_PYTHON_REQUIRED(41)、UPDATE_BINARY_UNAVAILABLE(42)、UPDATE_DOWNLOAD_FAILED(43)、UPDATE_VALIDATION_FAILED(44)、UPDATE_PUBLISH_FAILED(45)、UPDATE_VERIFY_FAILED(46)、UPDATE_UNAVAILABLE(47/未知)。核验失败或超时不保证旧文件未变，不自动回滚，需独立核对磁盘版本、摘要和备份。 |

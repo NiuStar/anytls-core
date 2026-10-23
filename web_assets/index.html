@@ -9,7 +9,7 @@
     <h1>登录 AnyTLS</h1><p class="muted">使用应用专用密码，不使用系统管理员密码。</p>
     <form id="login-form"><label for="username">账户</label><input id="username" name="username" value="admin" autocomplete="username" required><label for="password">应用专用密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="128"><button class="primary" type="submit">登录</button></form>
     <p class="hint">在终端运行 <code>anytls password</code> 查看密码。<br>忘记密码？运行 <code>anytls password reset</code>，现有登录会失效。</p><p id="login-error" class="error" role="alert"></p>
-  </div><div class="login-footer">仅本机访问 · 不使用云端账户 · 不收集系统密码</div>
+  </div><div class="login-footer">HTTP 无 TLS · 不使用云端账户 · 不收集系统密码</div>
 </section>
 <div id="console-view" hidden>
   <button id="drawer-shade" class="shade" aria-label="关闭导航" hidden></button>
@@ -20,10 +20,11 @@
       <button data-view="overview" class="active" aria-current="page"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M3 8h14M8 8v9"/></svg><span>概览</span></button>
       <button data-view="nodes"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="2"/><circle cx="15" cy="10" r="2"/><circle cx="5" cy="15" r="2"/><path d="m7 6 6 3m-6 5 6-3M5 7v6"/></svg><span>代理节点</span></button>
       <button data-view="groups"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="2" width="6" height="5" rx="1"/><rect x="2" y="13" width="6" height="5" rx="1"/><rect x="12" y="13" width="6" height="5" rx="1"/><path d="M10 7v3H5v3m5-3h5v3"/></svg><span>策略组</span></button>
+      <button data-view="connections"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12M4 8h12M4 12h12M4 16h12"/></svg><span>连接记录</span></button>
       <button data-view="config"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h12"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="10" r="2"/><circle cx="8" cy="15" r="2"/></svg><span>配置与规则</span></button>
       <button data-view="update"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a7 7 0 1 0 1 6M16 3v4h-4M10 6v5l3 2"/></svg><span>版本更新</span></button>
     </nav>
-    <div class="sidebar-foot"><div class="device"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="11" rx="2"/><path d="M7 18h6m-3-4v4"/></svg><div><strong>当前设备</strong><small id="sidebar-state">正在读取服务状态</small></div></div><div class="local-badge">本机 HTTP <span>127.0.0.1</span></div><button id="logout">退出登录</button></div>
+    <div class="sidebar-foot"><div class="device"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="11" rx="2"/><path d="M7 18h6m-3-4v4"/></svg><div><strong>当前设备</strong><small id="sidebar-state">正在读取服务状态</small></div></div><div class="local-badge" id="transport-badge">正在读取传输方式</div><button id="logout">退出登录</button></div>
   </aside>
   <main>
     <header><div class="header-location"><button id="drawer-toggle" class="icon-button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg></button><span class="breadcrumb">AnyTLS <span>/</span></span><strong id="page-title">概览</strong></div><span id="header-status" class="pill">正在读取</span></header>
@@ -45,6 +46,27 @@
       </section>
       <section id="view-groups" class="view" hidden>
         <div class="page-heading"><h1>策略组</h1><p class="muted">选择配置出口后点击保存。运行中自动应用，未运行时仅保存。</p></div><div class="section-label">磁盘配置 <span id="groups-count" class="hint">尚未读取</span></div><div id="groups-list" class="stack group-grid"></div><p class="footnote">配置出口由磁盘配置解析，不代表当前运行快照或网络连通性。</p>
+      </section>
+      <section id="view-connections" class="view" aria-labelledby="records-heading" hidden>
+        <div class="page-heading"><h1 id="records-heading">连接记录</h1><p class="muted">查看目标、命中规则与出口。仅为已记录的路由观察，不是实时连接列表。</p></div>
+        <a class="records-skip" href="#records-results">跳到本页记录</a>
+        <div id="records-coverage" class="records-warning" role="note">覆盖不完整：仅显示普通 tracker 可见的 TCP / UDP / flow 路由观察。ROUTED 不代表已连接或成功；REJECT、DNS 劫持 / 内部 DNS、tracker 前失败不可见。这不是完整审计；没有记录不代表没有流量。DNS 状态：UNKNOWN。</div>
+        <p class="records-warning">目的地址历史在这台 Mac 上私有持久保存，跨 VPN / 控制台重启保留，不会自动删除。权限不是加密或安全擦除；root、备份与系统崩溃策略可能暴露历史。退出只清理页面，不会删除磁盘历史或已交付的字节。</p>
+        <div class="panel records-panel">
+          <div class="panel-toolbar"><h2>路由历史 <span class="badge">非 LIVE</span></h2><button id="records-latest">最新历史</button></div>
+          <div class="records-meta"><p id="records-status" role="status" aria-live="polite">尚未读取；不可用不等于没有流量。</p><p id="records-gap" class="records-warning">连续性：UNKNOWN · DNS：UNKNOWN</p>
+          <details class="records-run"><summary>本次历史的身份与覆盖详情</summary><p id="records-identity" class="mono hint"></p><p id="records-coverage-detail" class="hint">尚未取得覆盖证据。</p></details></div>
+          <div class="records-filters" role="search" aria-label="仅筛选当前页记录">
+            <div class="records-search"><label for="records-search">搜索本页</label><input id="records-search" name="records-search" type="search" placeholder="目标、规则、出口或来源…" autocomplete="off" spellcheck="false" aria-describedby="records-filter-help"></div>
+            <div><label for="records-protocol">协议</label><select id="records-protocol" name="records-protocol"><option value="all">全部协议</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
+            <div><label for="records-exit">出口证据</label><select id="records-exit" name="records-exit"><option value="all">全部出口</option><option value="direct">直连 · DIRECT</option><option value="proxy">代理 · NODE</option><option value="unknown">未知 · UNKNOWN</option></select></div>
+            <button id="records-clear" type="button">清除筛选</button>
+            <p id="records-filter-help" class="hint">仅筛选当前已加载页；不搜索全部历史，不请求服务器。</p>
+          </div>
+          <div class="records-pagination"><span id="records-count" role="status" aria-live="polite">本页匹配 0 / 已加载 0 条</span><div class="action-bar" role="group" aria-label="历史分页"><button id="records-prior" disabled>上一 Run</button><button id="records-start" disabled>本 Run 开头</button><button id="records-back" disabled>向前一页</button><button id="records-next" disabled>向后一页</button></div></div>
+          <div id="records-results" class="records-scroll" role="region" aria-label="本页路由观察" tabindex="-1" aria-busy="false"><table class="records-table"><caption>当前页路由观察 · ROUTED 不代表已连接；展开每条记录查看来源与未知状态</caption><thead><tr><th scope="col">目标 / 协议</th><th scope="col">命中规则</th><th scope="col">出口</th><th scope="col">时间 / 状态</th></tr></thead><tbody id="records-rows"></tbody></table>
+          <p id="records-empty" class="hint" role="status">尚未读取。这不是无流量的证明。</p></div>
+        </div>
       </section>
       <section id="view-config" class="view" hidden>
         <div class="page-heading"><h1>配置与规则</h1><p class="muted">保存前校验语法、分组与规则，保留未知字段。</p></div>
@@ -79,7 +101,7 @@
         <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>
         <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">官方预编译 · 无需 Go 或系统授权 · 保留配置及程序备份</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result" role="status" aria-live="polite">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">更新仅替换磁盘程序，不自动重启控制台或 VPN，不调用特权助手。若提示需重启控制台，当前页面仍运行内存中的旧版；请在确认后另行重启控制台。VPN 未重载，不代表已运行新版。</div></div>
       </section>
-    </div><footer>AnyTLS 本机控制台 <span>回环 HTTP 无 TLS · 不要转发端口</span></footer>
+    </div><footer>AnyTLS 本机控制台 <span id="transport-footer">正在读取传输方式 · HTTP 无 TLS</span></footer>
   </main>
 </div>
 </body></html>

@@ -423,10 +423,14 @@ func (f *g13Fixture) config(port int, modify func(map[string]any)) []byte {
 	return b
 }
 func g13Start(t *testing.T, b []byte, port int) (*socks.Client, context.CancelFunc) {
+	return g13StartWithRecords(t, b, port, nil)
+}
+
+func g13StartWithRecords(t *testing.T, b []byte, port int, records *RecordsInput) (*socks.Client, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, b) }()
+	go func() { done <- RunWithRecords(ctx, b, records) }()
 	t.Cleanup(func() {
 		cancel()
 		if e := awaitRun(t, done); !errors.Is(e, context.Canceled) {

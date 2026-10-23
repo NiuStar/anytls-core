@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,6 +35,7 @@ var webAssets embed.FS
 type webConsole struct {
 	configPath, passwordPath string
 	port                     int
+	listenHost               string // empty preserves the original loopback constructor
 	authMu                   sync.Mutex
 	sessions                 map[string]webSession
 	failures                 int
@@ -50,6 +53,7 @@ type webConsole struct {
 	importPending            *webImportCandidate // guarded by actionMu
 	importFetch              func(context.Context, string) ([]byte, error)
 	nodeProbe                func(context.Context, node, string) (float64, error)
+	recordsRequest           func(context.Context, cr.PageRequest) (cr.PageResponse, error)
 	probeSlotsOnce           sync.Once
 	probeSlots               chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
 }
@@ -61,12 +65,23 @@ func newWebConsole(config, password string, port int) *webConsole {
 }
 func webuiCommand(args []string) error {
 	fs := flag.NewFlagSet("webui", flag.ContinueOnError)
-	port := fs.Int("port", 18089, "loopback HTTP port (1024-65535)")
+	port := fs.Int("port", 18089, "HTTP port (1024-65535)")
+	listen := fs.String("listen", "127.0.0.1", "literal local private IPv4 or loopback address (no wildcard; HTTP has no TLS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || *port < 1024 || *port > 65535 {
-		return errors.New("usage: anytls webui [--port 18089]; port must be 1024-65535")
+		return errors.New("usage: anytls webui [--listen 127.0.0.1] [--port 18089]; port must be 1024-65535")
+	}
+	if err := webValidateListen(*listen); err != nil {
+		return err
+	}
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return err
+	}
+	if err := webListenAssigned(*listen, addresses); err != nil {
+		return err
 	}
 	if os.Geteuid() == 0 {
 		return errors.New("WebUI must run as your ordinary user, never root")
@@ -79,18 +94,52 @@ func webuiCommand(args []string) error {
 	if _, err := webPassword(passwordPath, false); err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)))
+	listener, err := net.Listen("tcp4", net.JoinHostPort(*listen, strconv.Itoa(*port)))
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	fmt.Printf("WebUI: http://127.0.0.1:%d\nLocal HTTP only (no TLS). Do not expose or forward this port.\nAccount: admin; recover password with 'anytls password'.\n", *port)
-	server := &http.Server{Handler: newWebConsole(config, passwordPath, *port), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+	w := newWebConsole(config, passwordPath, *port)
+	w.listenHost = *listen
+	fmt.Printf("WebUI: http://%s:%d\nTransport: %s (HTTP, no TLS). Never forward this port; LAN access exposes credentials to the local network.\nAccount: admin; recover password with 'anytls password'.\n", *listen, *port, w.transport())
+	server := &http.Server{Handler: w, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 	return server.Serve(listener)
 }
 func (w *webConsole) allowedHost(host string) bool {
 	p := strconv.Itoa(w.port)
+	if w.lanListen() {
+		return host == net.JoinHostPort(w.listenHost, p)
+	}
 	return host == "127.0.0.1:"+p || host == "localhost:"+p || host == "[::1]:"+p
+}
+func webValidateListen(host string) error {
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.Is4() || (!ip.IsPrivate() && !ip.IsLoopback()) {
+		return errors.New("listen must be a literal private IPv4 or loopback address; wildcard, DNS and public addresses are forbidden")
+	}
+	return nil
+}
+func webListenAssigned(host string, addresses []net.Addr) error {
+	if err := webValidateListen(host); err != nil {
+		return err
+	}
+	for _, a := range addresses {
+		ip, _, err := net.ParseCIDR(a.String())
+		if err == nil && ip.String() == host {
+			return nil
+		}
+	}
+	return errors.New("listen address is not assigned to a local interface")
+}
+func (w *webConsole) lanListen() bool {
+	ip, err := netip.ParseAddr(w.listenHost)
+	return err == nil && ip.Is4() && ip.IsPrivate()
+}
+func (w *webConsole) transport() string {
+	if w.lanListen() {
+		return "lan-http"
+	}
+	return "loopback-http"
 }
 func (w *webConsole) originOK(r *http.Request) bool {
 	// Origin is mandatory, including login and non-browser clients. No CORS.
@@ -264,6 +313,14 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 401, "AUTH_REQUIRED")
 		return
 	}
+	if r.URL.Path == "/api/v1/connections" {
+		if r.Method != "GET" {
+			webError(rw, 405, "METHOD_NOT_ALLOWED")
+			return
+		}
+		w.getConnections(rw, r)
+		return
+	}
 	if r.Method != "GET" && !webEqual(r.Header.Get("X-CSRF-Token"), session.csrf) {
 		webError(rw, 403, "CSRF_REQUIRED")
 		return
@@ -332,7 +389,7 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 		if err != nil {
 			availability = "UNAVAILABLE"
 		}
-		webJSON(rw, 200, map[string]any{"loaded": loaded, "running": running, "availability": availability, "pendingReload": pending, "pendingKnown": known, "version": currentVersion(), "readiness": "NOT_OBSERVED", "transport": "loopback-http"})
+		webJSON(rw, 200, map[string]any{"loaded": loaded, "running": running, "availability": availability, "pendingReload": pending, "pendingKnown": known, "version": currentVersion(), "readiness": "NOT_OBSERVED", "transport": w.transport(), "listenHost": w.listenHost})
 	case "/api/v1/nodes", "/api/v1/groups":
 		b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
 		if err != nil {

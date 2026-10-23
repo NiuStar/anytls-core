@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	"github.com/NiuStar/anytls-core/internal/engine"
 	anytls "github.com/anytls/sing-anytls"
 	"github.com/anytls/sing-anytls/padding"
@@ -81,6 +82,31 @@ func (p *routingCompiledPeer) NewConnectionEx(ctx context.Context, c net.Conn, _
 }
 
 func TestRoutingCompiledMixedDirectVsAnyTLS(t *testing.T) {
+	routingCompiledGate(t, false)
+}
+
+func TestRecordsRoutingCompiledMixedOrigins(t *testing.T) {
+	routingCompiledGate(t, true)
+}
+
+type routingRecordSink struct {
+	mu   sync.Mutex
+	rows []cr.Observation
+}
+
+func (s *routingRecordSink) TryAppend(o cr.Observation) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows = append(s.rows, o)
+	return true
+}
+func (s *routingRecordSink) snapshot() []cr.Observation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]cr.Observation(nil), s.rows...)
+}
+
+func routingCompiledGate(t *testing.T, records bool) {
 	cases := []struct {
 		name, rules, host, want string
 		set                     bool
@@ -94,6 +120,30 @@ func TestRoutingCompiledMixedDirectVsAnyTLS(t *testing.T) {
 		{"first_proxy_wins", "DOMAIN,localhost,P\n - DOMAIN-SUFFIX,localhost,DIRECT\n - IP-CIDR,127.0.0.0/8,DIRECT\n - MATCH,P", "localhost", "proxy", false},
 		{"first_direct_wins", "DOMAIN,localhost,DIRECT\n - DOMAIN-SUFFIX,localhost,P\n - MATCH,P", "localhost", "direct", false},
 		{"custom_v3_ruleset_direct", "RULE-SET,loop,DIRECT,no-resolve\n - MATCH,P", "127.0.0.1", "direct", true},
+	}
+	if records {
+		cases = append(cases,
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"nested_group", "DOMAIN,localhost,outer\n - MATCH,P", "localhost", "proxy", false},
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"shared_group", "DOMAIN,not-fixture.invalid,outer\n - DOMAIN,localhost,shared\n - MATCH,P", "localhost", "proxy", false},
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"duplicate_rule", "DOMAIN,localhost,outer\n - DOMAIN,localhost,outer\n - MATCH,P", "localhost", "proxy", false},
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"match_final", "DOMAIN,not-fixture.invalid,DIRECT\n - MATCH,outer", "localhost", "proxy", false},
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"default_selected", "", "127.0.0.1", "proxy", false},
+		)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -171,7 +221,12 @@ func TestRoutingCompiledMixedDirectVsAnyTLS(t *testing.T) {
 				runtimeWrite(t, filepath.Join(dir, "loop.json"), b, 0600)
 				yaml += fmt.Sprintf("rule-sets:\n loop: {path: loop.json, sha256: %s, resolve-ip: false}\n", shaHex(b))
 			}
-			yaml += "rules:\n - " + tc.rules + "\n"
+			if records {
+				yaml += "proxy-groups:\n - {name: outer, type: select, proxies: [inner], selected: inner}\n - {name: inner, type: select, proxies: [P], selected: P}\n - {name: shared, type: select, proxies: [P], selected: P}\n"
+			}
+			if tc.rules != "" {
+				yaml += "rules:\n - " + tc.rules + "\n"
+			}
 			cfgPath := filepath.Join(dir, "config.yaml")
 			runtimeWrite(t, cfgPath, []byte(yaml), 0600)
 			cfg, e := prepareRuntime(&runtimeOptions{Config: cfgPath, NodeName: "P", Mode: "proxy", LocalPort: mixedPort})
@@ -193,9 +248,21 @@ func TestRoutingCompiledMixedDirectVsAnyTLS(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
+			var recordsInput *engine.RecordsInput
+			sink := &routingRecordSink{}
+			var manifest *cr.Manifest
+			if records {
+				compiled, err := prepareRuntimeWithRecords(&runtimeOptions{Config: cfgPath, NodeName: "P", Mode: "proxy", LocalPort: mixedPort})
+				if err != nil || compiled.Manifest == nil {
+					t.Fatalf("records compiler: %v", err)
+				}
+				b = compiled.JSON
+				manifest = compiled.Manifest
+				recordsInput = &engine.RecordsInput{Manifest: manifest, Sink: sink}
+			}
 			runCtx, stop := context.WithTimeout(ctx, 8*time.Second)
 			ended := make(chan error, 1)
-			go func() { ended <- engine.Run(runCtx, b) }()
+			go func() { ended <- engine.RunWithRecords(runCtx, b, recordsInput) }()
 			t.Cleanup(func() {
 				stop()
 				select {
@@ -298,6 +365,50 @@ func TestRoutingCompiledMixedDirectVsAnyTLS(t *testing.T) {
 				}
 			}
 			c.Close()
+			if records {
+				rows := sink.snapshot()
+				if tc.want == "reject" {
+					if len(rows) != 0 {
+						t.Fatal("REJECT invented observation")
+					}
+				} else {
+					if len(rows) != 1 {
+						t.Fatalf("route observations=%d", len(rows))
+					}
+					r := rows[0].Route
+					if r.Evidence != cr.ProvenanceVerified {
+						t.Fatalf("actual SDK winner unknown: %#v", r)
+					}
+					index := 0
+					if tc.name == "shared_group" || tc.name == "match_final" {
+						index = 1
+					}
+					if tc.name == "default_selected" {
+						if r.Kind != cr.RuleDefault || r.SourceID != nil || r.SourceIndex != nil {
+							t.Fatal("nil rule default")
+						}
+					} else if r.SourceIndex == nil || *r.SourceIndex != index || r.SourceID == nil || *r.SourceID != fmt.Sprintf("%s:rule:%d", manifest.Generation, index) {
+						t.Fatal("winner source ordinal")
+					}
+					if tc.name == "match_final" && r.Kind != cr.RuleMatch {
+						t.Fatal("MATCH not final")
+					}
+					if tc.name == "nested_group" || tc.name == "duplicate_rule" || tc.name == "match_final" {
+						if len(r.GroupPath) != 2 || r.GroupPath[0].Group != "outer" || r.GroupPath[1].Group != "inner" {
+							t.Fatal("nested actual group path")
+						}
+					}
+					if tc.name == "shared_group" && (len(r.GroupPath) != 1 || r.GroupPath[0].Group != "shared") {
+						t.Fatal("shared-tag path inferred from other source")
+					}
+					if tc.want == "direct" && (r.TerminalKind != cr.TerminalDirect || r.OutboundTag != "direct") {
+						t.Fatal("DIRECT provenance")
+					}
+					if tc.want == "proxy" && (r.TerminalKind != cr.TerminalNode || r.FinalNodeLabel == nil || *r.FinalNodeLabel != "P") {
+						t.Fatal("proxy provenance")
+					}
+				}
+			}
 			a, s, p, x := peer.accepted.Load(), peer.streams.Load(), peer.payload.Load(), peer.echo.Load()
 			t.Logf("ROUTING_COUNTS case=%s want=%s accepted=%d streams=%d anytls_payload_bytes=%d echo_bytes=%d", tc.name, tc.want, a, s, p, x)
 			switch tc.want {

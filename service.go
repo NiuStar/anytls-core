@@ -75,6 +75,9 @@ func servicePlist(binary, config, core, log string, insecure bool) (string, erro
 		args = append(args, "-core", core)
 	}
 	args = append(args, "-network", "tun")
+	if !externalCoreRequired() {
+		args = append(args, "-record-service")
+	}
 	if insecure {
 		args = append(args, "-allow-insecure")
 	}

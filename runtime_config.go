@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 )
 
 // runtimeOptions is the shared CLI compiler input. Menus return a nil config.
@@ -14,11 +16,12 @@ type runtimeOptions struct {
 	Server, SNI, CA, PasswordFile   string
 	LocalPort                       int
 	AllowInsecure                   bool
+	RecordService                   bool
 }
 
 // prepareRuntime preserves YAML selection/routing and the legacy secure flags.
 // It does not locate an engine, write runtime JSON, or start a process.
-func prepareRuntime(o *runtimeOptions) (map[string]any, error) {
+func prepareRuntimeMap(o *runtimeOptions, manifest *cr.Manifest) (map[string]any, error) {
 	if o.Config == "" && o.Server == "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -35,11 +38,43 @@ func prepareRuntime(o *runtimeOptions) (map[string]any, error) {
 	}
 	var cfg map[string]any
 	if o.Config != "" {
-		nodes, err := loadNodes(o.Config)
+		// Keep menu reads/behavior unchanged; Run/Check capture each source once.
+		var configBytes, selectionBytes []byte
+		selectionPresent := false
+		var nodes []node
+		var err error
+		if o.Command == "list" || o.Command == "select" {
+			nodes, err = loadNodes(o.Config)
+		} else {
+			var st os.FileInfo
+			st, err = os.Stat(o.Config)
+			if err == nil && !st.Mode().IsRegular() {
+				err = errors.New("config.yaml must be a regular file")
+			}
+			if err == nil {
+				configBytes, err = readSnapshotSource(o.Config, snapshotConfigLimit, true)
+			}
+			if err == nil {
+				nodes, err = loadNodesBytes(configBytes)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
-		current, err := selectedNode(o.Config, nodes)
+		current := ""
+		if o.Command == "list" || o.Command == "select" {
+			current, err = selectedNode(o.Config, nodes)
+		} else {
+			selectionBytes, err = readSnapshotSource(selectedPath(o.Config), snapshotSelectedLimit, true)
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+			} else if err == nil {
+				selectionPresent = true
+				current, err = selectedBytes(selectionBytes, nodes)
+			}
+			addCapturedSource(manifest, cr.SourceConfig, configBytes, true)
+			addCapturedSource(manifest, cr.SourceSelection, selectionBytes, selectionPresent)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -78,7 +113,7 @@ func prepareRuntime(o *runtimeOptions) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := applyRouting(o.Config, nodes, n, cfg, o.AllowInsecure); err != nil {
+		if err := applyRoutingRecords(o.Config, configBytes, nodes, n, cfg, o.AllowInsecure, manifest); err != nil {
 			return nil, err
 		}
 		if n.EgressIP != "" {

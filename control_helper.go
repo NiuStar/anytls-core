@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 )
 
 const (
@@ -128,19 +130,24 @@ func controlHelperFailure(code string) controlHelperResponse {
 }
 
 type controlHelperServer struct {
-	registration controlHelperRegistration
-	peer         func(net.Conn) (uint32, error)
-	state        func() (bool, bool, error)
-	preflight    func(context.Context, bool) error
-	start        func(context.Context, bool) error
-	stop         func(context.Context) error
-	version, sha string
-	mutation     sync.Mutex
+	registration        controlHelperRegistration
+	peer                func(net.Conn) (uint32, error)
+	state               func() (bool, bool, error)
+	preflight           func(context.Context, bool) error
+	start               func(context.Context, bool) error
+	stop                func(context.Context) error
+	version, sha        string
+	mutation            sync.Mutex
+	recordsSlot         sync.Mutex
+	recordsRead         func(context.Context, cr.Scope, cr.PageRequest) (cr.PageResponse, error)
+	recordsRegistration func() (controlHelperRegistration, error)
 }
 
 func (s *controlHelperServer) handle(c net.Conn) {
 	defer c.Close()
-	identity, identityErr := controlHelperConfigIdentity(s.registration.Config)
+	deadline := time.Now().Add(cr.TelemetryTimeout)
+	_ = c.SetDeadline(deadline)
+	identity := ""
 	reply := func(r controlHelperResponse) {
 		r.HelperVersion = s.version
 		r.HelperSHA256 = s.sha
@@ -153,17 +160,39 @@ func (s *controlHelperServer) handle(c net.Conn) {
 		reply(controlHelperFailure("FORBIDDEN"))
 		return
 	}
+	// Bound before dispatch; legacy decoding still has its unchanged 4096-byte
+	// budget. Dispatch must allow reordered/whitespace-padded 8KiB records frames.
+	raw, readErr := io.ReadAll(io.LimitReader(c, cr.MaxRequestBytes+1))
+	if controlHelperRecordsFrame(raw) {
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		q, decodeErr := cr.DecodeRequest(raw)
+		var b []byte
+		if readErr != nil || decodeErr != nil {
+			b = recordsErrorBytes(cr.InvalidRequest)
+		} else {
+			b = s.recordsPage(ctx, q)
+		}
+		_ = c.SetWriteDeadline(deadline)
+		_, _ = c.Write(b)
+		return
+	}
+	var identityErr error
+	identity, identityErr = controlHelperConfigIdentity(s.registration.Config)
 	if identityErr != nil {
 		reply(controlHelperFailure("STATE_FAILED"))
 		return
 	}
-	_ = c.SetReadDeadline(time.Now().Add(controlHelperIOTimeout))
-	q, err := controlHelperReadRequest(c)
+	if readErr != nil {
+		reply(controlHelperFailure("INVALID_REQUEST"))
+		return
+	}
+	q, err := controlHelperReadRequest(bytes.NewReader(raw))
 	if err != nil {
 		reply(controlHelperFailure("INVALID_REQUEST"))
 		return
 	}
-	_ = c.SetReadDeadline(time.Time{})
+	_ = c.SetDeadline(time.Time{})
 	reply(s.execute(q))
 }
 func (s *controlHelperServer) execute(q controlHelperWireRequest) controlHelperResponse {

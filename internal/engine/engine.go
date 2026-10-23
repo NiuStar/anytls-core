@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 )
@@ -60,7 +62,16 @@ func Check(ctx context.Context, runtimeJSON []byte) error {
 // Close error. Our final Close is still called, but cannot recover that error;
 // this upstream limitation must be resolved before claiming lossless startup
 // cleanup diagnostics.
-func Run(ctx context.Context, runtimeJSON []byte) (err error) {
+func Run(ctx context.Context, runtimeJSON []byte) error {
+	return RunWithRecords(ctx, runtimeJSON, nil)
+}
+
+func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInput) (err error) {
+	if records != nil {
+		if reporter, ok := records.Sink.(cr.ProvenanceReporter); ok {
+			reporter.SetProvenanceStatus(cr.ProvenanceUnknown)
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -70,16 +81,31 @@ func Run(ctx context.Context, runtimeJSON []byte) (err error) {
 	if err != nil {
 		return err
 	}
+	caVerified := false
+	if records != nil && records.Sink != nil {
+		caVerified = pinRecordsCA(&options, records.Manifest)
+	}
 	instance, err := box.New(box.Options{Options: options, Context: ctx})
 	if err != nil {
 		return lifecycleError("construct", err)
+	}
+	if records != nil && records.Sink != nil {
+		instance.Router().AppendTracker(bindRecords(instance, runtimeJSON, records, caVerified))
+		return executeRecords(ctx, instance, true, records.StopAdmission)
 	}
 	return execute(ctx, instance, true)
 }
 
 // execute is the only test seam; construction always uses the real box.New.
-func execute(ctx context.Context, instance adapter.SimpleLifecycle, start bool) (err error) {
+func execute(ctx context.Context, instance adapter.SimpleLifecycle, start bool) error {
+	return executeRecords(ctx, instance, start, nil)
+}
+
+func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start bool, stopAdmission func()) (err error) {
 	defer func() {
+		if stopAdmission != nil {
+			stopAdmission()
+		}
 		err = errors.Join(err, lifecycleError("close", instance.Close()))
 	}()
 	if err := ctx.Err(); err != nil {

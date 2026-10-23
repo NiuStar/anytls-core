@@ -168,6 +168,10 @@ func TestSameRuntimeForExternalAndEmbedded(t *testing.T) {
 			if !reflect.DeepEqual(normalizedRuntime(t, b), normalizedRuntime(t, want)) {
 				t.Fatal("complete normalized runtime JSON differs from frozen compiler (ordered arrays retained)")
 			}
+			exact, marshalErr := json.MarshalIndent(got, "", "  ")
+			if marshalErr != nil || string(exact) != string(want) {
+				t.Fatal("exact runtime JSON bytes differ from frozen compiler under unchanged MarshalIndent encoder")
+			}
 			if ref := os.Getenv("ANYTLS_REFERENCE_CORE"); ref != "" {
 				p := filepath.Join(d, "official.json")
 				runtimeWrite(t, p, b, 0600)

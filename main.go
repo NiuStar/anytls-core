@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -188,6 +187,7 @@ func execute(args []string) error {
 	mode := fs.String("network", "proxy", "proxy (loopback SOCKS/HTTP) or tun (system VPN)")
 	localPort := fs.Int("local-port", 11080, "loopback SOCKS/HTTP listen port")
 	allowInsecure := fs.Bool("allow-insecure", false, "explicitly allow skip-cert-verify (MITM risk)")
+	recordService := fs.Bool("record-service", false, "internal authorized service recording marker")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -197,19 +197,15 @@ func execute(args []string) error {
 	if err := validateCoreFlag(fs); err != nil {
 		return err
 	}
-	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalPort: *localPort, AllowInsecure: *allowInsecure}
-	cfg, err := prepareRuntime(&o)
-	if err != nil || cfg == nil {
+	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalPort: *localPort, AllowInsecure: *allowInsecure, RecordService: *recordService}
+	compiled, err := prepareRuntimeWithRecords(&o)
+	if err != nil || compiled.JSON == nil {
 		return err
 	}
 	if fs.Arg(0) == "run" && runtime.GOOS != "darwin" {
 		return errors.New("run is only supported on macOS; use check on other systems")
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return dispatchEngine(o.Command, b, o.Config, *core)
+	return dispatchCompiledEngine(o.Command, compiled, o.Config, *core, o.RecordService)
 }
 
 func main() {

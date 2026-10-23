@@ -143,6 +143,9 @@ func TestServicePlistBuildMode(t *testing.T) {
 			args = append(args, "-core", "/opt/anytls/sing-box")
 		}
 		args = append(args, "-network", "tun")
+		if embedded {
+			args = append(args, "-record-service")
+		}
 		if insecure {
 			args = append(args, "-allow-insecure")
 		}
