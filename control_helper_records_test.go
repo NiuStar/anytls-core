@@ -82,7 +82,10 @@ func TestControlRecordsStrictFramesNoRead(t *testing.T) {
 	}
 	good := `{"action":"records.read","schema_version":1,"instance_id":null,"generation":null,"manifest_id":null,"after":"0","limit":100}`
 	for _, raw := range []string{
-		good + ` {}`, strings.Replace(good, `"limit":100`, `"limit":null`, 1), strings.Replace(good, `"after":"0"`, `"after":"01"`, 1), strings.Replace(good, `"after":"0"`, `"after":"18446744073709551616"`, 1), strings.Replace(good, `"limit":100`, `"limit":501`, 1), strings.Replace(good, `"limit":100`, `"limit":1,"limit":2`, 1), strings.Replace(good, `"limit":100`, `"limit":1,"path":"/secret"`, 1), strings.Replace(good, `"generation":null`, `"generation":"bad"`, 1), good + "\x00", good + string([]byte{0xff}), good + strings.Repeat(" ", cr.MaxRequestBytes),
+		good + ` {}`, strings.Replace(good, `"limit":100`, `"limit":null`, 1), strings.Replace(good, `"after":"0"`, `"after":"01"`, 1), strings.Replace(good, `"after":"0"`, `"after":"18446744073709551616"`, 1), strings.Replace(good, `"limit":100`, `"limit":501`, 1), strings.Replace(good, `"limit":100`, `"limit":1,"limit":2`, 1), strings.Replace(good, `"limit":100`, `"limit":1,"path":"/secret"`, 1), strings.Replace(good, `"generation":null`, `"generation":"bad"`, 1), good + "\x00", good + string([]byte{0xff}),
+		// One byte over the budget exercises rejection without leaving unread
+		// request bytes: closing a Unix socket with unread data resets Linux peers.
+		good + strings.Repeat(" ", cr.MaxRequestBytes+1-len(good)),
 	} {
 		b := recordsRaw(t, s, []byte(raw))
 		var e cr.ErrorResponse

@@ -225,6 +225,10 @@ func TestDiskRecordsLockAndUnsafeLeaves(t *testing.T) {
 				if e := os.WriteFile(target, []byte("x"), 0644); e != nil {
 					t.Fatal(e)
 				}
+				// Creation permissions are filtered by the caller's umask.
+				if e := os.Chmod(target, 0644); e != nil {
+					t.Fatal(e)
+				}
 			case "symlink":
 				if e := os.Symlink(backup, target); e != nil {
 					t.Fatal(e)
