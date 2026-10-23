@@ -13,13 +13,13 @@ This handoff is intended for review and continued testing on the user-specified 
 - Explicit local private IPv4 WebUI binding through `webui --listen ADDRESS --port PORT`, exact Host/Origin checks, existing login/CSRF and no CORS. Plain HTTP is not encrypted and is for trusted LAN use only.
 - Shared codec cross-field consistency fix (QB-01), independently reviewed after native RED/GREEN.
 
-## Current blocking finding — SPEC-01
+## Historical blocking finding — SPEC-01, approved correction in validation
 
-A successful visible CLOSED state publication may be followed by directory Sync or writer-lock close failure. If subsequent disk writes also fail, the persisted CLOSED state cannot prove all cleanup/durability operations succeeded. The current reader can indefinitely treat that state as orderly completion.
+The original candidate `0684c27581f7923c025a17a7e826054dc5bcfe76` had a real defect: a visible CLOSED publication could be followed by directory Sync or lock-close failure while the reader indefinitely certified orderly completion. Its original failing review and native evidence are retained.
 
-`TestDiskRecordsTerminalFailureCannotCertifyClosed` intentionally retains the real failing regression. Four native fault-injection subcases reproduce the defect. Do not remove, skip or weaken this test to make a public release green. Ordinary successful-close and writer-lock-lifetime positive controls are also retained.
+The user has now approved a conservative contract correction. CLOSED is only the last persisted stopped-recording observation, never proof of complete Sync/cleanup/history. Public pages always project continuity UNKNOWN; closed pages use freshness UNKNOWN, GAP and unknown pending/loss counters. The UI explicitly states that complete cleanup is unverified. Stored rows and binding are preserved.
 
-Proposed, **not yet user-approved**, contract correction: CLOSED means only the last persisted stopped-recording state, never proof of all sync/cleanup or complete history; present final-cleanup unverified / continuity UNKNOWN. The specification and implementation have not been changed to that proposal. Original failures are not reclassified as PASS.
+All four original terminal fault-injection branches, once-close/committed-prefix assertions and the normal lock-lifetime positive control remain. A new identical old/new regression establishes RED/GREEN under the declared contract amendment; this does not retroactively change the original failure. Affected SPEC review has passed; final QUALITY, execution readback and publication gates remain pending until independently verified.
 
 ## Verified boundaries
 

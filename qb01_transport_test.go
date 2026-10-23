@@ -54,7 +54,7 @@ func TestQB01HelperAndAuthenticatedHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"unknown_positive", "closed_positive", "lost_total", "reason", "saturated", "unclosed_continuity"} {
+	for _, name := range []string{"unknown_positive", "closed_positive", "lost_total", "reason", "saturated", "unclosed_continuity", "closed_continuity", "closed_fresh", "closed_no_gap"} {
 		t.Run(name, func(t *testing.T) {
 			p := recordsTestPage(identity)
 			p.Collection = cr.Recording
@@ -65,7 +65,20 @@ func TestQB01HelperAndAuthenticatedHTTP(t *testing.T) {
 			case "closed_positive":
 				p.Collection = cr.Closed
 				p.Closed = true
-				p.Coverage.Continuity = cr.ContinuityClosed
+				p.Freshness = cr.FreshnessUnknown
+				p.Coverage.Gap = true
+			case "closed_continuity", "closed_fresh", "closed_no_gap":
+				p.Collection = cr.Closed
+				p.Closed = true
+				p.Freshness = cr.FreshnessUnknown
+				p.Coverage.Gap = true
+				if name == "closed_fresh" {
+					p.Freshness = cr.Fresh
+				} else if name == "closed_no_gap" {
+					p.Coverage.Gap = false
+				} else {
+					p.Coverage.Continuity = cr.ContinuityClosed
+				}
 			case "lost_total":
 				p.Coverage.LostTotal = &one
 			case "reason":

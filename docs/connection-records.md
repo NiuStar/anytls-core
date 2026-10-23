@@ -187,8 +187,10 @@ Unexpected worker/encoding failure stops collection; disk open/write/short
 write/Sync/rename/permission/I/O failure latches `collection=IO_FAILED`.
 Collection values are RECORDING|CLOSING|CLOSED|IO_FAILED|INIT_FAILED|
 WORKER_FAILED|ID_EXHAUSTED; helper may project UNKNOWN for stale/unreadable status.
-Failures remain latched; normal shutdown uses CLOSING -> CLOSED only without
-recording/cleanup failure. **No retry/resume within this Run**, eviction,
+Failures remain latched; in-process normal shutdown returns CLOSED with verified
+cleanup only without recording/cleanup failure. Persisted CLOSED may precede a
+final directory Sync or lock Close failure: it is only the last saved stopped-
+recording observation, never a completion certificate. **No retry/resume within this Run**, eviction,
 automatic deletion, fallback to growing memory, or VPN restart. A separately
 requested later Run may initialize a fresh history; it never rewrites old files.
 
@@ -278,7 +280,8 @@ Each Run directory contains exactly the required store files:
 - Atomic `state.json` (<=8 KiB): schema and complete header identity, monotonically
   increasing status revision, high_water_seq, committed_data_bytes,
   committed_index_bytes, collection, provenance_status, pending/loss counters,
-  gap, timestamp and `closed` (true only after successful orderly completion).
+  gap, timestamp and `closed` (the last saved stopped-recording state, not proof
+  of successful final publication Sync, lock Close, cleanup or complete history).
   No raw errors. All wire/file counters use canonical decimal strings.
 
 Create files exclusively; validate any prior latest/header before linking it;
@@ -308,7 +311,9 @@ that tail automatically. If an atomic publication may have taken effect despite
 an error, report commit outcome UNKNOWN; helper accepts only a fully validated
 state/prefix and never claims missing writes committed. On host/process crash,
 some queued/batched events can be lost; recent Sync is not a universal disk/power
-loss guarantee. An unclosed history is explicitly incomplete/continuity UNKNOWN.
+loss guarantee. Every public page has continuity UNKNOWN, including ordinary
+successful CLOSED. No durable marker or best-effort failure rewrite can certify
+all later I/O when the store may become completely unwritable.
 
 ### Lifetime and bounded shutdown
 
@@ -430,8 +435,19 @@ loss_epoch,loss_reasons,counter_saturated,continuity}` plus DNS UNKNOWN.
 Unknown counters are null, never zero. has_more refers only to the captured
 high-water; next_after is last returned seq or requested after if empty.
 Status/counter freshness failure or unclosed stale history forces visible GAP/
-UNKNOWN even if the last stored state had gap=false. Final closed history may
-retain its terminal status without heartbeat; closed is not VPN/network success.
+UNKNOWN even if the last stored state had gap=false. All pages project
+`coverage.continuity=UNKNOWN`. Persisted closed history preserves exact committed
+rows, binding, provenance/source attribution, `collection=CLOSED` and
+`closed=true` as history only, but projects `freshness=UNKNOWN`, `gap=true`, and
+`pending`, `lost_total`, `loss_epoch` and every loss reason as null. This applies
+immediately and indefinitely, including ordinary successful shutdown; no loss
+quantity is invented. `counter_saturated` remains a stored observation, not a
+completion claim. Shared public-page validation rejects continuity CLOSED,
+closed freshness other than UNKNOWN, closed gap=false, or known closed
+pending/loss counters/reasons. Disk State validation remains compatible with
+previously valid stored CLOSED/known-zero states. In-process Shutdown still
+reports actual IO_FAILED/cleanup UNKNOWN after errors; writer-lock lifetime,
+once-close, committed prefixes and no-auto-delete behavior are unchanged.
 Explicit errors: 400 invalid query, 401 AUTH_REQUIRED, 403 origin/peer rejection,
 409 STALE_GENERATION/BUSY, 503 TELEMETRY_UNAVAILABLE/STORE_INVALID. No record
 bodies in error replies. Authentication precedes helper contact.
@@ -440,7 +456,9 @@ Tab displays time, TCP/UDP/flow, host/IP/port, source rule/set or MATCH/default,
 group edge chain, DIRECT or terminal node, actual outbound and ROUTED. Use
 textContent, not HTML; UNKNOWN/mismatch/gap/failure remain visible. Show stored
 Run identity, last update and persistence warning; never green connected or a
-current-VPN claim. DNS remains separately UNKNOWN.
+current-VPN claim. Always visibly state `完整收尾未验证／连续性 UNKNOWN`;
+when displaying CLOSED explain it is only the last saved stopped-recording state,
+not full cleanup or success. DNS remains separately UNKNOWN.
 
 Exactly one fetch active, private AbortController and **5-second client timeout**,
 next timer **1 second after completion**, including has_more (no tight catch-up

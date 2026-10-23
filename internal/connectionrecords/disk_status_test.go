@@ -128,17 +128,22 @@ func TestDiskRecordsConcurrentCallbacksAndStateCounters(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	high, _ := p.HighWaterSeq.Uint64()
-	lost, _ := p.Coverage.LostTotal.Uint64()
-	if high+lost != 800 || w.pending.Load() != 0 {
-		t.Fatalf("accepted/lost mismatch high=%d lost=%d", high, lost)
-	}
 	var state State
 	if _, e = s.readJSON(filepath.Join(w.dir, "state.json"), &state, MaxStateBytes); e != nil {
 		t.Fatal(e)
 	}
 	if state.Pending == nil || *state.Pending != "0" || state.LostTotal == nil || state.LossEpoch == nil {
 		t.Fatal("final counters unknown despite quiescence")
+	}
+	// The in-process/disk counters retain the exact accounting positive;
+	// the public CLOSED page cannot certify those as final totals.
+	high, _ := p.HighWaterSeq.Uint64()
+	lost, _ := state.LostTotal.Uint64()
+	if high+lost != 800 || w.pending.Load() != 0 {
+		t.Fatalf("accepted/lost mismatch high=%d lost=%d", high, lost)
+	}
+	if p.Pending != nil || p.Coverage.LostTotal != nil || p.Coverage.LossEpoch != nil || p.Coverage.LossReasons != (LossReasons{}) || p.Freshness != FreshnessUnknown || p.Coverage.Continuity != ContinuityUnknown || !p.Coverage.Gap {
+		t.Fatal("public CLOSED must disclose unknown final counters/completion")
 	}
 	if lost > 0 && !p.Coverage.Gap {
 		t.Fatal("loss was hidden")

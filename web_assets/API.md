@@ -54,6 +54,12 @@
 
 If-Match 是 WebUI 内互斥 + 外部文件乐观二次检查，不声称消除恶意同 UID/父目录替换或最后 compare/rename 间外部编辑竞态；既有 CLI 未接共享跨进程锁。
 
+## 连接记录终态语义（用户批准的保守修订）
+
+每个 `/connections` PageResponse 的 `coverage.continuity` 固定为 `UNKNOWN`，不能声明 `CLOSED` 连续性。磁盘 `collection=CLOSED` / `closed=true` 仅保留最后保存的停止采集状态，不能证明最终目录 Sync、锁关闭、完整收尾或成功。对于已保存的 closed 历史，保留已提交前缀、身份和来源归属，但公开页必须 `freshness=UNKNOWN`、`coverage.gap=true`，`pending`、`lost_total`、`loss_epoch` 及全部 `loss_reasons` 值为 null；不虚构丢失数量。此规则也适用于正常 Shutdown 成功的历史，且不随时间过期。`counter_saturated` 仅为原存储观察。
+
+共享 Validate/严格编码和解码拒绝任何 continuity CLOSED，或 closed 页的非 UNKNOWN freshness、gap=false、已知 pending/loss 计数及原因；磁盘 State 的既有 CLOSED/已知零兼容性不变。进程内 Shutdown 仍按真实错误返回 IO_FAILED/cleanup UNKNOWN，保留 once-close、锁实际生命周期、前缀与禁止自动删除的合同。UI 始终显示“完整收尾未验证／连续性 UNKNOWN”，CLOSED 另注明仅最后保存的停止采集状态，不代表完整收尾或成功。
+
 ## 验证
 
 `web_auth_test.go` 包含 httptest 与真实 TempDir 文件测试。遵守父任务约束，本子流未运行 Linux Go、Mac SSH、真实服务/真实配置或 Web server。Go/gofmt/Node 本地不可用；仅 tree-sitter Go/JS 语法解析，不等同编译或运行测试。父任务需 native gofmt、`go test -run '^TestWeb'`、完整 tests/vet，以及隔离真实浏览器桌面/窄屏验收。

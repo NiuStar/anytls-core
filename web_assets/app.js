@@ -513,7 +513,7 @@ function recordsRender(p,after){
  status.append(element('span','更新于 '+displayTime(p.timestamp)+' · 非当前 VPN 状态','hint'));
  $('records-identity').textContent='Run '+p.instance_id+' · generation '+p.generation+' · manifest '+p.manifest_id+' · runtime '+p.runtime_sha256+' · '+p.history_kind;
  const coverage=p.coverage;
- $('records-gap').textContent=(coverage.gap?'GAP · 记录有缺口 / 不确定性':'覆盖仍不完整')+' · 连续性 '+coverage.continuity+' · DNS：UNKNOWN';
+ $('records-gap').textContent=(coverage.gap?'GAP · 记录有缺口 / 不确定性':'覆盖仍不完整')+' · 完整收尾未验证／连续性 UNKNOWN · DNS：UNKNOWN'+(p.closed?' · CLOSED 仅为最后保存的停止采集状态，不代表完整收尾或成功。':'');
  $('records-coverage-detail').textContent='已知丢失 '+(coverage.lost_total??'UNKNOWN')+' · loss epoch '+(coverage.loss_epoch??'UNKNOWN')+' · pending '+(p.pending??'UNKNOWN')+(coverage.counter_saturated?' · 计数已饱和':'')+' · 丢失原因 '+Object.entries(coverage.loss_reasons).map(([k,v])=>k+':'+(v??'UNKNOWN')).join(' / ');
  const rows=[];
  const unknown=value=>value===null||value===undefined||value===''?'UNKNOWN':String(value);

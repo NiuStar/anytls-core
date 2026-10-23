@@ -82,7 +82,7 @@ func TestDiskRecordsDirectSeekPersistenceAndPriorRun(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(p.Records) != 10 || p.Records[0].Seq != "791" || p.NextAfter != "800" || p.HasMore || p.Coverage.Gap || p.Coverage.Continuity != ContinuityClosed {
+	if len(p.Records) != 10 || p.Records[0].Seq != "791" || p.NextAfter != "800" || p.HasMore || !p.Coverage.Gap || p.Coverage.Continuity != ContinuityUnknown || p.Freshness != FreshnessUnknown || !p.Closed || p.Collection != Closed {
 		t.Fatalf("bad tail page %+v", p)
 	}
 	if reads.Load() > 32 {

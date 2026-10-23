@@ -50,7 +50,7 @@
       <section id="view-connections" class="view" aria-labelledby="records-heading" hidden>
         <div class="page-heading"><h1 id="records-heading">连接记录</h1><p class="muted">查看目标、命中规则与出口。仅为已记录的路由观察，不是实时连接列表。</p></div>
         <a class="records-skip" href="#records-results">跳到本页记录</a>
-        <div id="records-coverage" class="records-warning" role="note">覆盖不完整：仅显示普通 tracker 可见的 TCP / UDP / flow 路由观察。ROUTED 不代表已连接或成功；REJECT、DNS 劫持 / 内部 DNS、tracker 前失败不可见。这不是完整审计；没有记录不代表没有流量。DNS 状态：UNKNOWN。</div>
+        <div id="records-coverage" class="records-warning" role="note">覆盖不完整：仅显示普通 tracker 可见的 TCP / UDP / flow 路由观察。ROUTED 不代表已连接或成功；REJECT、DNS 劫持 / 内部 DNS、tracker 前失败不可见。这不是完整审计；没有记录不代表没有流量。完整收尾未验证／连续性 UNKNOWN。DNS 状态：UNKNOWN。</div>
         <p class="records-warning">目的地址历史在这台 Mac 上私有持久保存，跨 VPN / 控制台重启保留，不会自动删除。权限不是加密或安全擦除；root、备份与系统崩溃策略可能暴露历史。退出只清理页面，不会删除磁盘历史或已交付的字节。</p>
         <div class="panel records-panel">
           <div class="panel-toolbar"><h2>路由历史 <span class="badge">非 LIVE</span></h2><button id="records-latest">最新历史</button></div>

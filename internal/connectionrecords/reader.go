@@ -278,7 +278,15 @@ func pageFromState(s State, latest string, after uint64, now time.Time) PageResp
 		p.Coverage.LossReasons = LossReasons{}
 	}
 	if s.Closed {
-		p.Coverage.Continuity = ContinuityClosed
+		// Persisted CLOSED is only the last saved stopped-recording state.
+		// Final directory Sync/lock Close may fail after that publication,
+		// with no subsequent write possible. It cannot certify completion.
+		p.Freshness = FreshnessUnknown
+		p.Coverage.Gap = true
+		p.Pending = nil
+		p.Coverage.LostTotal = nil
+		p.Coverage.LossEpoch = nil
+		p.Coverage.LossReasons = LossReasons{}
 	}
 	if s.Collection == IOFailed || s.Collection == InitFailed || s.Collection == WorkerFailed || s.Collection == IDExhausted {
 		p.Coverage.Gap = true

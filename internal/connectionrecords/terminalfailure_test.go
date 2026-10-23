@@ -113,11 +113,13 @@ func TestDiskRecordsTerminalFailureCannotCertifyClosed(t *testing.T) {
 					t.Fatal(e)
 				}
 				future := pageFromState(state, h.InstanceID, 99, at.Add(24*time.Hour))
-				if p.Closed || p.Coverage.Continuity == ContinuityClosed || !p.Coverage.Gap {
-					t.Errorf("known terminal failure certified CLOSED/FRESH/no-GAP: closed=%v collection=%s freshness=%s gap=%v continuity=%s", p.Closed, p.Collection, p.Freshness, p.Coverage.Gap, p.Coverage.Continuity)
+				if p.Closed != state.Closed || p.Collection != state.Collection || p.Header != state.Header || p.ProvenanceStatus != state.ProvenanceStatus {
+					t.Error("last persisted state/source identity was not preserved")
 				}
-				if future.Closed && future.Freshness == Fresh && !future.Coverage.Gap {
-					t.Error("failed CLOSED remains trusted indefinitely after 24h")
+				for _, page := range []PageResponse{p, future} {
+					if page.Coverage.Continuity != ContinuityUnknown || !page.Coverage.Gap || page.Closed && (page.Freshness != FreshnessUnknown || page.Pending != nil || page.Coverage.LostTotal != nil || page.Coverage.LossEpoch != nil || page.Coverage.LossReasons != (LossReasons{})) {
+						t.Errorf("conservative terminal contract violated: closed=%v collection=%s freshness=%s gap=%v continuity=%s", page.Closed, page.Collection, page.Freshness, page.Coverage.Gap, page.Coverage.Continuity)
+					}
 				}
 			})
 		}
@@ -164,7 +166,7 @@ func TestDiskRecordsTerminalLockLifetimeAndSuccessfulClosed(t *testing.T) {
 		t.Fatalf("lock lifetime/success: open=%v closes=%d result=%+v", openErr, closes.Load(), r)
 	}
 	p, e := readPage(context.Background(), clean, scope, diskQuery(h, 99, 1))
-	if e != nil || !p.Closed || p.Collection != Closed || p.Coverage.Gap || p.Coverage.Continuity != ContinuityClosed {
-		t.Fatalf("ordinary successful CLOSED weakened: %v %+v", e, p)
+	if e != nil || !p.Closed || p.Collection != Closed || !p.Coverage.Gap || p.Coverage.Continuity != ContinuityUnknown || p.Freshness != FreshnessUnknown || p.Pending != nil || p.Coverage.LostTotal != nil || p.Coverage.LossEpoch != nil || p.Coverage.LossReasons != (LossReasons{}) || p.HighWaterSeq != "100" || len(p.Records) != 1 || p.Records[0].Seq != "100" {
+		t.Fatalf("conservative successful CLOSED projection: %v %+v", e, p)
 	}
 }

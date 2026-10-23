@@ -795,7 +795,10 @@ func validateValue(v reflect.Value, depth int) error {
 		if x.HasMore != (next < high) || x.Closed != (x.Collection == Closed) {
 			return ErrInvalid
 		}
-		if !x.Closed && x.Coverage.Continuity == ContinuityClosed {
+		if x.Coverage.Continuity != ContinuityUnknown {
+			return ErrInvalid
+		}
+		if x.Closed && (x.Freshness != FreshnessUnknown || !x.Coverage.Gap || x.Pending != nil || x.Coverage.LostTotal != nil || x.Coverage.LossEpoch != nil || x.Coverage.LossReasons != (LossReasons{})) {
 			return ErrInvalid
 		}
 		if (!x.Closed && x.Freshness != Fresh || x.Collection == CollectionUnknown || x.Collection == IOFailed || x.Collection == InitFailed || x.Collection == WorkerFailed || x.Collection == IDExhausted) && !x.Coverage.Gap {

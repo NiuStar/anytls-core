@@ -108,10 +108,13 @@ func TestQB01LegalUnknownAndClosed(t *testing.T) {
 			case "closed":
 				p.Collection = Closed
 				p.Closed = true
-				p.Coverage.Continuity = ContinuityClosed
+				p.Freshness = FreshnessUnknown
+				p.Coverage.Gap = true
 			case "closed_unknown_continuity":
 				p.Collection = Closed
 				p.Closed = true
+				p.Freshness = FreshnessUnknown
+				p.Coverage.Gap = true
 			}
 			if err := Validate(p); err != nil {
 				t.Fatal(err)
