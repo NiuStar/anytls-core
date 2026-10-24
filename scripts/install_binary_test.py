@@ -1026,6 +1026,136 @@ class WebUITests(unittest.TestCase):
         for suffix in (" webui", " webui --port 18089", " webui --port=18089"):
             self.assertTrue(self.ui.known((self.identity[0], self.identity[1], str(self.target) + suffix)))
 
+    def test_lan_preflight_restart_preserves_listen_and_readiness(self):
+        identity = ("501", self.identity[1],
+                    str(self.target) + " webui --port 18089 --listen 192.168.5.2")
+        child, opener, _ = self.start_fixture()
+        with mock.patch.object(os, "getuid", return_value=501), \
+                mock.patch.object(b, "private_append", side_effect=lambda path: io.BytesIO()), \
+                mock.patch.object(self.ui, "listeners", side_effect=[{99074}, {99074}, set(), {77}, {77}]), \
+                mock.patch.object(self.ui, "identity", side_effect=[identity, identity, identity, None]):
+            self.ui.preflight()
+            self.ui.restart()
+        self.kill.assert_called_once_with(99074, b.signal.SIGTERM)
+        self.assertEqual(self.popen.call_args.args[0],
+                         [str(self.target), "webui", "--port", "18089", "--listen", "192.168.5.2"])
+        opener.open.assert_called_once_with("http://192.168.5.2:18089/", timeout=1)
+        child.terminate.assert_not_called()
+
+    def test_listen_forms_preserved_through_preflight_restart(self):
+        hosts = ("127.0.0.1", "127.0.0.2", "10.0.0.1", "10.255.255.254",
+                 "172.16.0.1", "172.31.255.254", "192.168.5.2")
+        for host in hosts:
+            for suffix in (" --listen " + host, " --listen=" + host,
+                           " --port=18089 --listen " + host,
+                           " --listen=" + host + " --port 18089"):
+                with self.subTest(suffix=suffix):
+                    self.ui = b.WebUI(self.target, {"HOME": str(self.app)})
+                    identity = (*self.identity[:2], str(self.target) + " webui" + suffix)
+                    child, opener, _ = self.start_fixture()
+                    self.kill.reset_mock()
+                    with mock.patch.object(self.ui, "listeners", side_effect=[{42}, {42}, set(), {77}, {77}]), \
+                            mock.patch.object(self.ui, "identity", side_effect=[identity, identity, identity, None]):
+                        self.ui.preflight()
+                        self.ui.restart()
+                    self.assertEqual(self.popen.call_args.args[0],
+                                     [str(self.target), "webui", "--port", "18089", "--listen", host])
+                    self.assertNotIn("shell", self.popen.call_args.kwargs)
+                    opener.open.assert_called_once_with("http://" + host + ":18089/", timeout=1)
+                    self.kill.assert_called_once_with(42, b.signal.SIGTERM)
+                    child.terminate.assert_not_called()
+
+    def test_unsafe_listen_and_ambiguous_arguments_never_signal(self):
+        hosts = ("0.0.0.0", "localhost", "example.com", "8.8.8.8", "::1", "fc00::1",
+                 "::ffff:192.168.5.2", "169.254.1.1", "192.0.0.1", "192.0.2.1",
+                 "198.51.100.1", "203.0.113.1", "100.64.0.1", "198.18.0.1",
+                 "224.0.0.1", "240.0.0.1", "255.255.255.255", "0.1.2.3",
+                 "172.15.255.255", "172.32.0.1", "192.167.1.1", "192.169.1.1",
+                 "192.168.005.2", "127.1", "2130706433", "192.168.5.256",
+                 "192.168.5.2/24", "192.168.5.2:18089", "192.168.5.2%en0")
+        suffixes = [" --listen=" + host for host in hosts] + [
+            " --listen", " --listen=", " --port", " --port=", " --port=018089",
+            " --port=+18089", " --port=18089 --port 18089",
+            " --listen=192.168.5.2 --listen 192.168.5.2",
+            " --port 18089 --listen=192.168.5.2 --unknown",
+            " --listen='192.168.5.2'", ' --listen="192.168.5.2"',
+            " --listen 192.168.5.2;id", " --listen $(id)", " --listen 192.168.5.2 extra",
+            " --listen=192.168.5.2 --", " -- --listen=192.168.5.2",
+            " --listen=192.168.5.2\n", " --listen=192.168.5.2\x00",
+            " --listen=192.168.5.2\r --port=18089", " --listen==192.168.5.2",
+            " --listen =192.168.5.2", "x --listen=192.168.5.2"]
+        with mock.patch.object(self.ui, "listeners", return_value={42}), \
+                mock.patch.object(self.ui, "identity") as identity:
+            for suffix in suffixes:
+                identity.return_value = (*self.identity[:2], str(self.target) + " webui" + suffix)
+                with self.subTest(suffix=suffix), self.assertRaisesRegex(ValueError, "unknown"):
+                    self.ui.preflight()
+        self.assertIsNone(self.ui.old)
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
+    def test_exact_target_prefix_preserves_spaces_without_shell_parsing(self):
+        target = self.app / "home with spaces ' [x] $d" / "anytls-macos"
+        ui = b.WebUI(target, {})
+        command = str(target) + " webui --listen=192.168.5.2 --port=18089"
+        self.assertTrue(ui.known((*self.identity[:2], command)))
+        foreign_uid = str(os.getuid() + 1)
+        invalid = [(foreign_uid, self.identity[1], command)] + [
+            (*self.identity[:2], value) for value in (
+                command.replace(str(target), "/other/anytls-macos"),
+                command.replace(str(target), "anytls-macos"),
+                command.replace(str(target), str(target) + "-other"),
+                command.replace(str(target), '"' + str(target) + '"'),
+                command.replace(" webui ", " webui-other "))]
+        with mock.patch.object(ui, "listeners", return_value={42}), mock.patch.object(ui, "identity") as identity:
+            for value in invalid:
+                identity.return_value = value
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "unknown"):
+                    ui.preflight()
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
+    def test_lan_identity_or_port_changes_before_restart_never_signal(self):
+        identity = (*self.identity[:2], str(self.target) + " webui --listen=192.168.5.2")
+        changed = (*self.identity[:2], str(self.target) + " webui --listen=192.168.5.3")
+        for pids, identities in (({88}, [identity]), ({42}, [changed]),
+                                 ({42}, [identity, changed]),
+                                 ({42}, [(str(os.getuid() + 1), *identity[1:])])):
+            with self.subTest(pids=pids, identities=identities):
+                self.ui = b.WebUI(self.target, {})
+                with mock.patch.object(self.ui, "listeners", side_effect=[{42}, pids]), \
+                        mock.patch.object(self.ui, "identity", side_effect=[identity] + identities):
+                    self.ui.preflight()
+                    with self.assertRaisesRegex(ValueError, "changed"):
+                        self.ui.restart()
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
+    def test_lan_failed_start_never_falls_back_to_loopback(self):
+        identity = (*self.identity[:2], str(self.target) + " webui --listen=192.168.5.2")
+        for failure in ("exited", "timed out"):
+            with self.subTest(failure=failure):
+                self.ui = b.WebUI(self.target, {})
+                with mock.patch.object(self.ui, "listeners", return_value={42}), \
+                        mock.patch.object(self.ui, "identity", return_value=identity):
+                    self.ui.preflight()
+                self.popen.reset_mock()
+                child, opener, _ = self.start_fixture()
+                child.poll.return_value = 1 if failure == "exited" else None
+                with mock.patch.object(self.ui, "listeners", side_effect=[{77}, {88}]), \
+                        mock.patch.object(b.time, "monotonic", side_effect=[0, 0, 11]), \
+                        self.assertRaisesRegex(ValueError, failure):
+                    self.ui.start()
+                self.popen.assert_called_once()
+                self.assertEqual(self.popen.call_args.args[0][-2:], ["--listen", "192.168.5.2"])
+                if failure == "exited":
+                    opener.open.assert_not_called()
+                    child.terminate.assert_not_called()
+                else:
+                    opener.open.assert_called_once_with("http://192.168.5.2:18089/", timeout=1)
+                    child.terminate.assert_called_once()
+        self.kill.assert_not_called()
+
     def test_initial_start_ignores_stale_pidfile(self):
         (self.app / "webui.pid").write_text("42\n")
         with mock.patch.object(self.ui, "listeners", return_value=set()), mock.patch.object(self.ui, "start") as start:

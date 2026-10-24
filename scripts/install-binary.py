@@ -11,6 +11,7 @@ import urllib.request
 import hashlib
 import http.client
 import importlib.util
+import ipaddress
 import os
 from pathlib import Path
 import platform
@@ -364,6 +365,8 @@ class WebUI:
         self.target, self.env = target, env
         self.timeout = 10
         self.old = None
+        self.listen = "127.0.0.1"
+        self.listen_explicit = False
 
     def listeners(self):
         result = subprocess.run(["/usr/sbin/lsof", "-t", "-nP", "-iTCP:18089", "-sTCP:LISTEN"],
@@ -388,10 +391,41 @@ class WebUI:
             fields.append(result.stdout.decode("utf-8").strip())
         return tuple(fields)
 
+    def listen_args(self, identity):
+        if identity is None or identity[0] != str(os.getuid()):
+            return None
+        prefix = str(self.target) + " webui"
+        if not identity[2].startswith(prefix):
+            return None
+        tail = identity[2][len(prefix):]
+        # ps command is not shell-quoted argv: preserve the exact path prefix,
+        # then accept only unquoted, unambiguous flag/value tokens; never eval.
+        if tail and (tail[0] not in " \t" or not re.fullmatch(r"[ \tA-Za-z0-9.=-]*", tail)):
+            return None
+        tokens = iter(tail.split())
+        options = {}
+        for token in tokens:
+            key, sep, value = token.partition("=")
+            if key not in ("--port", "--listen") or key in options:
+                return None
+            options[key] = value if sep else next(tokens, "")
+        if options.get("--port", "18089") != "18089":
+            return None
+        host = options.get("--listen", "127.0.0.1")
+        try:
+            octets = ipaddress.IPv4Address(host).packed
+        except ipaddress.AddressValueError:
+            return None
+        # Match Go netip's IPv4 loopback/RFC1918 policy, NOT Python is_private
+        # (which also accepts reserved, link-local and documentation addresses).
+        if not (octets[0] in (127, 10) or
+                (octets[0] == 172 and 16 <= octets[1] <= 31) or
+                (octets[0] == 192 and octets[1] == 168)):
+            return None
+        return host, "--listen" in options
+
     def known(self, identity):
-        return identity is not None and identity[0] == str(os.getuid()) and identity[2] in {
-            str(self.target) + " webui", str(self.target) + " webui --port 18089",
-            str(self.target) + " webui --port=18089"}
+        return self.listen_args(identity) is not None
 
     def preflight(self):
         pids = self.listeners()
@@ -399,8 +433,10 @@ class WebUI:
         if pids:
             pid = next(iter(pids))
             identity = self.identity(pid)
-            i.require(self.known(identity), "port 18089 is occupied by an unknown process/arguments or UID; close it yourself")
+            listen = self.listen_args(identity)
+            i.require(listen is not None, "port 18089 is occupied by an unknown process/arguments or UID; close it yourself")
             self.old = (pid, identity)
+            self.listen, self.listen_explicit = listen
         # Historical webui.pid is never read: a PID is not process authority.
 
     def restart(self):
@@ -431,8 +467,11 @@ class WebUI:
     def start(self):
         child = None
         try:
+            args = [str(self.target), "webui", "--port", "18089"]
+            if self.listen_explicit or self.listen != "127.0.0.1":
+                args += ["--listen", self.listen]
             with private_append(self.target.parent / "webui.log") as log:
-                child = subprocess.Popen([str(self.target), "webui", "--port", "18089"],
+                child = subprocess.Popen(args,
                                          stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                          start_new_session=True, env=self.env)
             deadline = time.monotonic() + self.timeout
@@ -441,7 +480,7 @@ class WebUI:
                 i.require(child.poll() is None, "new WebUI exited before readiness")
                 if self.listeners() == {child.pid}:
                     try:
-                        with opener.open("http://127.0.0.1:18089/", timeout=1) as response:
+                        with opener.open("http://" + self.listen + ":18089/", timeout=1) as response:
                             ready = response.status == 200 and b"<title>AnyTLS" in response.read(1024 * 1024)
                         if ready and child.poll() is None and self.listeners() == {child.pid}:
                             return
@@ -649,7 +688,7 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         print("Run now by absolute path: " + shlex.quote(str(app / "anytls-macos")))
         print("The current terminal PATH is unchanged. Open a new terminal, or for bash/zsh run: export PATH=" +
               shlex.quote(str(home / ".local/bin")) + ':"$PATH"')
-        print("WebUI started at http://127.0.0.1:18089/ using the new binary. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
+        print("WebUI started using the new binary; existing listen address preserved (fresh installs: http://127.0.0.1:18089/). VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
         report["executed"] = True
         return report
 

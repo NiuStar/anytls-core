@@ -122,19 +122,27 @@ Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-AR
 并发安装器会明确失败。
 
 **安装成功默认自动关闭旧 WebUI 并启动新版，首次安装也会启动。**
-固定地址为 `http://127.0.0.1:18089/`，不迁移或停止其他端口上的旧 WebUI。
+首次安装或没有旧监听时仍使用 `http://127.0.0.1:18089/`；已识别的旧 WebUI
+若显式指定 `--listen`，重启时保留该地址，不会悄悄改回 loopback。不迁移或停止其他端口上的旧 WebUI。
 在 helper 安装及发布前，使用系统 `lsof` 查询 18089 监听 PID，并通过完整
-`ps` 信息核对当前 UID、启动时间和精确目标路径命令；只接受
-`~/.anytls/anytls-macos webui`（可带 `--port 18089` 或 `--port=18089`）。
+`ps` 信息核对当前 UID、启动时间和精确目标路径命令；接受
+`~/.anytls/anytls-macos webui`，可带一次 `--port 18089` 和一次 `--listen 192.168.5.2`，
+两者顺序不限，也支持 `--port=18089` / `--listen=192.168.5.2`。省略 listen 时为 `127.0.0.1`。
+listen 仅接受规范的 IPv4 字面量：`127.0.0.0/8` loopback 或 RFC1918 的
+`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`；拒绝 wildcard、DNS、公网、IPv6、
+链路本地与其他保留地址。重复 flag、缺值、其他端口、位置参数、引号或 shell 表达式一律拒绝；
+不将 `ps` 命令文本当作可执行 shell，目标路径（包括空格）必须精确匹配。
 外来占用、多监听或未知参数一律拒绝继续，不根据 basename、子串或历史
 `webui.pid` 杀进程；历史 pidfile 完全不作为权限依据，也不更新它。
 
 仅在 helper 安装/status、原子发布和新目标 version 都成功后，重新核对旧进程
 身份与启动时间，向明确识别的旧 WebUI 发送一次 `SIGTERM`，有界等待旧进程
 消失且端口空闲；身份变化不再发信号，超时不使用 `SIGKILL`。helper 失败不会
-关闭旧 WebUI。新进程以 `webui --port 18089` 独立会话启动，stdin 为 `/dev/null`，
+关闭旧 WebUI。新进程以 `webui --port 18089`（需要保留显式 listen 时追加 `--listen 地址`）独立会话启动，stdin 为 `/dev/null`，
 stdout/stderr 追加到 `0600` 的 `~/.anytls/webui.log`。必须确认监听 PID 等于
-新子进程 PID，且首页 HTTP 200 含实际控制台标记，并再次确认端口归属，才报告成功。
+新子进程 PID，且在同一保留地址探测的首页 HTTP 200 含实际控制台标记，并再次确认端口归属，才报告成功。
+新版 WebUI 自身仍校验地址确实分配给本机网卡；旧 LAN 地址失效会启动失败，不自动回退 loopback。
+LAN 使用明文 HTTP，会向本地网络暴露凭据；不要转发此端口。
 
 如果发布后无法停止旧 WebUI 或新版启动/就绪失败，会返回非零并明确报告
 `binary installed but WebUI start failed`；二进制已经安装，不伪称整笔回滚。
