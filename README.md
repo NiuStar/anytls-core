@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前版本 **[v2026-10-24-03](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-24-03)** 与 anytls-go v0.0.28 联动，支持无需域名的公网 IP 私有订阅、固定证书／公钥认证，以及保留原有分流的“仅添加节点”。提供 Intel（amd64）和 Apple Silicon（arm64）预编译包，默认只下载程序包与校验和。见 [使用说明](docs/public-ip-private-subscription.md) 和 [公开发布核验](docs/releases/v2026-10-24-03-public-validation.md)。保留已发布的核心裁剪、路由观察、私有磁盘历史、认证分页、局域网 WebUI、并发测速、配置方案与 32 MiB 配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
+Go 编写的 macOS AnyTLS VPN 客户端。本次发行版本 **[v2026-10-24-04](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-24-04)**：普通 AnyTLS 默认／Chrome 使用独立 Chrome155 TLS 后端，构建固定 Go 1.27.3；显式 `golang` 保留回退。见 [本版说明与验收边界](docs/releases/v2026-10-24-04.md)。发行是否已公开以 Release 页面为准；旧版公网 IP 订阅核验仍归属 v2026-10-24-03。本版与 anytls-go v0.0.28 联动，支持无需域名的公网 IP 私有订阅、固定证书／公钥认证，以及保留原有分流的“仅添加节点”。提供 Intel（amd64）和 Apple Silicon（arm64）预编译包，默认只下载程序包与校验和。见 [使用说明](docs/public-ip-private-subscription.md) 和 [公开发布核验](docs/releases/v2026-10-24-03-public-validation.md)。保留已发布的核心裁剪、路由观察、私有磁盘历史、认证分页、局域网 WebUI、并发测速、配置方案与 32 MiB 配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
