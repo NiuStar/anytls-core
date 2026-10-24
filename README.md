@@ -104,7 +104,11 @@ anytls status
 anytls stop
 ```
 
-严格 TLS 模式要求 CA PEM。已有 `skip-cert-verify: true` 节点仍需显式确认；它不提供服务器身份安全保证。sudo 密码只在本机终端输入，不发到聊天。
+严格 CA 模式要求 CA PEM；由可信私有订阅提供的 `certificate-public-key-sha256` 可改用固定公钥认证，无需本地 CA 文件（pin-only，不是公共 CA／主机名校验），不能与 CA 或 `skip-cert-verify: true` 混用。已有跳过校验节点仍需显式确认；它不提供服务器身份安全保证。sudo 密码只在本机终端输入，不发到聊天。
+
+### 无域名公网 IP 服务端订阅
+
+与 [anytls-go v0.0.28](https://github.com/NiuStar/anytls-go/releases/tag/v0.0.28) 联动：服务端一键安装生成持久证书和私有订阅链接；本客户端 v2026-10-24-03 在“配置与规则 → HTTPS 订阅 → 从此订阅仅添加节点”预览、确认后追加节点，保留现有选择和分流。完整链接是私有凭据，必须可信交付；不会从未经验证的地址接受指纹。两项目匹配版本发布后使用，详见 [公网 IP 私有订阅](docs/public-ip-private-subscription.md)。
 
 ## 配置与分流
 
