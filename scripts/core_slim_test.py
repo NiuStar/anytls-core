@@ -21,14 +21,11 @@ class CoreSlimTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        cache = os.environ.get('GOMODCACHE')
-        if cache:
-            source = Path(cache) / (w.MODULE + '@' + w.VERSION)
-            self.originals = {pin['file']: (source / pin['file']).read_bytes() for pin in self.core['files']}
-        else:
-            archive = w.ROOT / 'artifacts/embedded-baseline/g1-preflight/module-cache/cache/download/github.com/sagernet/sing-box/@v/v1.14.3.zip'
-            with zipfile.ZipFile(archive) as z:
-                self.originals = {pin['file']: z.read(w.MODULE + '@' + w.VERSION + '/' + pin['file']) for pin in self.core['files']}
+        # These two authenticated upstream files travel with clean source/CCS.
+        # Python validation runs before Go/cache setup in the release workflow.
+        fixture = w.ROOT / 'scripts/tests/fixtures/sing-box-v1.14.3'
+        self.originals = {pin['file']: (fixture / (pin['file'] + '.txt')).read_bytes()
+                          for pin in self.core['files']}
         for name, raw in self.originals.items():
             self.assertEqual(w.sha(raw), next(p['original_sha256'] for p in self.core['files'] if p['file'] == name))
             (self.root / name).write_bytes(raw)

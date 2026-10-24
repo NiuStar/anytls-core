@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。本次版本 **[v2026-10-24-01](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-24-01)** 精简 sing-box 的实际链接路径，移除内置调试 HTTP／pprof 和持久化缓存构造，保留 AnyTLS、mixed TUN、DNS、路由、gVisor 与 Chrome uTLS；提供 Intel（amd64）和 Apple Silicon（arm64）构建。未剥离符号的同条件 arm64 候选减少 1,050,272 字节，Mac Studio 真实 TUN 试验及旧版恢复通过；Intel 目标原生体验由用户另测。正式发行和附件状态以 GitHub Release 为准，见 [版本说明](docs/releases/v2026-10-24-01.md)。保留 [上一稳定版](docs/releases/v2026-10-23-01-public-validation.md) 的路由观察、私有磁盘历史、受认证助手分页、桌面／手机日志页、显式私有 IPv4 局域网 WebUI、预编译网页更新、并发测速、配置方案和 32 MiB 配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
+Go 编写的 macOS AnyTLS VPN 客户端。本次版本 **[v2026-10-24-02](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-24-02)** 精简 sing-box 的实际链接路径，移除内置调试 HTTP／pprof 和持久化缓存构造，保留 AnyTLS、mixed TUN、DNS、路由、gVisor 与 Chrome uTLS；提供 Intel（amd64）和 Apple Silicon（arm64）构建。未剥离符号的同条件 arm64 候选减少 1,050,272 字节，Mac Studio 真实 TUN 试验及旧版恢复通过；Intel 目标原生体验由用户另测。正式发行和附件状态以 GitHub Release 为准，见 [版本说明](docs/releases/v2026-10-24-02.md)。保留 [上一稳定版](docs/releases/v2026-10-23-01-public-validation.md) 的路由观察、私有磁盘历史、受认证助手分页、桌面／手机日志页、显式私有 IPv4 局域网 WebUI、预编译网页更新、并发测速、配置方案和 32 MiB 配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 

@@ -28,14 +28,9 @@ CoreSlimTests = core_tests.CoreSlimTests  # Existing explicit CI entry runs both
 class ValidationTests(unittest.TestCase):
     def setUp(self):
         self.manifest, self.patch = wrapper.identity()
-        cache = os.environ.get("GOMODCACHE")
-        if cache:
-            self.source = (Path(cache) / "github.com/sagernet/sing-box@v1.14.3/box.go").read_bytes()
-        else:
-            # Validation fixtures must be real upstream bytes, not fabricated Go.
-            archive = wrapper.ROOT / "artifacts/embedded-baseline/g1-preflight/module-cache/cache/download/github.com/sagernet/sing-box/@v/v1.14.3.zip"
-            with zipfile.ZipFile(archive) as z:
-                self.source = z.read(wrapper.MODULE + "@" + wrapper.VERSION + "/box.go")
+        fixture = wrapper.ROOT / 'scripts/tests/fixtures/sing-box-v1.14.3/box.go.txt'
+        self.source = fixture.read_bytes()
+        self.assertEqual(wrapper.sha(self.source), self.manifest['source_sha256'])
 
     def test_real_source_exact_patch(self):
         result = wrapper.transform(self.source, self.manifest, self.patch)
