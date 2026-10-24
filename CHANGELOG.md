@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-24-05
+
+- 支持 Clash／原生 YAML `fingerprint`：整张服务器叶证书 DER 的 SHA-256（64 位 hex），贯穿转换、导入、追加、表单编辑与实际 TLS 连接。
+- Go TLS、SDK uTLS 和 Chrome155 后端均验证叶证书；畸形、空或冲突信任拒绝，不支持的 TLS 引擎／Reality／ECH 组合明确失败。
+- 固定 sing-box 1.14.3 与 Go 1.27.3，新增独立认证叶证书补丁和对应源码材料，既有 Start／core／Chrome 补丁不变。
+- Mac Studio 实现候选完整回归、vet、相关 race 及真实 CLI 九组正负例通过；最终发行 CI／附件核验独立进行。pin-only 不承诺 PKIX 链、主机名或有效期验证，也不等于关闭指纹校验。详见 [版本说明](docs/releases/v2026-10-24-05.md)。
+
 ## v2026-10-24-04
 
 - 普通 AnyTLS 默认／Chrome 指纹接入独立 Chrome155 TLS 后端，固定 refraction uTLS `v0.0.0-20261006195536-6ebdceb2607e`；显式 `golang` 保留兼容回退，其他旧后端消费者不变。
