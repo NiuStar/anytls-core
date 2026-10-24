@@ -7,8 +7,8 @@ permissions:
   contents: write
 jobs:
   release:
-    # Legacy source-only tags; newer tags are owned by Binary Release.
-    if: github.ref_name == 'v2026-10-19-01' || github.ref_name == 'v2026-10-21-01' || github.ref_name == 'v2026-10-21-02'
+    # Legacy source-only tags; v2026-10-24-04 is explicitly binary-owned.
+    if: github.ref_name != 'v2026-10-24-04' && (github.ref_name == 'v2026-10-19-01' || github.ref_name == 'v2026-10-21-01' || github.ref_name == 'v2026-10-21-02')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
