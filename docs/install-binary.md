@@ -45,7 +45,7 @@ python3 -I scripts/install-binary.py --check-download --arch amd64 # 仅校验In
 
 本地需同时保有可信 `scripts/install.py`。检查模式不启动任何子进程：macOS默认按当前Python进程架构选包（Rosetta下可用`--arch arm64`指定检查原生包），非macOS默认arm64；实际安装才通过sysctl确认硬件，不能将探测失败当作Intel。
 检查模式可在非 macOS 上运行，使用
-临时目录下载并校验二进制和完整对应源码附件，验证包结构、版本、manifest、
+临时目录只下载并校验当前架构二进制包与 `SHA256SUMS`，验证包结构、版本、manifest、
 Mach-O 头及二进制摘要；输出 JSON 的 `download_verified: true` 和
 `executed: false`。**不运行二进制、不调用 helper、不创建应用目录、配置或 PATH
 链接**。临时树退出即清理；可设置 `TMPDIR` 指定临时目录。
@@ -56,7 +56,7 @@ Mach-O 头及二进制摘要；输出 JSON 的 `download_verified: true` 和
 
 ## Release 合同
 
-双架构稳定 tag 提供以下六个精确附件（安装器只下载当前硬件所需的四个）；没有二进制的旧 source-only Release
+双架构稳定 tag 提供以下六个精确附件；**默认安装仅下载 `SHA256SUMS` 和当前架构的二进制包**，不下载或要求源码附件。源码仍在 Release 单独提供，不影响默认安装；没有二进制的旧 source-only Release
 明确失败，不会回退编译：
 
 - `anytls-core-TAG-darwin-arm64.tar.gz`
@@ -89,7 +89,7 @@ THIRD_PARTY_NOTICES.md
 `binary_sha256` 必须等于流式计算的实际文件摘要。二进制要求与选定架构一致的 thin arm64 或 x86_64
 Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-ARCH`；这不替代 macOS 平台加载及实际执行。归档流式展开，拒绝
 越界、错误前缀、重复成员、file/directory 碰撞、符号/硬链接及特殊文件；不继承
-可执行位。源码包验证整体 SHA256 并保留，不执行或展开其内容。
+可执行位。源码包不参与默认下载、检查或安装；需要源码时从同 tag Release 单独取得。
 
 ## 安装顺序与更新边界
 
@@ -99,7 +99,7 @@ Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-AR
 - 配置：`~/.anytls/config.yaml`
 - PATH 链接：`~/.local/bin/anytls` → 上述二进制
 - 旧二进制备份：`~/.anytls/backups/`
-- 本次包内许可证、manifest、原始完整源码包、SHA256SUMS：
+- 本次二进制包、包内许可证／manifest 与 SHA256SUMS：
   `~/.anytls/releases/TAG-<随机标识>/`
 
 先拒绝应用目录 symlink、已有非普通目标/配置，以及与其他程序冲突的 PATH
@@ -113,7 +113,7 @@ Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-AR
 该命令的认证 readiness 和随后的 `helper status` 都成功后，才先备份实际旧
 二进制，再原子发布并再次执行 `version`。不自动执行 VPN 的 start/reload/stop。
 
-所有归档校验成功后，先完整保留并读回核对许可证、NOTICE、源码、CCS 和摘要材料；保留失败不会执行候选或改变旧程序／配置。随后将候选复制到同一 appdir 内并验证版本。
+二进制归档校验成功后，先保留并读回核对包内许可证、NOTICE 和程序身份材料，以及二进制归档与校验和；保留失败不会执行候选或改变旧程序／配置。不下载应用源码或对应源码归档，也不删除以前安装保留的源码。随后将候选复制到同一 appdir 内并验证版本。
 安装不是跨用户文件和 root helper 的原子事务：首次创建的配置/链接可能保留；helper 已成功后
 若备份/发布或最终 version 失败，helper 或用户二进制可能已经
 更新。不要把失败当作自动回退；检查 `anytls helper status`、当前

@@ -85,6 +85,30 @@ class UpdateTests(unittest.TestCase):
         for path, expected in self.protected.items():
             self.assertEqual((path.read_bytes(), path.stat().st_mode, path.stat().st_ino), expected)
 
+    def test_binary_only_exact_asset_set_update_both_arches(self):
+        for arch in ("arm64", "amd64"):
+            with self.subTest(arch=arch):
+                if arch == "amd64":
+                    self.fixture.use_intel_fixture()
+                self.args.update_arch = arch
+                self.fixture.calls.clear()
+                self.fixture.release["assets"] = [a for a in self.fixture.release["assets"]
+                                                   if a["name"] in (self.fixture.binary_name, "SHA256SUMS")]
+                self.fixture.sums = self.fixture.sums.splitlines()[0] + "\n"
+                result = self.update(transport=self.fixture.binary_only_transport)
+                self.assertEqual(result["platform"], "darwin-" + arch)
+                self.assertEqual(self.fixture.calls, [b.i.API + "/releases/tags/" + f.TAG,
+                                                     b.i.API + "/commits/" + f.TAG,
+                                                     self.fixture.url("SHA256SUMS"),
+                                                     self.fixture.url(self.fixture.binary_name)])
+                kept = Path(result["backup"]).parent.parent / "releases"
+                for release in kept.iterdir():
+                    self.assertFalse((release / self.fixture.source_name).exists())
+                    self.assertFalse(any(release.glob("*corresponding-source.tar.gz")))
+                    self.assertEqual((release / "LICENSE").read_bytes(), self.fixture.files["LICENSE"])
+                self.assert_protected()
+                self.fixture.webui_factory.assert_not_called()
+
     def test_update_only_keeps_private_state_and_retains_verified_materials(self):
         result = self.update()
         self.assertEqual(result["version"], f.TAG)
@@ -95,10 +119,12 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(next((self.app / "backups").iterdir()).read_bytes(), b"old executable")
         kept = next((self.app / "releases").iterdir())
         for name, raw in (("SHA256SUMS", self.fixture.sums.encode()),
-                          (self.fixture.source_name, self.fixture.source),
-                          (self.fixture.ccs_name, self.fixture.source),
                           (self.fixture.binary_name, self.fixture.binary_archive)):
             self.assertEqual(hashlib.sha256((kept / name).read_bytes()).hexdigest(), hashlib.sha256(raw).hexdigest())
+        self.assertFalse((kept / self.fixture.source_name).exists())
+        self.assertFalse((kept / self.fixture.ccs_name).exists())
+        for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+            self.assertEqual((kept / name).read_bytes(), self.fixture.files[name])
         self.assert_protected()
         self.fixture.webui_factory.assert_not_called()
         self.assertFalse((self.fixture.home / ".local").exists())
@@ -142,8 +168,8 @@ class UpdateTests(unittest.TestCase):
         self.assert_code(42, self.update)
         self.fixture.release["assets"] = original + [original[0]]
         self.assert_code(44, self.update)
-        self.fixture.release["assets"] = original[1:]
-        self.fixture.release["assets"][1]["browser_download_url"] = "https://evil.invalid/SECRET"
+        self.fixture.release["assets"] = original
+        self.fixture.release["assets"][0]["browser_download_url"] = "https://evil.invalid/SECRET"
         self.assert_code(44, self.update)
 
     def test_network_open_and_read_are_43_disk_write_is_45(self):

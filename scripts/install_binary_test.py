@@ -107,6 +107,60 @@ class InstallerTests(unittest.TestCase):
         return b.install_verified(bundle, TAG, self.app, self.home, runner or self.runner,
                                   env={"HOME": str(self.home)}, tty=lambda: io.BytesIO())
 
+    def assert_binary_only_requests(self):
+        self.assertEqual([url for url in self.calls if "/releases/download/" in url],
+                         [self.url("SHA256SUMS"), self.url(self.binary_name)])
+        self.assertEqual([url for url in self.calls if "/releases/" in url and "/download/" not in url],
+                         [b.i.API + "/releases/latest"])
+
+    def binary_only_transport(self, url, kind):
+        self.assertNotIn("source.tar.gz", url, "source archives must never be requested automatically")
+        return self.transport(url, kind)
+
+    def test_binary_only_exact_asset_set_full_and_check_both_arches(self):
+        for arch in ("arm64", "amd64"):
+            if arch == "amd64":
+                self.use_intel_fixture()
+            for check in (True, False):
+                with self.subTest(arch=arch, check=check):
+                    self.home = self.root / (arch + str(check))
+                    self.home.mkdir()
+                    self.app = self.home / ".anytls"
+                    self.calls.clear()
+                    self.processes = []
+                    if not check:
+                        self.release["assets"] = [a for a in self.release["assets"]
+                                                   if a["name"] in (self.binary_name, "SHA256SUMS")]
+                        self.sums = self.sums.splitlines()[0] + "\n"
+                    def runner(args, **kwargs):
+                        self.assertFalse(check, "check-download must not spawn a process")
+                        if args[0] == "/usr/sbin/sysctl":
+                            return types.SimpleNamespace(stdout=b"0\n", returncode=0)
+                        return self.runner(args, **kwargs)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        result = b.run(types.SimpleNamespace(version=None, check_download=check),
+                                       self.binary_only_transport, runner, system="Darwin",
+                                       machine="arm64" if arch == "arm64" else "x86_64", euid=501,
+                                       home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
+                    self.assertEqual(result["executed"], not check)
+                    self.assert_binary_only_requests()
+                    if not check:
+                        kept, = (self.app / "releases").iterdir()
+                        self.assertEqual((kept / self.binary_name).read_bytes(), self.binary_archive)
+                        self.assertFalse((kept / self.source_name).exists())
+                        self.assertFalse((kept / self.ccs_name).exists())
+
+    def test_binary_only_release_without_source_metadata_or_checksums(self):
+        for arch in ("arm64", "amd64"):
+            if arch == "amd64":
+                self.use_intel_fixture()
+            self.release["assets"] = [a for a in self.release["assets"] if a["name"] in (self.binary_name, "SHA256SUMS")]
+            self.sums = self.sums.splitlines()[0] + "\n"
+            work = self.root / ("binary-only-" + arch)
+            work.mkdir()
+            with self.subTest(arch=arch):
+                b.verified_download(work, transport=self.binary_only_transport, arch=arch)
+
     def test_authorization_uses_real_terminal_without_heartbeat(self):
         _, bundle, _, _ = self.verified()
         terminal = io.BytesIO()
@@ -152,7 +206,7 @@ class InstallerTests(unittest.TestCase):
         tag, bundle, digest, commit = self.verified()
         self.assertEqual((tag, digest, commit), (TAG, self.info["binary_sha256"], COMMIT))
         self.assertEqual((bundle / "bin/anytls-macos").stat().st_mode & 0o777, 0o600)
-        self.assertIn(self.url(self.source_name), self.calls)
+        self.assertNotIn(self.url(self.source_name), self.calls)
 
     def test_check_download_no_config_no_process(self):
         args = types.SimpleNamespace(version=TAG, check_download=True, arch="arm64")
@@ -174,15 +228,34 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "URL mismatch"):
             self.verified()
 
-    def test_source_asset_url_rejected(self):
+    def test_unused_source_asset_url_ignored(self):
         self.release["assets"][1]["browser_download_url"] = self.url("../source.tar.gz")
-        with self.assertRaises(ValueError):
-            self.verified()
+        self.verified()
+        self.assertNotIn(self.url("../source.tar.gz"), self.calls)
 
     def test_duplicate_binary_asset(self):
         self.release["assets"].append(self.release["assets"][0])
         with self.assertRaises(ValueError):
             self.verified()
+
+    def test_checksum_asset_duplicate_missing_or_deceptive_url_rejected(self):
+        original = self.release["assets"]
+        sums = original[-1]
+        for entries in (original + [sums], original[:-1],
+                        original[:-1] + [{**sums, "browser_download_url": self.url("SHA256SUMS") + "?evil=1"}]):
+            self.release["assets"] = entries
+            with self.subTest(entries=entries), self.assertRaises(ValueError):
+                self.verified()
+        self.assertFalse(any("/releases/download/" in url for url in self.calls))
+
+    def test_release_identity_rejected_before_assets_download(self):
+        original = dict(self.release)
+        for change in ({"draft": True}, {"prerelease": True}, {"tag_name": "v1.2.4"},
+                       {"tag_name": "v1.2.3-rc1"}, {"html_url": original["html_url"] + "?evil=1"}):
+            self.release = {**original, **change}
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.verified()
+        self.assertFalse(any("/releases/download/" in url for url in self.calls))
 
     def test_prerelease_rejected(self):
         self.release["prerelease"] = True
@@ -344,7 +417,7 @@ class InstallerTests(unittest.TestCase):
                                env={"HOME": str(self.home)}, tty=lambda: io.BytesIO())
         self.assertEqual(starts, [BINARY], "successful binary installation must start the new WebUI")
 
-    def test_complete_run_retains_source_and_license(self):
+    def test_complete_run_retains_binary_package_and_license(self):
         self.processes = []
         args = types.SimpleNamespace(version=TAG, check_download=False)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -356,9 +429,10 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual([args[1:] for args, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"], ["version"]])
         kept = list((self.app / "releases").iterdir())
         self.assertEqual(len(kept), 1)
-        self.assertEqual((kept[0] / self.source_name).read_bytes(), self.source)
+        self.assertFalse((kept[0] / self.source_name).exists())
+        self.assertEqual((kept[0] / self.binary_name).read_bytes(), self.binary_archive)
         self.assertEqual((kept[0] / "LICENSE").read_bytes(), self.files["LICENSE"])
-        self.assertEqual((kept[0] / self.ccs_name).read_bytes(), self.source)
+        self.assertFalse((kept[0] / self.ccs_name).exists())
         self.assertEqual((kept[0] / "THIRD_PARTY_NOTICES.md").read_bytes(), self.files["THIRD_PARTY_NOTICES.md"])
         self.assertEqual((kept[0] / "SHA256SUMS").read_text(), self.sums)
         self.assertEqual((self.app / "anytls-macos").read_bytes(), BINARY)
@@ -465,10 +539,11 @@ class InstallerTests(unittest.TestCase):
                   runner=lambda *a, **k: self.fail("process"), home=self.home)
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.home.iterdir()})
 
-    def test_source_archive_hash_mismatch(self):
+    def test_unused_source_archive_hash_mismatch_ignored(self):
         self.source += b"tampered-source"
-        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-            self.verified()
+        self.verified()
+        self.assertNotIn(self.url(self.source_name), self.calls)
+        self.assertNotIn(self.url(self.ccs_name), self.calls)
 
     def use_intel_fixture(self):
         self.prefix = NAME + "-darwin-amd64"
@@ -480,7 +555,7 @@ class InstallerTests(unittest.TestCase):
         self.release["assets"] = [{"name": n, "browser_download_url": self.url(n)} for n in (self.binary_name, self.source_name, self.ccs_name, "SHA256SUMS")]
         self.rebuild()
 
-    def test_intel_complete_run_uses_intel_binary_and_corresponding_source(self):
+    def test_intel_complete_run_retains_only_intel_binary_package(self):
         self.use_intel_fixture()
         self.processes = []
         def runner(args, **kwargs):
@@ -495,7 +570,8 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(report["executed"])
         self.assertIn(self.url(self.binary_name), self.calls)
         kept, = (self.app / "releases").iterdir()
-        self.assertEqual((kept / self.ccs_name).read_bytes(), self.source)
+        self.assertFalse((kept / self.ccs_name).exists())
+        self.assertEqual((kept / self.binary_name).read_bytes(), self.binary_archive)
         self.assertEqual((self.app / "anytls-macos").read_bytes(), self.files["bin/anytls-macos"])
         self.assertEqual([command[1:] for command, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"], ["version"]])
         self.webui_factory.return_value.restart.assert_called_once()
@@ -580,7 +656,7 @@ class InstallerTests(unittest.TestCase):
                            system="Darwin", machine="x86_64", euid=501, home=self.home, tty=lambda: io.BytesIO())
         self.assertEqual(result["platform"], "darwin-arm64")
         self.assertIn(self.url(self.binary_name), self.calls)
-        self.assertIn(self.url(NAME + "-corresponding-source.tar.gz"), self.calls)
+        self.assertNotIn(self.url(NAME + "-corresponding-source.tar.gz"), self.calls)
 
     def test_metadata_platform_requires_exact_architecture(self):
         for arch in ("arm64", "amd64"):
@@ -619,16 +695,15 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "arm64 Mach-O"):
             self.verified()
 
-    def test_intel_corresponding_source_is_required_and_checksum_verified(self):
+    def test_intel_corresponding_source_is_optional_and_never_downloaded(self):
         self.use_intel_fixture()
         work = self.root / "intel-ccs"
         work.mkdir()
         self.sums = "\n".join(self.sums.splitlines()[:-1]) + "\n"
-        with self.assertRaisesRegex(ValueError, "checksum"):
-            b.verified_download(work, TAG, self.transport, arch="amd64")
+        b.verified_download(work, TAG, self.binary_only_transport, arch="amd64")
         self.release["assets"] = [a for a in self.release["assets"] if a["name"] != self.ccs_name]
-        with self.assertRaisesRegex(ValueError, "corresponding source"):
-            b.binary_release(TAG, self.transport, arch="amd64")
+        _, _, assets = b.binary_release(TAG, self.transport, arch="amd64")
+        self.assertEqual(set(assets), {"SHA256SUMS", self.binary_name})
 
 
 class ShellPathTests(unittest.TestCase):

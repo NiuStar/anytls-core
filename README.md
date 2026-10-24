@@ -12,13 +12,13 @@ Go 编写的 macOS AnyTLS VPN 客户端。本次版本 **[v2026-10-24-02](https:
 curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | bash
 ```
 
-脚本按硬件架构从官方 Release 下载 `darwin-arm64`（Apple Silicon）或 `darwin-amd64`（Intel）二进制包，校验 SHA256，再在本机进行一次系统授权安装助手；**不需要安装 Go、不在用户电脑编译**。已有配置与密码保留，旧程序先备份，不自动停止／重载 VPN。缺 Python 3 时会提示安装；Intel 支持从提供 `darwin-amd64` 附件的双架构 Release 开始；旧版 arm64-only Release 不能在 Intel 安装。没有二进制附件的旧 Release 会明确拒绝，不自动转源码构建。
+脚本按硬件架构从官方 Release 下载 `darwin-arm64`（Apple Silicon）或 `darwin-amd64`（Intel）二进制包及 `SHA256SUMS`，校验后在本机进行系统授权安装助手；**默认不下载应用源码、对应源码／依赖包，不需要安装 Go、不在用户电脑编译**。二进制包内的许可证／NOTICE 仍保留。已有配置与密码保留，旧程序先备份，不自动停止／重载 VPN。缺 Python 3 时会提示安装；没有对应架构二进制附件的旧 Release 会明确拒绝，不自动转源码构建。
 
 默认安装最新稳定版，无需指定版本；正常公共证书环境无需手动 export CA。若代理／私有 CA 不在可信证书库中，仍需配置经独立确认可信的 CA，校验失败会停止，绝不绕过。旧的 `install-control-helper.sh` URL 继续可用，`--version` 仅用于主动固定版本。内部下载仍强制 HTTPS／TLS1.2 和证书校验；Python 没有加载任何默认 CA 且未显式指定 CA 时，脚本仅为本次安装选择可用的 `/etc/ssl/cert.pem`，不改系统信任、不自动信任代理证书。
 
 安装成功后自动为 Bash／Zsh 配置 `~/.local/bin`，保留原有 Shell 配置，重复安装不重复追加。新开的终端直接可用 `anytls`。通过管道执行的安装器无法修改当前父终端的 PATH；当前终端可执行 `export PATH="$HOME/.local/bin:$PATH"`，或直接使用下方绝对路径。特殊 Shell／配置文件不可安全修改时会警告，不擅自覆盖。
 
-脚本会即时显示下载组件、发行附件、校验、系统助手授权、程序替换和 WebUI 切换阶段；网络等待期间每约5秒显示已接收字节、总大小（服务器提供时）与耗时。对应源码附件较大，GitHub 下载缓慢时也会持续提示。进度写入终端 stderr，不包含密码或签名下载链接。
+脚本会即时显示下载组件、二进制包与校验和、校验、系统助手授权、程序替换和 WebUI 切换阶段；网络等待期间每约5秒显示已接收字节、总大小（服务器提供时）与耗时。源码附件仅供需要时从 Release 单独取得，不参与默认安装下载。进度写入终端 stderr，不包含密码或签名下载链接。
 
 先下载审阅再运行：
 
@@ -37,7 +37,7 @@ bash install-control-helper.sh
 
 打开 **http://127.0.0.1:18089**，账户 `admin`，密码由上述命令查看。安装完成自动启动新版 WebUI；若默认端口已有本工具的旧 WebUI，会核对所属用户与完整启动命令后关闭旧进程、启动新版，并确认页面可访问。端口若被其他程序占用则报错，不强行关闭。新装需要填写自己的节点后再启动 VPN。系统密码只在本机系统终端输入，工具不保存。详见 [二进制安装](docs/install-binary.md) 与 [助手权限](docs/privileged-helper.md)。
 
-Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE；SHA256SUMS 是下载完整性校验，不是 Apple 签名或公证。
+Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE；**这些源码附件供单独下载，默认一键安装不下载它们**。SHA256SUMS 是下载完整性校验，不是 Apple 签名或公证。
 
 默认发布构建内嵌精简 sing-box 核心，无需独立 sing-box 可执行文件。保留外部核心构建模式用于对照和回退。本项目不是 SagerNet 官方应用。
 

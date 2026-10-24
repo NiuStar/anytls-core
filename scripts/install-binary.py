@@ -103,11 +103,6 @@ i = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(i)
 
 
-def corresponding_source(tag, arch):
-    i.require(arch in ("arm64", "amd64"), "unsupported binary architecture")
-    return "anytls-core-" + tag + ("-darwin-amd64" if arch == "amd64" else "") + "-corresponding-source.tar.gz"
-
-
 def detect_arch(system, machine, runner=subprocess.run):
     i.require(system == "Darwin", "binary installation supports macOS only")
     if machine == "arm64":
@@ -178,29 +173,31 @@ def update_transport(transport):
 
 def binary_release(version=None, transport=i.open_url, arch="arm64"):
     i.require(arch in ("arm64", "amd64"), "unsupported binary architecture")
-    tag, page, assets = i.release(version, transport)
+    if version is not None:
+        i.validate_version(version)
+    # Select once, without the explicit source-build installer's asset contract.
+    release = i.read_json(i.API + ("/releases/tags/" + version if version else "/releases/latest"), transport=transport)
+    i.require(isinstance(release, dict) and release.get("draft") is False and
+              release.get("prerelease") is False, "not a stable published release")
+    tag = i.validate_version(release.get("tag_name"))
+    i.require(version is None or tag == version, "release tag mismatch")
+    page = "https://github.com/" + i.REPO + "/releases/tag/" + tag
+    i.require(release.get("html_url") == page, "binary release URL mismatch")
     name = "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz"
-    # Source installer intentionally selects only its own two assets. Read the
-    # same fixed release endpoint and independently validate the binary asset.
-    release = i.read_json(i.API + "/releases/tags/" + tag, transport=transport)
-    i.require(isinstance(release, dict) and release.get("tag_name") == tag and
-              release.get("draft") is False and release.get("prerelease") is False and
-              release.get("html_url") == page, "binary release identity mismatch")
     entries = release.get("assets")
-    i.require(isinstance(entries, list), "invalid binary release assets")
-    ccs_name = corresponding_source(tag, arch)
-    missing = False
-    for asset_name in (name, ccs_name):
-        matches = [a for a in entries if isinstance(a, dict) and a.get("name") == asset_name]
+    i.require(isinstance(entries, list) and all(isinstance(a, dict) for a in entries), "invalid binary release assets")
+    assets = {}
+    for asset_name in ("SHA256SUMS", name):
+        matches = [a for a in entries if a.get("name") == asset_name]
         i.require(len(matches) <= 1, "duplicate required binary release asset")
         if not matches:
-            missing = True
             continue
         url = "https://github.com/" + i.REPO + "/releases/download/" + tag + "/" + asset_name
-        i.require(matches[0].get("browser_download_url") == url, "binary/corresponding-source asset tag/URL mismatch")
+        i.require(matches[0].get("browser_download_url") == url, "binary asset tag/URL mismatch")
         assets[asset_name] = i.trusted_url(url, "asset")
-    if missing:
-        raise BinaryUnavailable("release has no macOS " + arch + " binary/corresponding source; legacy source-only releases are not compiled automatically")
+    i.require("SHA256SUMS" in assets, "release must contain SHA256SUMS")
+    if name not in assets:
+        raise BinaryUnavailable("release has no macOS " + arch + " binary; legacy source-only releases are not compiled automatically")
     return tag, page, assets
 
 
@@ -237,7 +234,7 @@ def validate_bundle(bundle, tag, commit, arch="arm64"):
 
 
 def verified_download(work, version=None, transport=i.open_url, arch="arm64"):
-    progress("[1/6] 检查官方发行版本及下载附件（含对应源码，可能较大）")
+    progress("[1/6] 检查官方发行版本，仅下载校验和及当前架构预编译程序包")
     transport = progress_transport(transport)
     tag, page, assets = binary_release(version, transport, arch=arch)
     commit = i.read_json(i.API + "/commits/" + tag, transport=transport)
@@ -245,9 +242,9 @@ def verified_download(work, version=None, transport=i.open_url, arch="arm64"):
     sums = work / "SHA256SUMS"
     i.download(assets["SHA256SUMS"], sums, transport=transport)
     text = sums.read_text(encoding="ascii")
-    for name in ("anytls-core-" + tag + "-darwin-" + arch + ".tar.gz", "anytls-core-" + tag + "-source.tar.gz", corresponding_source(tag, arch)):
-        expected = i.checksum(text, name)
-        i.download(assets[name], work / name, expected, transport)
+    name = "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz"
+    expected = i.checksum(text, name)
+    i.download(assets[name], work / name, expected, transport)
     name = "anytls-core-" + tag + "-darwin-" + arch
     progress("[2/6] 下载摘要已核对，正在安全解压并验证程序身份")
     bundle = i.extract(work / (name + ".tar.gz"), work / "extracted", name)
@@ -556,7 +553,7 @@ def update_only(args, transport=i.open_url, runner=subprocess.run, system=None, 
                 releases.mkdir(mode=0o700, exist_ok=True)
                 kept = releases / (tag + "-" + i.uuid.uuid4().hex)
                 kept.mkdir(mode=0o700)
-                # Copy all validated files, licenses, and exact release archives.
+                # Copy all validated bundle files/licenses and the selected package.
                 # Hash the sources BEFORE copying and independently reopen output.
                 for src in bundle.rglob("*"):
                     dst = kept / src.relative_to(bundle)
@@ -568,8 +565,7 @@ def update_only(args, transport=i.open_url, runner=subprocess.run, system=None, 
                         dst.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         shutil.copyfile(src, dst)
                         i.require(sha256(dst) == expected, "retained material SHA mismatch")
-                names = ("SHA256SUMS", "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz",
-                         "anytls-core-" + tag + "-source.tar.gz", corresponding_source(tag, arch))
+                names = ("SHA256SUMS", "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz")
                 for name in names:
                     expected = sha256(work / name)
                     shutil.copyfile(work / name, kept / name)
@@ -635,13 +631,13 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
             return report
         if env is None:
             env = {k: os.environ[k] for k in ("HOME", "PATH", "SHELL", "ZDOTDIR", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR") if k in os.environ}
-        # Retain required source/license materials BEFORE any privileged change
+        # Retain the verified package/licenses BEFORE any privileged change
         # or executable publication. Retention failure leaves the old app intact.
-        progress("[3/6] 保留许可证与对应源码；已有配置及密码不覆盖")
+        progress("[3/6] 保留许可证、校验和与预编译程序包；已有配置及密码不覆盖")
         kept = app / "releases" / (tag + "-" + i.uuid.uuid4().hex)
         kept.parent.mkdir(mode=0o700, exist_ok=True)
         os.replace(bundle, kept)
-        for name in ("SHA256SUMS", "anytls-core-" + tag + "-source.tar.gz", corresponding_source(tag, arch)):
+        for name in ("SHA256SUMS", "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz"):
             shutil.copyfile(work / name, kept / name)
             i.require(sha256(work / name) == sha256(kept / name), "retained release material mismatch")
         with installation_lock(app):
@@ -667,7 +663,7 @@ def main(argv=None):
             super().error(message)
     parser = Parser(description=__doc__)
     parser.add_argument("--version", type=i.validate_version, help="stable tag; default is latest stable release")
-    parser.add_argument("--check-download", action="store_true", help="verify binary/source archives without executing code or changing configuration")
+    parser.add_argument("--check-download", action="store_true", help="verify only checksums and the selected binary package without executing code or changing configuration")
     parser.add_argument("--arch", choices=("arm64", "amd64"), help="only with --check-download: target archive architecture; default is native on macOS, arm64 elsewhere")
     parser.add_argument("--update-only", action="store_true", help="replace only the existing app executable; no helper, configuration or restart")
     parser.add_argument("--app-dir")
