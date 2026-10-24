@@ -9,13 +9,18 @@ def certified_sources(root,receipt):
  spec=importlib.util.spec_from_file_location('certified_wrapper',Path(__file__).with_name('go-patched.py'))
  wrapper=importlib.util.module_from_spec(spec);spec.loader.exec_module(wrapper)
  start,patch=wrapper.identity(root);core,core_patch=wrapper.core_identity(root)
+ chrome,chrome_patch=wrapper.chrome_identity(root)
+ if not re.search(r'^go 1\.27\.3$',(root/'go.mod').read_text(),re.M):raise ValueError('root module requires Go 1.27.3')
+ if receipt.get('go_version','').split()[2:3]!=[wrapper.CURRENT_GO]:raise ValueError('certified toolchain mismatch')
  expected={'identity_sha256':wrapper.IDENTITY_SHA,'wrapper_sha256':wrapper.sha((root/'scripts/go-patched.py').read_bytes()),
            'module':wrapper.MODULE,'version':wrapper.VERSION,'commit':start['commit'],
            'source_sha256':start['source_sha256'],'patch_sha256':wrapper.sha(patch),'result_sha256':start['result_sha256'],
-           'core_slim':{'identity_sha256':wrapper.CORE_IDENTITY_SHA,'patch_sha256':wrapper.sha(core_patch),'files':core['files']}}
+           'core_slim':{'identity_sha256':wrapper.CORE_IDENTITY_SHA,'patch_sha256':wrapper.sha(core_patch),'files':core['files']},
+           'chrome_backend':wrapper.chrome_receipt(chrome,chrome_patch)}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
  return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
-         'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json']
+         'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json',
+         'patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json']
 
 
 def source_notice(data):
@@ -58,6 +63,26 @@ def add_bytes(t,name,data,mode=0o644):
  info=tarfile.TarInfo(name);info.size=len(data);info.mode=mode;info.mtime=0;t.addfile(info,io.BytesIO(data))
 
 
+def toolchain_source(go,receipt):
+ # Packaging and certified build run in the same job. Require its compiler
+ # to remain available; equal bytes permit relocation without freezing paths.
+ env=dict(os.environ,GOTOOLCHAIN='local')
+ version=subprocess.check_output([str(go),'version'],text=True,env=env).strip()
+ if not re.fullmatch(r'go version go1\.27\.3 [^\s/]+/[^\s/]+',version):raise ValueError('packaging toolchain version mismatch')
+ goroot=Path(subprocess.check_output([str(go),'env','GOROOT'],text=True,env=env).strip())
+ try:
+  with (goroot/'VERSION').open(encoding='utf-8') as f:source_version=f.readline().rstrip('\r\n')
+ except (OSError,UnicodeError) as e:raise ValueError('toolchain source version unavailable') from e
+ if source_version!='go1.27.3':raise ValueError('toolchain source version mismatch')
+ try:
+  certified=Path(receipt['go_bin']);compiler=Path(go)
+  if not compiler.is_absolute() or not certified.is_absolute() or not goroot.is_absolute():raise ValueError('toolchain compiler identity requires absolute paths')
+  digest=hashlib.sha256(compiler.read_bytes()).digest()
+  if any(hashlib.sha256(p.read_bytes()).digest()!=digest for p in (certified,goroot/'bin/go')):raise ValueError('toolchain compiler identity mismatch')
+ except (KeyError,TypeError,OSError) as e:raise ValueError('toolchain compiler identity unavailable') from e
+ return goroot
+
+
 def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
  if arch not in ('arm64','amd64'):raise ValueError('unsupported architecture: '+str(arch))
  root=Path(root).resolve();binary=Path(binary).resolve();out=Path(out).resolve();cache=Path(cache).resolve();out.mkdir(exist_ok=True,parents=True)
@@ -68,7 +93,7 @@ def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
  settings=build_settings(info)
  expected={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true','vcs.revision':commit,'vcs.modified':'false'}
  if arch=='amd64':expected['GOAMD64']='v1'
- if any(settings.get(k)!=v for k,v in expected.items()) or not info.splitlines()[0].endswith('go1.26.8'):raise ValueError('unexpected binary build settings or VCS binding')
+ if any(settings.get(k)!=v for k,v in expected.items()) or not info.splitlines()[0].endswith('go1.27.3'):raise ValueError('unexpected binary build settings or VCS binding')
  if set(settings.get('-tags','').split(','))!=set('with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'.split(',')):raise ValueError('unexpected binary tags')
  ends=[json.loads(line.split(' ',1)[1]) for line in Path(receipt).read_text().splitlines() if line.startswith('PATCHED_GO_END ')]
  if len(ends)!=1 or ends[0].get('rc')!=0 or ends[0].get('ephemeral_cleanup')!='ok':raise ValueError('missing successful certified wrapper END')
@@ -76,6 +101,7 @@ def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
  if binary_digest!=build_receipt.get('output_sha256'):raise ValueError('wrapper END does not bind binary digest')
  if build_receipt.get('target')!={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'}:raise ValueError('wrapper END target does not match binary architecture')
  materials=certified_sources(root,build_receipt)
+ goroot=toolchain_source(go,build_receipt)
  modules=[]
  sums={}
  for l in (root/'go.sum').read_text().splitlines():
@@ -112,19 +138,18 @@ def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
   for metadata in sorted((cache/'cache/download').rglob('*')):
    if metadata.is_file() and metadata.suffix in ('.mod','.info'):
     t.add(metadata,arcname=prefix+'/module-cache/cache/download/'+str(metadata.relative_to(cache/'cache/download')),recursive=False)
-  goroot=Path(subprocess.check_output([str(go),'env','GOROOT'],text=True).strip())
   for path in sorted(goroot.rglob('*')):
    rel=path.relative_to(goroot)
    if not path.is_file() or rel.parts[0] in ('bin','pkg'):continue
    t.add(path,arcname=prefix+'/go-toolchain/'+str(rel),recursive=False)
   add_bytes(t,prefix+'/BUILD-IDENTITY.json',json.dumps({'source_commit':commit,'binary_sha256':binary_digest,'settings':settings,'certified_build':build_receipt},indent=2).encode())
   add_bytes(t,prefix+'/MODULES.json',json.dumps(manifest,indent=2).encode())
-  add_bytes(t,prefix+'/BUILD.txt',('Source commit: '+commit+'\nGo 1.26.8 darwin/'+arch+' CGO=0\nUse scripts/go-patched.py, exact patch/identity and tags in README.\nDependencies are Go module ZIPs; verify against MODULES.json and go.sum.\nGo toolchain: https://go.dev/dl/ ; source: https://go.dev/dl/?mode=json&include=all\nExtract module ZIPs or populate GOPROXY cache, then use the certified wrapper.\n').encode())
+  add_bytes(t,prefix+'/BUILD.txt',('Source commit: '+commit+'\nGo 1.27.3 darwin/'+arch+' CGO=0\nUse scripts/go-patched.py, exact patch/identity and tags in README.\nDependencies are Go module ZIPs; verify against MODULES.json and go.sum.\nGo toolchain: https://go.dev/dl/ ; source: https://go.dev/dl/?mode=json&include=all\nExtract module ZIPs or populate GOPROXY cache, then use the certified wrapper.\n').encode())
  platform='darwin-'+arch;bp=prefix+'-'+platform;bundle=out/(bp+'.tar.gz');sha=hashlib.sha256(binary.read_bytes()).hexdigest()
  with tarfile.open(bundle,'w:gz') as t:
   t.add(binary,arcname=bp+'/bin/anytls-macos',recursive=False)
   for n in ['VERSION','LICENSE','THIRD_PARTY_NOTICES.md','config.example.yaml']:t.add(root/n,arcname=bp+'/'+n,recursive=False)
-  add_bytes(t,bp+'/BUILD-INFO.json',json.dumps({'source_commit':commit,'binary_sha256':sha,'go_version':'1.26.8','platform':platform,'corresponding_source':ccs.name},indent=2).encode())
+  add_bytes(t,bp+'/BUILD-INFO.json',json.dumps({'source_commit':commit,'binary_sha256':sha,'go_version':'1.27.3','platform':platform,'corresponding_source':ccs.name},indent=2).encode())
   add_bytes(t,bp+'/SOURCE-LOCATION.txt',('Corresponding source, dependencies and Go sources:\nhttps://github.com/NiuStar/anytls-core/releases/download/'+tag+'/'+ccs.name+'\n').encode())
   for path in sorted(goroot.rglob('*')):
    rel=path.relative_to(goroot)

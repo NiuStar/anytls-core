@@ -61,7 +61,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 ## 从源码构建
 
-双架构 Release 提供 macOS arm64 / amd64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.26.8**，首次构建需能取得 go.mod 锁定的依赖。
+双架构 Release 提供 macOS arm64 / amd64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.27.3**，首次构建需能取得 go.mod 锁定的依赖。
 
 必须使用附带 wrapper 应用已认证的 sing-box Box.Start 清理错误补丁和核心链接裁剪（缓存／调试 HTTP 的显式拒绝）；不能用普通 `go build` 替代发布构建：
 

@@ -20,6 +20,42 @@ IDENTITY_SHA = "9679eb6c27343cbdc0bcb3559869638a4c78c2809dca9760439f46f506636c5f
 MODULE = "github.com/sagernet/sing-box"
 VERSION = "v1.14.3"
 CORE_IDENTITY_SHA = "7faf6af8e873bb568f15029070f3c8051365af7ba3dd43f343488d78dcaee9e3"
+CURRENT_GO = "go1.27.3"
+CHROME_IDENTITY_SHA = "8752f6fc7dff8ddb1b73150603d7d5c78524f537d075ef7cf29e4228bd05b026"
+
+
+def chrome_identity(root=ROOT):
+    raw = (root / "patches/sing-box/chrome.identity.json").read_bytes()
+    require(sha(raw) == CHROME_IDENTITY_SHA, "Chrome identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION and
+            m["file"] == "protocol/anytls/outbound.go" and m["toolchain"] == CURRENT_GO,
+            "unsupported Chrome revision/toolchain")
+    require(m["start_identity_sha256"] == IDENTITY_SHA and
+            m["core_identity_sha256"] == CORE_IDENTITY_SHA, "Chrome historical chain mismatch")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "Chrome patch SHA mismatch")
+    return m, patch
+
+
+def transform_chrome(source, m, patch):
+    require(sha(source) == m["source_sha256"], "Chrome source SHA mismatch")
+    ops = json.loads(patch)
+    require(set(ops) == {"replacements"} and len(ops["replacements"]) == 2, "invalid Chrome patch")
+    text = source.decode("utf-8")
+    for op in ops["replacements"]:
+        require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1,
+                "Chrome exact replacement mismatch")
+        text = text.replace(op["old"], op["new"], 1)
+    result = text.encode("utf-8")
+    require(sha(result) == m["result_sha256"], "Chrome result SHA mismatch")
+    return result
+
+
+def chrome_receipt(m, patch):
+    return {"identity_sha256": CHROME_IDENTITY_SHA, "patch_sha256": sha(patch),
+            "file": m["file"], "source_sha256": m["source_sha256"],
+            "result_sha256": m["result_sha256"], "toolchain": CURRENT_GO}
 
 
 def core_identity(root=ROOT):
@@ -210,6 +246,9 @@ def main(argv):
     go, args, output = arguments(argv, os.environ)
     m, patch = identity()
     core_m, core_patch = core_identity()
+    chrome_m, chrome_patch = chrome_identity()
+    require(all(chrome_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
+            "Chrome upstream chain mismatch")
     require(core_m["commit"] == m["commit"] and core_m["start_result_sha256"] == m["result_sha256"],
             "core Start chain mismatch")
     env = dict(os.environ, GOFLAGS="-mod=readonly", GOWORK="off")
@@ -218,7 +257,7 @@ def main(argv):
         return subprocess.check_output([go, *cmd], cwd=ROOT, env=env, stderr=subprocess.PIPE)
 
     version = read("version").decode().strip()
-    require(version.split()[2] == m["toolchain"], "requires exactly go1.26.8")
+    require(version.split()[2] == CURRENT_GO, "requires exactly " + CURRENT_GO)
     sums = (ROOT / "go.sum").read_text().splitlines()
     require(f'{MODULE} {VERSION} {m["module_sum"]}' in sums and
             f'{MODULE} {VERSION}/go.mod {m["go_mod_sum"]}' in sums, "go.sum identity mismatch")
@@ -237,6 +276,9 @@ def main(argv):
     original_debug = cache_debug.read_bytes()
     require(sha(original_debug) == core_m["files"][1]["original_sha256"], "cache debug SHA mismatch")
     patched = transform(original, m, patch)
+    cache_chrome = directory / chrome_m["file"]
+    original_chrome = cache_chrome.read_bytes()
+    patched_chrome = transform_chrome(original_chrome, chrome_m, chrome_patch)
     # Snapshot root inputs: only private copies are ever passed to go mod edit.
     root_inputs = {name: (ROOT / name).read_bytes() for name in ("go.mod", "go.sum")}
     base = Path(os.environ.get("TMPDIR") or Path.home() / ".hermes/cache/scratch")
@@ -262,6 +304,10 @@ def main(argv):
         receipt["core_slim"] = {"identity_sha256": CORE_IDENTITY_SHA,
                                 "patch_sha256": sha(core_patch), "files": core_results}
         receipt["result_sha256_scope"] = "Start cleanup intermediate, not final staged box.go; see core_slim.files"
+        staged_chrome = replacement / chrome_m["file"]
+        require(staged_chrome.read_bytes() == original_chrome, "archive/cache AnyTLS outbound mismatch")
+        staged_chrome.write_bytes(patched_chrome)
+        receipt["chrome_backend"] = chrome_receipt(chrome_m, chrome_patch)
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
@@ -291,9 +337,11 @@ def main(argv):
         rc = subprocess.call(command, cwd=ROOT, env=env)
         require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
                 "module-cache sources changed during command")
+        require(cache_chrome.read_bytes() == original_chrome, "module-cache AnyTLS source changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in core_m["files"]), "final staged core sources changed")
+        require(staged_chrome.read_bytes() == patched_chrome, "final staged Chrome source changed")
         if output and rc == 0:
             require(output.lstat().st_ino == os.fstat(reservation.fileno()).st_ino,
                     "output reservation changed")
@@ -315,9 +363,11 @@ def main(argv):
             shutil.rmtree(work)
         require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
                 "module-cache sources changed during command")
+        require(cache_chrome.read_bytes() == original_chrome, "module-cache AnyTLS source changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
     receipt.update(rc=rc, ephemeral_cleanup="ok", root_inputs_unchanged=True,
-                   original_box_unchanged=True, original_debug_unchanged=True)
+                   original_box_unchanged=True, original_debug_unchanged=True,
+                   original_anytls_outbound_unchanged=True)
     print("PATCHED_GO_END " + json.dumps(receipt, sort_keys=True), flush=True)
     return rc
 

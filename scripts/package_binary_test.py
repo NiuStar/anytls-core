@@ -16,6 +16,10 @@ class PackagingTests(unittest.TestCase):
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
    root=Path(d);cache=root/'cache';goroot=root/'go';(goroot/'src').mkdir(parents=True)
    (goroot/'LICENSE').write_text('Go license fixture')
+   (goroot/'VERSION').write_text('go1.27.3\ntime 2026-10-01T00:00:00Z\n')
+   (goroot/'bin').mkdir();compiler=goroot/'bin/go'
+   compiler.write_bytes(b'UNIT-SIMULATED compiler');compiler.chmod(0o755)
+   (root/'packaging-go-version').write_text('go version go1.27.3 darwin/arm64\n')
    (goroot/'src/runtime.go').write_text('// Copyright Go authors\n// BSD license\n\npackage runtime\n')
    for name,data in {'VERSION':'v1.0.0','LICENSE':'GPL fixture','THIRD_PARTY_NOTICES.md':'Notices','config.example.yaml':'example'}.items():(root/name).write_text(data)
    binary=root/'binary';binary.write_bytes(b'UNIT-SIMULATED binary '+arch.encode())
@@ -30,18 +34,21 @@ class PackagingTests(unittest.TestCase):
     modsum='h1:'+base64.b64encode(hashlib.sha256((hashlib.sha256(modfile.read_bytes()).hexdigest()+'  go.mod\n').encode()).digest()).decode()
     sums.extend([mod+' '+version+' '+p.zip_h1(z),mod+' '+version+'/go.mod '+modsum]);deps.append('\tdep\t'+mod+' '+version+' '+p.zip_h1(z)+'\n')
    (root/'go.sum').write_text('\n'.join(sums)+'\n')
+   (root/'go.mod').write_text('module example.com/test\n\ngo 1.27.3\n')
    settings={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true','vcs.revision':'a'*40,'vcs.modified':'false','-tags':'with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'}
    settings['GOAMD64' if arch=='amd64' else 'GOARM64']='v1' if arch=='amd64' else 'v8.0'
-   receipt={'rc':0,'ephemeral_cleanup':'ok','output_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'target':{'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'},'go_version':'go version go1.26.8 darwin/arm64'}
+   receipt={'rc':0,'ephemeral_cleanup':'ok','output_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'target':{'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'},'go_version':'go version go1.27.3 darwin/arm64'}
    receipt_path=root/'receipt'
-   start,patch=w.identity();core,core_patch=w.core_identity()
-   materials=['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json','patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json']
+   start,patch=w.identity();core,core_patch=w.core_identity();chrome,chrome_patch=w.chrome_identity()
+   materials=['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json','patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json']
    for name in materials:
     target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
-   receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']})
+   receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']},chrome_backend=w.chrome_receipt(chrome,chrome_patch))
+   receipt['go_bin']=str(compiler)
    def output(args,**kwargs):
-    if args[:2]==['go','version']:return 'unit: go1.26.8\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())
-    if args[:3]==['go','env','GOROOT']:return str(goroot)+'\n'
+    if args[1:]==['version']:return (root/'packaging-go-version').read_text()
+    if args[1:3]==['version','-m']:return 'unit: go1.27.3\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())
+    if args[1:]==['env','GOROOT']:return str(goroot)+'\n'
     if args[:2]==['git','rev-parse']:return 'a'*40+'\n'
     if args[:2]==['git','status']:return ''
     raise AssertionError(args)
@@ -52,17 +59,17 @@ class PackagingTests(unittest.TestCase):
      if name!=missing_material:p.add_bytes(t,'anytls-core-v1.0.0/'+name,(root/name).read_bytes())
    def archive(args,**kwargs):
     self.assertEqual(args[:2],['git','archive']);kwargs['stdout'].write(gzip.compress(source_buffer.getvalue(),mtime=0))
-   def invoke(out=None,**kwargs):
+   def invoke(out=None,go=None,**kwargs):
     receipt_path.write_text('PATCHED_GO_END '+json.dumps(receipt)+'\n')
     with mock.patch.object(p.subprocess,'check_output',side_effect=output),mock.patch.object(p.subprocess,'run',side_effect=archive):
-     return p.package(root,binary,out or root/'out','v1.0.0','go',cache,receipt_path,**kwargs)
+     return p.package(root,binary,out or root/'out','v1.0.0',go or str(compiler),cache,receipt_path,**kwargs)
    yield root,settings,receipt,invoke
 
  def test_packages_each_architecture_with_bound_identity(self):
   for arch in ('arm64','amd64'):
    for host in ('arm64','amd64'):
     with self.subTest(arch=arch,host=host),self.package_fixture(arch) as (root,settings,receipt,invoke):
-     receipt['go_version']='go version go1.26.8 darwin/'+host
+     receipt['go_version']='go version go1.27.3 darwin/'+host
      # Keep the legacy positional/default entry point working for arm64.
      result=invoke(**({'arch':arch} if arch=='amd64' else {}))
      prefix='anytls-core-v1.0.0';platform='darwin-'+arch;bp=prefix+'-'+platform
@@ -84,6 +91,41 @@ class PackagingTests(unittest.TestCase):
       self.assertIn(('darwin/'+arch).encode(),t.extractfile(prefix+'/BUILD.txt').read())
       self.assertEqual(t.extractfile(prefix+'/go-toolchain/LICENSE').read(),b'Go license fixture')
       self.assertIn(b'package runtime',t.extractfile(prefix+'/go-toolchain/src/runtime.go').read())
+
+ def test_rejects_wrong_missing_or_malformed_goroot_version(self):
+  for version in (None,'','go1.26.8\n','go1.27.30\n','version go1.27.3\n','\ngo1.27.3\n'):
+   with self.subTest(version=version),self.package_fixture('arm64') as (root,settings,receipt,invoke):
+    path=root/'go/VERSION'
+    if version is None:path.unlink()
+    else:path.write_text(version)
+    with self.assertRaisesRegex(ValueError,'toolchain source version'):invoke()
+    self.assertFalse(list((root/'out').iterdir()))
+
+ def test_rejects_wrong_or_malformed_packaging_compiler_version(self):
+  for version in ('go version go1.26.8 darwin/arm64\n','','go1.27.3','go version go1.27.30 darwin/arm64\n'):
+   with self.subTest(version=version),self.package_fixture('arm64') as (root,settings,receipt,invoke):
+    (root/'packaging-go-version').write_text(version)
+    with self.assertRaisesRegex(ValueError,'packaging toolchain version'):invoke()
+    self.assertFalse(list((root/'out').iterdir()))
+
+ def test_rejects_unbound_compiler_and_goroot(self):
+  for kind in ('missing-receipt','absent-receipt-file','different-receipt-compiler','different-goroot-compiler'):
+   with self.subTest(kind=kind),self.package_fixture('arm64') as (root,settings,receipt,invoke):
+    other=root/'other-go';other.write_bytes(b'different compiler');other.chmod(0o755)
+    go=None
+    if kind=='missing-receipt':receipt.pop('go_bin')
+    elif kind=='absent-receipt-file':receipt['go_bin']=str(root/'absent')
+    elif kind=='different-receipt-compiler':receipt['go_bin']=str(other)
+    else:
+     go=root/'packaging-go';go.write_bytes((root/'go/bin/go').read_bytes());go.chmod(0o755)
+     receipt['go_bin']=str(go);(root/'go/bin/go').write_bytes(b'different GOROOT compiler')
+    with self.assertRaisesRegex(ValueError,'toolchain compiler identity'):invoke(go=go)
+    self.assertFalse(list((root/'out').iterdir()))
+
+ def test_accepts_same_compiler_bytes_at_another_path(self):
+  with self.package_fixture('arm64') as (root,settings,receipt,invoke):
+   other=root/'packaging-go';other.write_bytes((root/'go/bin/go').read_bytes());other.chmod(0o755)
+   self.assertEqual(invoke(go=other)['modules'],37)
 
  def test_independent_outputs_share_only_byte_identical_application_source(self):
   archives={}
@@ -136,7 +178,7 @@ class PackagingTests(unittest.TestCase):
   self.assertEqual(p.module_escape('github.com/Upper/Name'),'github.com/!upper/!name')
 
  def test_rejects_tampered_or_missing_final_source_identity(self):
-  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim'):
+  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim','chrome_backend'):
    with self.subTest(field=field),self.package_fixture('arm64') as (root,settings,receipt,invoke):
     receipt.pop(field)
     with self.assertRaisesRegex(ValueError,'source identity'):invoke()
@@ -145,8 +187,19 @@ class PackagingTests(unittest.TestCase):
    receipt['core_slim']['files'][0]['result_sha256']='0'*64
    with self.assertRaisesRegex(ValueError,'source identity'):invoke()
 
+ def test_rejects_chrome_receipt_result_and_old_toolchain(self):
+  with self.package_fixture('arm64') as (root,settings,receipt,invoke):
+   receipt['chrome_backend']['result_sha256']='0'*64
+   with self.assertRaisesRegex(ValueError,'source identity'):invoke()
+  with self.package_fixture('arm64') as (root,settings,receipt,invoke):
+   receipt['go_version']='go version go1.26.8 darwin/arm64'
+   with self.assertRaisesRegex(ValueError,'toolchain'):invoke()
+  with self.package_fixture('arm64') as (root,settings,receipt,invoke):
+   (root/'go.mod').write_text('module example.com/test\n\ngo 1.26.8\n')
+   with self.assertRaisesRegex(ValueError,'root module'):invoke()
+
  def test_rejects_source_archive_without_core_patch_materials(self):
-  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json'):
+  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json'):
    with self.subTest(name=name),self.package_fixture('arm64',missing_material=name) as (root,settings,receipt,invoke):
     with self.assertRaises(KeyError):invoke()
     self.assertFalse(list((root/'out').glob('*corresponding-source.tar.gz')))
@@ -158,14 +211,14 @@ class PackagingTests(unittest.TestCase):
    plain=''.join(hashlib.sha256(data).hexdigest()+'  '+name+'\n' for name,data in [('m@v1/a',b'A'),('m@v1/b',b'B')])
    self.assertEqual(p.zip_h1(z),'h1:'+base64.b64encode(hashlib.sha256(plain.encode()).digest()).decode())
  def test_settings_parser(self):
-  self.assertEqual(p.build_settings('x: go1.26.8\n\tbuild\tGOOS=darwin\n\tbuild\t-trimpath=true\n')['GOOS'],'darwin')
+  self.assertEqual(p.build_settings('x: go1.27.3\n\tbuild\tGOOS=darwin\n\tbuild\t-trimpath=true\n')['GOOS'],'darwin')
  def test_source_notice_keeps_origin_comment(self):
   self.assertIn(b'Copyright',p.source_notice(b'// Copyright Acme\n// BSD license text\n\npackage sample\nfunc X(){}'))
   self.assertEqual(p.source_notice(b'package sample\n'),b'')
  def test_rejects_dirty_source_and_wrong_binary_identity(self):
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
    root=Path(d);(root/'VERSION').write_text('v1.0.0');binary=root/'binary';binary.write_bytes(b'unit')
-   good='unit: go1.26.8\n'+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in {'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0','-trimpath':'true','vcs.revision':'a'*40,'vcs.modified':'false','-tags':'with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'}.items())
+   good='unit: go1.27.3\n'+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in {'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0','-trimpath':'true','vcs.revision':'a'*40,'vcs.modified':'false','-tags':'with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'}.items())
    for dirty,info,error in [(' M VERSION\n',good,'dirty'),('',good.replace('CGO_ENABLED=0','CGO_ENABLED=1'),'settings'),('',good.replace('vcs.revision='+'a'*40,'vcs.revision='+'b'*40),'settings')]:
     def output(args,**kwargs):
      if args[0]=='go':return info

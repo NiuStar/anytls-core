@@ -191,7 +191,7 @@ class InstallerTests(unittest.TestCase):
                 calls.append((url, kind))
                 return io.BytesIO(json.dumps(manifest).encode() if "mode=json" in url else data)
             go = i.install_go(app, work, transport)
-            self.assertEqual(go, app / "toolchains/go1.26.8/go/bin/go")
+            self.assertEqual(go, app / "toolchains/go1.27.3/go/bin/go")
             self.assertEqual(go.stat().st_mode & 0o777, 0o700)
             self.assertEqual(len(calls), 2)
             self.assertTrue(all(kind == "go" for _, kind in calls))
@@ -204,7 +204,7 @@ class InstallerTests(unittest.TestCase):
             unrelated = app / "unrelated-temp"; unrelated.mkdir()
             args = type("Args", (), {"app_dir": str(app), "target": str(app / "anytls"), "update": True, "version": None, "install_toolchain": False})()
             with mock.patch.object(i.platform, "system", return_value="Darwin"), mock.patch.object(i.platform, "machine", return_value="arm64"), mock.patch.object(i, "find_go", return_value=None):
-                with self.assertRaisesRegex(ValueError, "Go 1.26.8"):
+                with self.assertRaisesRegex(ValueError, "Go 1.27.3"):
                     i.run(args, transport=lambda *args: self.fail("must not download without toolchain consent"))
             self.assertEqual((app / "anytls").read_bytes(), b"old")
             self.assertEqual((app / "config.yaml").read_bytes(), b"private")

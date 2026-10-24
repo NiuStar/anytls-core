@@ -4,6 +4,11 @@ package engine
 import (
 	"context"
 
+	"github.com/NiuStar/anytls-core/internal/chrometls"
+	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/option"
+	singService "github.com/sagernet/sing/service"
+
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter/certificate"
 	"github.com/sagernet/sing-box/adapter/endpoint"
@@ -18,6 +23,12 @@ import (
 	"github.com/sagernet/sing-box/protocol/mixed"
 	"github.com/sagernet/sing-box/protocol/tun"
 )
+
+// chromeClientFactory is an alias, not a defined interface: the SDK hook uses
+// this exact anonymous interface as the service-registry key.
+type chromeClientFactory = interface {
+	NewChromeClient(context.Context, string, option.OutboundTLSOptions) (tls.Config, error)
+}
 
 // Context adds the minimal embedded registries to ctx using box.Context.
 // Like box.Context, it REUSES an installed sing service registry (and its types)
@@ -38,5 +49,6 @@ func Context(ctx context.Context) context.Context {
 	// Upstream Start requires local fallback when the unchanged config has no DNS.
 	local.RegisterTransport(dnsTransports)
 
-	return box.Context(ctx, inbounds, outbounds, endpoint.NewRegistry(), dnsTransports, service.NewRegistry(), certificate.NewRegistry())
+	ctx = box.Context(ctx, inbounds, outbounds, endpoint.NewRegistry(), dnsTransports, service.NewRegistry(), certificate.NewRegistry())
+	return singService.ContextWith[chromeClientFactory](ctx, chrometls.Factory{})
 }

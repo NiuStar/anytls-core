@@ -22,7 +22,11 @@ spec.loader.exec_module(wrapper)
 core_spec = importlib.util.spec_from_file_location("core_slim_tests", SCRIPT.with_name("core_slim_test.py"))
 core_tests = importlib.util.module_from_spec(core_spec)
 core_spec.loader.exec_module(core_tests)
-CoreSlimTests = core_tests.CoreSlimTests  # Existing explicit CI entry runs both patch contracts.
+CoreSlimTests = core_tests.CoreSlimTests  # Existing explicit CI entry runs all patch contracts.
+chrome_spec = importlib.util.spec_from_file_location("chrome_patch_tests", SCRIPT.parent / "tests/test-chrome-patched.py")
+chrome_tests = importlib.util.module_from_spec(chrome_spec)
+chrome_spec.loader.exec_module(chrome_tests)
+ChromePatchTests = chrome_tests.ChromePatchTests
 
 
 class ValidationTests(unittest.TestCase):
@@ -191,6 +195,7 @@ class OutputReservationTests(unittest.TestCase):
         self.ctx = dict(output=output, reservation=reservation, work=work, private_output=private,
                         rc=0, published=False, receipt={}, source=source, original=b"unchanged",
                         cache_debug=source, original_debug=b"unchanged",
+                        cache_chrome=source, original_chrome=b"unchanged",
                         root_inputs={}, ROOT=root, os=os, shutil=shutil,
                         require=wrapper.require, sha=wrapper.sha)
 

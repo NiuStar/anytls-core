@@ -22,7 +22,7 @@ import uuid
 
 REPO = "NiuStar/anytls-core"
 API = "https://api.github.com/repos/" + REPO
-GO_VERSION = "go1.26.8"
+GO_VERSION = "go1.27.3"
 TAGS = "with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core"
 
 
@@ -304,7 +304,7 @@ def run(args, transport=open_url):
         env = build_env(app, work)
         go = find_go(app, env)
         if go is None:
-            require(args.install_toolchain, "Go 1.26.8 darwin/arm64 missing; rerun official install.sh --install-toolchain (private ~/.anytls/toolchains only)")
+            require(args.install_toolchain, "Go 1.27.3 darwin/arm64 missing; rerun official install.sh --install-toolchain (private ~/.anytls/toolchains only)")
             go = install_go(app, work, transport)
             require(find_go(app, env) == go.resolve(), "downloaded toolchain version verification failed")
         tag, url, assets = release(args.version, transport)

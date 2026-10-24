@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "\t\"github.com/sagernet/sing/common/uot\"",
+      "new": "\t\"github.com/sagernet/sing/common/uot\"\n\t\"github.com/sagernet/sing/service\""
+    },
+    {
+      "old": "\ttlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))",
+      "new": "\ttlsOptions := common.PtrValueOrDefault(options.TLS)\n\tvar tlsConfig tls.Config\n\tvar err error\n\tif (tlsOptions.Reality == nil || !tlsOptions.Reality.Enabled) &&\n\t\t(tlsOptions.Engine == \"\" || tlsOptions.Engine == \"go\") &&\n\t\ttlsOptions.UTLS != nil && tlsOptions.UTLS.Enabled &&\n\t\t(tlsOptions.UTLS.Fingerprint == \"\" || tlsOptions.UTLS.Fingerprint == \"chrome\") {\n\t\tfactory := service.FromContext[interface {\n\t\t\tNewChromeClient(context.Context, string, option.OutboundTLSOptions) (tls.Config, error)\n\t\t}](ctx)\n\t\tif factory == nil {\n\t\t\treturn nil, E.New(\"Chrome TLS factory is not registered\")\n\t\t}\n\t\ttlsConfig, err = factory.NewChromeClient(ctx, options.Server, tlsOptions)\n\t} else {\n\t\ttlsConfig, err = tls.NewClient(ctx, logger, options.Server, tlsOptions)\n\t}"
+    }
+  ]
+}

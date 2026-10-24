@@ -1,10 +1,9 @@
 module github.com/NiuStar/anytls-core
 
-go 1.25.5
-
-toolchain go1.26.8
+go 1.27.3
 
 require (
+	github.com/refraction-networking/utls v0.0.0-20261006195536-6ebdceb2607e
 	github.com/sagernet/sing v0.9.7-0.20260929150544-0ad23b637bd4
 	github.com/sagernet/sing-box v1.14.3
 	golang.org/x/term v0.45.0
