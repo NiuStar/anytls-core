@@ -1,4 +1,4 @@
-# 公网 IP 私有订阅联动（候选，未发布）
+# 公网 IP 私有订阅联动
 
 目标：在 `NiuStar/anytls-go` Linux 服务端一键安装后，取得一条私有链接，在 `anytls-core` WebUI 的“HTTPS 订阅 → 从此订阅仅添加节点”中预览、确认添加。
 
@@ -27,6 +27,24 @@
 
 ## 交付状态
 
-当前为本地候选，不是公开可用安装指令。既有 Release 不含新增的节点信任和订阅运行入口；仅替换 main 安装脚本不能把旧服务端/客户端变成新功能。两项目应完成对应二进制构建、审查和发布后再给出公网一键安装命令。
+已公开发布 [anytls-go v0.0.28](https://github.com/NiuStar/anytls-go/releases/tag/v0.0.28) 和 [anytls-core v2026-10-24-03](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-24-03)。较旧二进制不含该信任和订阅入口，须更新匹配版本；不只是更新脚本。
+
+在目标 Linux/systemd 服务端执行（会安装并启动或重启该 AnyTLS 服务）：
+
+```bash
+curl -fsSL https://github.com/NiuStar/anytls-go/releases/latest/download/anytls-install_server.sh -o anytls-install_server.sh && sudo bash anytls-install_server.sh --install
+```
+
+默认自动发现对外公网 IP、生成密码和持久证书，验证成功后在本地终端输出私有订阅链接。NAT 或多出口可追加 `--public-ip 实际公网IP`；默认订阅 HTTPS 443、AnyTLS 8443，需要放行两端口。443 已被其他服务占用时追加 `--subscription-listen :9443`，并放行该端口。
+
+Mac 客户端安装／更新：
+
+```bash
+curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | bash
+```
+
+在新版 WebUI 打开“配置与规则 → HTTPS 订阅”，粘贴完整私有链接（保留末尾 `#anytls-cert-sha256=...`），点击“从此订阅仅添加节点”，核对预览后“备份并添加节点”。随后明确选择新增节点或调整所需策略组。不要用整份配置替换按钮导入该链接。
+
+本次公开附件、版本身份、实际互通、CI 与限制详见 [发布核验](releases/v2026-10-24-03-public-validation.md)。没有在用户的公网服务器执行上述安装，也没有自动升级现有助手或切换生产 VPN。
 
 隔离测试与公网部署必须区分：回环 TLS、实际 AnyTLS 互通、WebUI 后端追加和桌面/手机界面是各自的验证层，不代表系统级 TUN、Linux systemd 安装或云防火墙已验证。
