@@ -104,7 +104,7 @@ anytls status
 anytls stop
 ```
 
-严格 CA 模式要求 CA PEM；由可信私有订阅提供的 `certificate-public-key-sha256` 可改用固定公钥认证，无需本地 CA 文件（pin-only，不是公共 CA／主机名校验），不能与 CA 或 `skip-cert-verify: true` 混用。已有跳过校验节点仍需显式确认；它不提供服务器身份安全保证。sudo 密码只在本机终端输入，不发到聊天。
+严格 CA 模式要求 CA PEM；节点可使用 `fingerprint: '<64位十六进制 SHA-256>'` 固定**完整叶证书 DER**（大小写均接受，读取后规范为小写），与 `client-fingerprint: chrome`／`golang` 的 ClientHello 配置完全不同。`fingerprint` 是可选的 pin-only 身份认证，不校验证书 CA 链、主机名或有效期；必须由可信渠道独立取得，证书更新后需更新指纹。不得与 `ca`、`certificate-public-key-sha256` 或 `skip-cert-verify: true` 混用；空值、null、非字符串、非64位十六进制均拒绝，不会退回跳过校验。纯数字指纹也必须加引号。原有 `certificate-public-key-sha256` 仍表示固定公钥 SPKI 的 base64 SHA-256，不是完整证书指纹；两种 pin-only 模式均无需本地 CA 文件，不提供公共 CA／主机名校验。已有跳过校验节点仍需显式确认；它不提供服务器身份安全保证。sudo 密码只在本机终端输入，不发到聊天。
 
 ### 无域名公网 IP 服务端订阅
 

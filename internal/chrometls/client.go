@@ -7,6 +7,7 @@ package chrometls
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -30,6 +31,9 @@ import (
 type Factory struct{}
 
 func (Factory) NewChromeClient(ctx context.Context, address string, o option.OutboundTLSOptions) (boxTLS.Config, error) {
+	if err := boxTLS.ValidateCertificateSHA256Options(o); err != nil {
+		return nil, err
+	}
 	if !o.Enabled || o.UTLS == nil || !o.UTLS.Enabled || (o.UTLS.Fingerprint != "" && o.UTLS.Fingerprint != "chrome") {
 		return nil, errors.New("Chrome155 requires enabled plain Chrome uTLS")
 	}
@@ -45,12 +49,34 @@ func (Factory) NewChromeClient(ctx context.Context, address string, o option.Out
 	if name == "" {
 		name = address
 	}
-	if name == "" && !o.Insecure {
+	if name == "" && !o.Insecure && len(o.CertificateSHA256) == 0 {
 		return nil, errors.New("missing TLS server name")
 	}
 	cfg := &utls.Config{Time: ntp.TimeFuncFromContext(ctx), RootCAs: adapter.RootPoolFromContext(ctx), InsecureSkipVerify: o.Insecure, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13}
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
+	}
+	if len(o.CertificateSHA256) > 0 {
+		pins := make([][]byte, len(o.CertificateSHA256))
+		for i, pin := range o.CertificateSHA256 {
+			pins[i] = slices.Clone(pin)
+		}
+		// Pin-only identity; authenticate the entire leaf DER, never SPKI or CA.
+		cfg.InsecureSkipVerify = true
+		cfg.VerifyPeerCertificate = func(raw [][]byte, _ [][]*x509.Certificate) error {
+			if len(raw) == 0 {
+				return errors.New("missing peer certificate")
+			}
+			digest := sha256.Sum256(raw[0])
+			matched := 0
+			for _, pin := range pins {
+				matched |= subtle.ConstantTimeCompare(pin, digest[:])
+			}
+			if matched != 1 {
+				return errors.New("unrecognized remote leaf certificate")
+			}
+			return nil
+		}
 	}
 	if len(o.CertificatePublicKeySHA256) > 0 {
 		if len(o.Certificate) > 0 || o.CertificatePath != "" {
@@ -94,7 +120,7 @@ func (Factory) NewChromeClient(ctx context.Context, address string, o option.Out
 	if o.HandshakeTimeout > 0 {
 		timeout = o.HandshakeTimeout.Build()
 	}
-	c := &clientConfig{config: cfg, disableSNI: o.DisableSNI, verifyServerName: o.DisableSNI && !o.Insecure, timeout: timeout}
+	c := &clientConfig{config: cfg, disableSNI: o.DisableSNI, verifyServerName: o.DisableSNI && !o.Insecure && len(o.CertificateSHA256) == 0, timeout: timeout}
 	c.SetServerName(name)
 	c.SetNextProtos(o.ALPN)
 	return c, nil

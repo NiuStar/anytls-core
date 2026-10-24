@@ -42,6 +42,10 @@ func conversionSanitize(root *yaml.Node, r *webConversionReport, remote bool) {
 			skip(path+".certificate-public-key-sha256", "invalid or conflicting SPKI trust; entire node removed")
 			continue
 		}
+		if err := validateNodeLeafTrust(typed); err != nil {
+			skip(path+".fingerprint", "invalid or conflicting leaf trust; entire node removed")
+			continue
+		}
 		valid[typed.Name] = true
 		kept = append(kept, n)
 	}

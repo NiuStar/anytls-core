@@ -1,6 +1,8 @@
 # Authenticated upstream validation fixtures
 
-Exact, unmodified `box.go`, `debug_http.go`, and `protocol/anytls/outbound.go` from `github.com/sagernet/sing-box v1.14.3`, upstream commit `7054cac5124465ffdb145870d7c01885566711b1`.
+Exact, unmodified `box.go`, `debug_http.go`, `protocol/anytls/outbound.go`, `option/tls.go`, `common/tls/client.go`, `common/tls/std_client.go`, and `common/tls/utls_client.go` from `github.com/sagernet/sing-box v1.14.3`, upstream commit `7054cac5124465ffdb145870d7c01885566711b1`.
+
+The four `option-tls.go.txt` / `common-tls-*.go.txt` inputs for the leaf-certificate backport are individually SHA256-bound in `patches/sing-box/leaf.identity.json`. They were checked against the actual official proxy ZIP (2,734,188 bytes, SHA256 below); the ZIP matches the existing Go module h1 and `go.sum`.
 
 These `.txt` copies let Python validation run in a clean checkout before Go/cache setup. They are not compiled or used as SDK build inputs. Tests hash them against the approved patch identities before transforming private disposable copies.
 

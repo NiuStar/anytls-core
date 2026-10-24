@@ -27,6 +27,10 @@ chrome_spec = importlib.util.spec_from_file_location("chrome_patch_tests", SCRIP
 chrome_tests = importlib.util.module_from_spec(chrome_spec)
 chrome_spec.loader.exec_module(chrome_tests)
 ChromePatchTests = chrome_tests.ChromePatchTests
+leaf_spec = importlib.util.spec_from_file_location("leaf_patch_tests", SCRIPT.parent / "tests/test-leaf-patched.py")
+leaf_tests = importlib.util.module_from_spec(leaf_spec)
+leaf_spec.loader.exec_module(leaf_tests)
+LeafPatchTests = leaf_tests.LeafPatchTests
 
 
 class ValidationTests(unittest.TestCase):
@@ -196,7 +200,7 @@ class OutputReservationTests(unittest.TestCase):
                         rc=0, published=False, receipt={}, source=source, original=b"unchanged",
                         cache_debug=source, original_debug=b"unchanged",
                         cache_chrome=source, original_chrome=b"unchanged",
-                        root_inputs={}, ROOT=root, os=os, shutil=shutil,
+                        root_inputs={}, ROOT=root, original_leaf={"source": b"unchanged"}, directory=root, os=os, shutil=shutil,
                         require=wrapper.require, sha=wrapper.sha)
 
     def test_python39_nofollow_api(self):

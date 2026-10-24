@@ -1,0 +1,72 @@
+{
+  "files": [
+    {
+      "file": "option/tls.go",
+      "replacements": [
+        {
+          "old": "\tCertificatePublicKeySHA256 badoption.Listable[[]byte]          `json:\"certificate_public_key_sha256,omitempty\"`",
+          "new": "\tCertificateSHA256          badoption.Listable[[]byte]          `json:\"certificate_sha256,omitempty\"`\n\tCertificatePublicKeySHA256 badoption.Listable[[]byte]          `json:\"certificate_public_key_sha256,omitempty\"`"
+        }
+      ]
+    },
+    {
+      "file": "common/tls/std_client.go",
+      "replacements": [
+        {
+          "old": "\t\"crypto/sha256\"",
+          "new": "\t\"crypto/sha256\"\n\t\"crypto/subtle\""
+        },
+        {
+          "old": "func newSTDClient(ctx context.Context, logger logger.ContextLogger, serverAddress string, options option.OutboundTLSOptions, allowEmptyServerName bool) (Config, error) {\n",
+          "new": "func newSTDClient(ctx context.Context, logger logger.ContextLogger, serverAddress string, options option.OutboundTLSOptions, allowEmptyServerName bool) (Config, error) {\n\tif err := ValidateCertificateSHA256Options(options); err != nil {\n\t\treturn nil, err\n\t}\n"
+        },
+        {
+          "old": "if serverName == \"\" && !options.Insecure && !allowEmptyServerName {",
+          "new": "if serverName == \"\" && !options.Insecure && len(options.CertificateSHA256) == 0 && !allowEmptyServerName {"
+        },
+        {
+          "old": "\tif len(options.CertificatePublicKeySHA256) > 0 {",
+          "new": "\tif len(options.CertificateSHA256) > 0 {\n\t\tpins := make([][]byte, len(options.CertificateSHA256))\n\t\tfor i, pin := range options.CertificateSHA256 {\n\t\t\tpins[i] = append([]byte(nil), pin...)\n\t\t}\n\t\t// Pin-only identity: PKIX/name/expiry checks are intentionally bypassed.\n\t\ttlsConfig.InsecureSkipVerify = true\n\t\ttlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {\n\t\t\treturn VerifyCertificateSHA256(pins, rawCerts)\n\t\t}\n\t}\n\tif len(options.CertificatePublicKeySHA256) > 0 {"
+        },
+        {
+          "old": "verifyServerName:      options.DisableSNI && !options.Insecure,",
+          "new": "verifyServerName:      options.DisableSNI && !options.Insecure && len(options.CertificateSHA256) == 0,"
+        },
+        {
+          "old": "func VerifyPublicKeySHA256(",
+          "new": "// ValidateCertificateSHA256Options rejects combinations that could bypass leaf pins.\nfunc ValidateCertificateSHA256Options(options option.OutboundTLSOptions) error {\n\tif len(options.CertificateSHA256) == 0 {\n\t\treturn nil\n\t}\n\tif !options.Enabled || options.Insecure || len(options.CertificatePublicKeySHA256) > 0 || len(options.Certificate) > 0 || options.CertificatePath != \"\" {\n\t\treturn E.New(\"certificate_sha256 conflicts with disabled TLS, insecure, public-key pin or certificate authority\")\n\t}\n\tif (options.Engine != \"\" && options.Engine != C.TLSEngineGo) || (options.Reality != nil && options.Reality.Enabled) || (options.ECH != nil && options.ECH.Enabled) {\n\t\treturn E.New(\"certificate_sha256 requires plain Go or uTLS without Reality or ECH\")\n\t}\n\tfor _, pin := range options.CertificateSHA256 {\n\t\tif len(pin) != sha256.Size {\n\t\t\treturn E.New(\"invalid certificate_sha256 length\")\n\t\t}\n\t}\n\treturn nil\n}\n\n// VerifyCertificateSHA256 authenticates only the leaf certificate's complete DER.\nfunc VerifyCertificateSHA256(knownHashValues [][]byte, rawCerts [][]byte) error {\n\tif len(rawCerts) == 0 {\n\t\treturn E.New(\"missing peer certificate\")\n\t}\n\thashValue := sha256.Sum256(rawCerts[0])\n\tmatched := 0\n\tfor _, value := range knownHashValues {\n\t\tmatched |= subtle.ConstantTimeCompare(value, hashValue[:])\n\t}\n\tif matched != 1 {\n\t\treturn E.New(\"unrecognized remote leaf certificate\")\n\t}\n\treturn nil\n}\n\nfunc VerifyPublicKeySHA256("
+        }
+      ]
+    },
+    {
+      "file": "common/tls/utls_client.go",
+      "replacements": [
+        {
+          "old": "func newUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddress string, options option.OutboundTLSOptions, allowEmptyServerName bool) (Config, error) {\n",
+          "new": "func newUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddress string, options option.OutboundTLSOptions, allowEmptyServerName bool) (Config, error) {\n\tif err := ValidateCertificateSHA256Options(options); err != nil {\n\t\treturn nil, err\n\t}\n"
+        },
+        {
+          "old": "if serverName == \"\" && !options.Insecure && !allowEmptyServerName {",
+          "new": "if serverName == \"\" && !options.Insecure && len(options.CertificateSHA256) == 0 && !allowEmptyServerName {"
+        },
+        {
+          "old": "\tif len(options.CertificatePublicKeySHA256) > 0 {",
+          "new": "\tif len(options.CertificateSHA256) > 0 {\n\t\tpins := make([][]byte, len(options.CertificateSHA256))\n\t\tfor i, pin := range options.CertificateSHA256 {\n\t\t\tpins[i] = append([]byte(nil), pin...)\n\t\t}\n\t\t// Pin-only identity: PKIX/name/expiry checks are intentionally bypassed.\n\t\ttlsConfig.InsecureSkipVerify = true\n\t\ttlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {\n\t\t\treturn VerifyCertificateSHA256(pins, rawCerts)\n\t\t}\n\t}\n\tif len(options.CertificatePublicKeySHA256) > 0 {"
+        },
+        {
+          "old": "verifyServerName:      options.DisableSNI && !options.Insecure,",
+          "new": "verifyServerName:      options.DisableSNI && !options.Insecure && len(options.CertificateSHA256) == 0,"
+        }
+      ]
+    },
+    {
+      "file": "common/tls/client.go",
+      "replacements": [
+        {
+          "old": "func NewClientWithOptions(options ClientOptions) (Config, error) {\n",
+          "new": "func NewClientWithOptions(options ClientOptions) (Config, error) {\n\tif err := ValidateCertificateSHA256Options(options.Options); err != nil {\n\t\treturn nil, err\n\t}\n"
+        }
+      ]
+    }
+  ]
+}

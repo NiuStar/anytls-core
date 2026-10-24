@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -30,7 +31,55 @@ type node struct {
 	CA          string `yaml:"ca"`
 
 	CertificatePublicKeySHA256 string `yaml:"certificate-public-key-sha256,omitempty"`
+	CertificateSHA256          string `yaml:"fingerprint,omitempty"`
 	TLSMinVersion              string `yaml:"tls-min-version,omitempty"`
+}
+
+// Inspect the source tag/presence before decoding strings: YAML null and empty
+// values must never erase an explicitly requested leaf trust mode.
+func (n *node) UnmarshalYAML(value *yaml.Node) error {
+	type plain node
+	var decoded plain
+	var fields map[string]yaml.Node
+	if err := value.Decode(&fields); err != nil {
+		return err
+	}
+	if pin, present := fields["fingerprint"]; present {
+		if pin.Kind != yaml.ScalarNode || pin.Tag != "!!str" || pin.Value == "" {
+			return errors.New("invalid fingerprint")
+		}
+		if _, mixed := fields["certificate-public-key-sha256"]; mixed {
+			return errors.New("fingerprint conflicts with certificate-public-key-sha256")
+		}
+		if err := validateNodeLeafTrust(node{CertificateSHA256: pin.Value}); err != nil {
+			return err
+		}
+	}
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := validateNodeLeafTrust(node(decoded)); err != nil {
+		return err
+	}
+	decoded.CertificateSHA256 = strings.ToLower(decoded.CertificateSHA256)
+	*n = node(decoded)
+	return nil
+}
+
+// fingerprint is SHA-256 of the complete leaf certificate DER, not SPKI or a
+// ClientHello profile. Hex is only the YAML spelling; the SDK consumes base64.
+func validateNodeLeafTrust(n node) error {
+	if n.CertificateSHA256 == "" {
+		return nil
+	}
+	pin, err := hex.DecodeString(n.CertificateSHA256)
+	if err != nil || len(pin) != sha256.Size {
+		return errors.New("invalid fingerprint")
+	}
+	if n.CertificatePublicKeySHA256 != "" || n.CA != "" || n.SkipVerify {
+		return errors.New("fingerprint conflicts with certificate-public-key-sha256, ca or skip-cert-verify")
+	}
+	return nil
 }
 
 func validateNodeTLSMinVersion(n node) error {
@@ -134,6 +183,9 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 	if err := validateNodeSPKITrust(n); err != nil {
 		return nil, err
 	}
+	if err := validateNodeLeafTrust(n); err != nil {
+		return nil, err
+	}
 	minVersion := n.TLSMinVersion
 	if minVersion == "" {
 		minVersion = "1.2"
@@ -142,7 +194,10 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 	if n.SNI != "" {
 		tls["server_name"] = n.SNI
 	}
-	if n.CertificatePublicKeySHA256 != "" {
+	if n.CertificateSHA256 != "" {
+		pin, _ := hex.DecodeString(n.CertificateSHA256) // validated above
+		tls["certificate_sha256"] = []string{base64.StdEncoding.EncodeToString(pin)}
+	} else if n.CertificatePublicKeySHA256 != "" {
 		tls["certificate_public_key_sha256"] = []string{n.CertificatePublicKeySHA256}
 	} else if n.CA != "" {
 		st, err := os.Stat(n.CA)

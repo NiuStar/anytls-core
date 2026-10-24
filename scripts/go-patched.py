@@ -22,6 +22,49 @@ VERSION = "v1.14.3"
 CORE_IDENTITY_SHA = "7faf6af8e873bb568f15029070f3c8051365af7ba3dd43f343488d78dcaee9e3"
 CURRENT_GO = "go1.27.3"
 CHROME_IDENTITY_SHA = "8752f6fc7dff8ddb1b73150603d7d5c78524f537d075ef7cf29e4228bd05b026"
+LEAF_IDENTITY_SHA = "0e28b9a7e7258f2f588b49ce4820739998f610abdaf465a4f8b7b7530ce71589"
+LEAF_FILES = ("option/tls.go", "common/tls/std_client.go", "common/tls/utls_client.go", "common/tls/client.go")
+
+
+def leaf_identity(root=ROOT):
+    raw = (root / "patches/sing-box/leaf.identity.json").read_bytes()
+    require(sha(raw) == LEAF_IDENTITY_SHA, "leaf identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION and m["toolchain"] == CURRENT_GO,
+            "unsupported leaf revision/toolchain")
+    require(m["start_identity_sha256"] == IDENTITY_SHA and m["core_identity_sha256"] == CORE_IDENTITY_SHA
+            and m["chrome_identity_sha256"] == CHROME_IDENTITY_SHA, "leaf historical chain mismatch")
+    require(tuple(pin["file"] for pin in m["files"]) == LEAF_FILES, "invalid leaf file set")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "leaf patch SHA mismatch")
+    return m, patch
+
+
+def apply_leaf(replacement, m, patch):
+    ops = json.loads(patch)
+    require(set(ops) == {"files"} and tuple(e["file"] for e in ops["files"]) == LEAF_FILES,
+            "invalid leaf patch file set")
+    results = []
+    for entry, pin in zip(ops["files"], m["files"]):
+        require(set(entry) == {"file", "replacements"} and entry["file"] == pin["file"], "leaf file mismatch")
+        p = replacement / pin["file"]
+        source = p.read_bytes()
+        require(sha(source) == pin["source_sha256"], "leaf source SHA mismatch")
+        text = source.decode("utf-8")
+        for op in entry["replacements"]:
+            require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1,
+                    "leaf exact replacement mismatch")
+            text = text.replace(op["old"], op["new"], 1)
+        result = text.encode("utf-8")
+        require(sha(result) == pin["result_sha256"], "leaf result SHA mismatch")
+        p.write_bytes(result)
+        results.append(dict(pin))
+    return results
+
+
+def leaf_receipt(m, patch):
+    return {"identity_sha256": LEAF_IDENTITY_SHA, "patch_sha256": sha(patch),
+            "files": m["files"], "toolchain": CURRENT_GO}
 
 
 def chrome_identity(root=ROOT):
@@ -247,6 +290,9 @@ def main(argv):
     m, patch = identity()
     core_m, core_patch = core_identity()
     chrome_m, chrome_patch = chrome_identity()
+    leaf_m, leaf_patch = leaf_identity()
+    require(all(leaf_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
+            "leaf upstream chain mismatch")
     require(all(chrome_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
             "Chrome upstream chain mismatch")
     require(core_m["commit"] == m["commit"] and core_m["start_result_sha256"] == m["result_sha256"],
@@ -279,6 +325,9 @@ def main(argv):
     cache_chrome = directory / chrome_m["file"]
     original_chrome = cache_chrome.read_bytes()
     patched_chrome = transform_chrome(original_chrome, chrome_m, chrome_patch)
+    original_leaf = {name: (directory / name).read_bytes() for name in LEAF_FILES}
+    require(all(sha(original_leaf[pin["file"]]) == pin["source_sha256"] for pin in leaf_m["files"]),
+            "module-cache leaf source SHA mismatch")
     # Snapshot root inputs: only private copies are ever passed to go mod edit.
     root_inputs = {name: (ROOT / name).read_bytes() for name in ("go.mod", "go.sum")}
     base = Path(os.environ.get("TMPDIR") or Path.home() / ".hermes/cache/scratch")
@@ -308,6 +357,10 @@ def main(argv):
         require(staged_chrome.read_bytes() == original_chrome, "archive/cache AnyTLS outbound mismatch")
         staged_chrome.write_bytes(patched_chrome)
         receipt["chrome_backend"] = chrome_receipt(chrome_m, chrome_patch)
+        require(all((replacement / name).read_bytes() == data for name, data in original_leaf.items()),
+                "archive/cache leaf sources mismatch")
+        apply_leaf(replacement, leaf_m, leaf_patch)
+        receipt["leaf_certificate"] = leaf_receipt(leaf_m, leaf_patch)
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
@@ -338,10 +391,14 @@ def main(argv):
         require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
                 "module-cache sources changed during command")
         require(cache_chrome.read_bytes() == original_chrome, "module-cache AnyTLS source changed during command")
+        require(all((directory / name).read_bytes() == data for name, data in original_leaf.items()),
+                "module-cache leaf sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in core_m["files"]), "final staged core sources changed")
         require(staged_chrome.read_bytes() == patched_chrome, "final staged Chrome source changed")
+        require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
+                    for pin in leaf_m["files"]), "final staged leaf sources changed")
         if output and rc == 0:
             require(output.lstat().st_ino == os.fstat(reservation.fileno()).st_ino,
                     "output reservation changed")
@@ -364,10 +421,13 @@ def main(argv):
         require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
                 "module-cache sources changed during command")
         require(cache_chrome.read_bytes() == original_chrome, "module-cache AnyTLS source changed during command")
+        require(all((directory / name).read_bytes() == data for name, data in original_leaf.items()),
+                "module-cache leaf sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
     receipt.update(rc=rc, ephemeral_cleanup="ok", root_inputs_unchanged=True,
                    original_box_unchanged=True, original_debug_unchanged=True,
                    original_anytls_outbound_unchanged=True)
+    receipt["original_leaf_sources_unchanged"] = True
     print("PATCHED_GO_END " + json.dumps(receipt, sort_keys=True), flush=True)
     return rc
 

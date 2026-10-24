@@ -40,11 +40,14 @@ class PackagingTests(unittest.TestCase):
    receipt={'rc':0,'ephemeral_cleanup':'ok','output_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'target':{'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'},'go_version':'go version go1.27.3 darwin/arm64'}
    receipt_path=root/'receipt'
    start,patch=w.identity();core,core_patch=w.core_identity();chrome,chrome_patch=w.chrome_identity()
+   leaf,leaf_patch=w.leaf_identity()
    materials=['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json','patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json']
+   materials+=['patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json']
    for name in materials:
     target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
    receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']},chrome_backend=w.chrome_receipt(chrome,chrome_patch))
    receipt['go_bin']=str(compiler)
+   receipt['leaf_certificate']=w.leaf_receipt(leaf,leaf_patch)
    def output(args,**kwargs):
     if args[1:]==['version']:return (root/'packaging-go-version').read_text()
     if args[1:3]==['version','-m']:return 'unit: go1.27.3\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())
@@ -178,7 +181,7 @@ class PackagingTests(unittest.TestCase):
   self.assertEqual(p.module_escape('github.com/Upper/Name'),'github.com/!upper/!name')
 
  def test_rejects_tampered_or_missing_final_source_identity(self):
-  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim','chrome_backend'):
+  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim','chrome_backend','leaf_certificate'):
    with self.subTest(field=field),self.package_fixture('arm64') as (root,settings,receipt,invoke):
     receipt.pop(field)
     with self.assertRaisesRegex(ValueError,'source identity'):invoke()
@@ -199,7 +202,7 @@ class PackagingTests(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'root module'):invoke()
 
  def test_rejects_source_archive_without_core_patch_materials(self):
-  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json'):
+  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json','patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json'):
    with self.subTest(name=name),self.package_fixture('arm64',missing_material=name) as (root,settings,receipt,invoke):
     with self.assertRaises(KeyError):invoke()
     self.assertFalse(list((root/'out').glob('*corresponding-source.tar.gz')))
