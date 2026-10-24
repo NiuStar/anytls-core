@@ -140,8 +140,12 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 	} else {
 		return nil, errors.New("TLS requires ca or explicit -allow-insecure for skip-cert-verify node")
 	}
-	if n.Fingerprint != "" {
-		tls["utls"] = map[string]any{"enabled": true, "fingerprint": n.Fingerprint}
+	fingerprint := n.Fingerprint
+	if fingerprint == "" {
+		fingerprint = "chrome"
+	}
+	if fingerprint != "golang" {
+		tls["utls"] = map[string]any{"enabled": true, "fingerprint": fingerprint}
 	}
 	out := map[string]any{"type": "anytls", "tag": "anytls-out", "server": n.Server, "server_port": n.Port, "password": n.Password, "tls": tls}
 	if n.IdleCheck > 0 {
