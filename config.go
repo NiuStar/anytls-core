@@ -30,6 +30,18 @@ type node struct {
 	CA          string `yaml:"ca"`
 
 	CertificatePublicKeySHA256 string `yaml:"certificate-public-key-sha256,omitempty"`
+	TLSMinVersion              string `yaml:"tls-min-version,omitempty"`
+}
+
+func validateNodeTLSMinVersion(n node) error {
+	if n.TLSMinVersion != "" && n.TLSMinVersion != "1.2" && n.TLSMinVersion != "1.3" {
+		return errors.New("invalid tls-min-version")
+	}
+	// uTLS profiles can override the configured floor in their ClientHello.
+	if n.TLSMinVersion == "1.3" && n.Fingerprint != "golang" {
+		return errors.New("tls-min-version 1.3 requires client-fingerprint golang")
+	}
+	return nil
 }
 
 // A pin authenticates the SPKI only, not a PKIX chain or hostname. Keep its
@@ -116,10 +128,17 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 	if n.EgressIP != "" && net.ParseIP(n.EgressIP) == nil {
 		return nil, errors.New("invalid egress-ip")
 	}
+	if err := validateNodeTLSMinVersion(n); err != nil {
+		return nil, err
+	}
 	if err := validateNodeSPKITrust(n); err != nil {
 		return nil, err
 	}
-	tls := map[string]any{"enabled": true}
+	minVersion := n.TLSMinVersion
+	if minVersion == "" {
+		minVersion = "1.2"
+	}
+	tls := map[string]any{"enabled": true, "min_version": minVersion}
 	if n.SNI != "" {
 		tls["server_name"] = n.SNI
 	}

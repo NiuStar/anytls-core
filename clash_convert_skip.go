@@ -26,6 +26,14 @@ func conversionSanitize(root *yaml.Node, r *webConversionReport, remote bool) {
 			skip(path+".ca", "remote local-file dependency; entire node removed")
 			continue
 		}
+		if version := conversionField(n, "tls-min-version"); version != nil && (version.Kind != yaml.ScalarNode || version.Tag != "!!str" || version.Value == "") {
+			skip(path+".tls-min-version", "invalid TLS minimum version field; entire node removed")
+			continue
+		}
+		if err := validateNodeTLSMinVersion(typed); err != nil {
+			skip(path+".tls-min-version", "invalid TLS minimum version; entire node removed")
+			continue
+		}
 		if pin := conversionField(n, "certificate-public-key-sha256"); pin != nil && (pin.Kind != yaml.ScalarNode || pin.Tag != "!!str" || pin.Value == "") {
 			skip(path+".certificate-public-key-sha256", "invalid SPKI trust field; entire node removed")
 			continue

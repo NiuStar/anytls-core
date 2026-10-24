@@ -47,7 +47,7 @@ func TestNetworkPrivacyFingerprint(t *testing.T) {
 					t.Fatal(err)
 				}
 				tls := runtime["outbounds"].([]any)[0].(map[string]any)["tls"].(map[string]any)
-				want := map[string]any{"enabled": true, "insecure": true}
+				want := map[string]any{"enabled": true, "insecure": true, "min_version": "1.2"}
 				if tc.want != "" {
 					want["utls"] = map[string]any{"enabled": true, "fingerprint": tc.want}
 				}
@@ -104,7 +104,7 @@ func TestNetworkPrivacyTrustUnchanged(t *testing.T) {
 		for _, trust := range []string{"ca", "pin", "insecure"} {
 			t.Run(fingerprint+"/"+trust, func(t *testing.T) {
 				n := node{Name: "fixture", Type: "anytls", Server: "127.0.0.1", Port: 443, Password: "synthetic-only", SNI: "fixture.invalid", Fingerprint: fingerprint, IdleCheck: 6, IdleTimeout: 7, MinIdle: 2}
-				want := map[string]any{"enabled": true, "server_name": "fixture.invalid"}
+				want := map[string]any{"enabled": true, "server_name": "fixture.invalid", "min_version": "1.2"}
 				switch trust {
 				case "ca":
 					n.CA = ca
