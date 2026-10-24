@@ -190,7 +190,7 @@ func TestReceiptCancelled(t *testing.T) {
 }
 
 func TestReceiptAuthoritativePatchIdentity(t *testing.T) {
-	raw, err := os.ReadFile("patches/sing-box/identity.json")
+	raw, err := os.ReadFile("patches/sing-box/core-slim.identity.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestReceiptAuthoritativePatchIdentity(t *testing.T) {
 	if diagnosticUpstream != authoritative.Commit || diagnosticPatch != authoritative.Patch {
 		t.Fatal("receipt source identity diverges from authority")
 	}
-	patch, err := os.ReadFile("patches/sing-box/box-start.patch.json")
+	patch, err := os.ReadFile("patches/sing-box/core-slim.patch.json")
 	if err != nil {
 		t.Fatal(err)
 	}

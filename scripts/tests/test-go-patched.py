@@ -13,17 +13,29 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "go-patched.py"
 spec = importlib.util.spec_from_file_location("go_patched", SCRIPT)
 wrapper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wrapper)
+core_spec = importlib.util.spec_from_file_location("core_slim_tests", SCRIPT.with_name("core_slim_test.py"))
+core_tests = importlib.util.module_from_spec(core_spec)
+core_spec.loader.exec_module(core_tests)
+CoreSlimTests = core_tests.CoreSlimTests  # Existing explicit CI entry runs both patch contracts.
 
 
 class ValidationTests(unittest.TestCase):
     def setUp(self):
         self.manifest, self.patch = wrapper.identity()
-        self.source = (Path(os.environ["GOMODCACHE"]) / "github.com/sagernet/sing-box@v1.14.3/box.go").read_bytes()
+        cache = os.environ.get("GOMODCACHE")
+        if cache:
+            self.source = (Path(cache) / "github.com/sagernet/sing-box@v1.14.3/box.go").read_bytes()
+        else:
+            # Validation fixtures must be real upstream bytes, not fabricated Go.
+            archive = wrapper.ROOT / "artifacts/embedded-baseline/g1-preflight/module-cache/cache/download/github.com/sagernet/sing-box/@v/v1.14.3.zip"
+            with zipfile.ZipFile(archive) as z:
+                self.source = z.read(wrapper.MODULE + "@" + wrapper.VERSION + "/box.go")
 
     def test_real_source_exact_patch(self):
         result = wrapper.transform(self.source, self.manifest, self.patch)
@@ -68,12 +80,16 @@ class ValidationTests(unittest.TestCase):
     def test_explicit_tags_and_selection_preserved(self):
         env = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="", GOWORK="off")
         args = ["test", "-tags=with_gvisor", "-run", "^TestUTLSConstructor$", "./internal/engine"]
-        _, actual, output = wrapper.arguments(args, env)
+        with mock.patch.object(wrapper.Path, "is_file", return_value=True), mock.patch.object(wrapper.os, "access", return_value=True):
+            _, actual, output = wrapper.arguments(args, dict(env, GO_BIN="/validation-only/go-not-executed"))
         self.assertEqual(actual, args)
         self.assertIsNone(output)
 
-    def test_unsupported_invocations_rejected(self):
-        env = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="", GOWORK="off")
+    @mock.patch.object(wrapper.Path, "is_file", return_value=True)
+    @mock.patch.object(wrapper.os, "access", return_value=True)
+    def test_unsupported_invocations_rejected(self, _access, _is_file):
+        env = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="", GOWORK="off",
+                   GO_BIN="/validation-only/go-not-executed")
         for args in (["run", "."], ["test", "-overlay=other.json", "./..."],
                      ["test", "-modfile=other.mod", "./..."], ["test", "-run"],
                      ["build", "."], ["test", "example.com/foreign@v1"]):
@@ -179,6 +195,7 @@ class OutputReservationTests(unittest.TestCase):
         source.write_bytes(b"unchanged")
         self.ctx = dict(output=output, reservation=reservation, work=work, private_output=private,
                         rc=0, published=False, receipt={}, source=source, original=b"unchanged",
+                        cache_debug=source, original_debug=b"unchanged",
                         root_inputs={}, ROOT=root, os=os, shutil=shutil,
                         require=wrapper.require, sha=wrapper.sha)
 

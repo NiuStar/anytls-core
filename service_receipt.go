@@ -16,11 +16,13 @@ import (
 
 const diagnosticLimit = 64 << 10
 
-// Source provenance constants copied from patches/sing-box/identity.json.
+// Source provenance constants copied from patches/sing-box/core-slim.identity.json.
+// source_patch_sha256 identifies the final core-slim payload; its frozen manifest
+// binds the unchanged Start cleanup identity and both final SDK source hashes.
 // These identify the approved source patch, NOT the executed mapping or a
 // signature/authenticity assertion. Tests pin these to the authoritative file.
 const diagnosticUpstream = "7054cac5124465ffdb145870d7c01885566711b1"
-const diagnosticPatch = "6cdf2954d34dd47d60c526d62aa0ed46673c06c47b6eb85f26fa2edf6d6c49e5"
+const diagnosticPatch = "360694bed09a7d89d54d601a28f7f31925768ac2feaabfb891cb649f771c2e5b"
 
 type diagnosticIdentity struct {
 	App      string   `json:"app_sha256"`

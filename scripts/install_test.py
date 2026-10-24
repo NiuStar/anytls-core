@@ -231,11 +231,15 @@ class InstallerTests(unittest.TestCase):
             tag = "v2026-10-21-02"
             prefix = "anytls-core-" + tag
             fixture = app / "fixture.tar.gz"
-            self.archive(fixture, [(prefix + "/VERSION", tarfile.REGTYPE, tag.encode()), (prefix + "/LICENSE", tarfile.REGTYPE, b"UNIT license"), (prefix + "/scripts/go-patched.py", tarfile.REGTYPE, b"ARCHIVE WRAPPER MUST NEVER EXECUTE")])
+            materials = ["patches/sing-box/identity.json", "patches/sing-box/box-start.patch.json",
+                         "patches/sing-box/core-slim.identity.json", "patches/sing-box/core-slim.patch.json"]
+            root = Path(i.__file__).resolve().parent.parent
+            self.archive(fixture, [(prefix + "/VERSION", tarfile.REGTYPE, tag.encode()), (prefix + "/LICENSE", tarfile.REGTYPE, b"UNIT license"), (prefix + "/scripts/go-patched.py", tarfile.REGTYPE, b"ARCHIVE WRAPPER MUST NEVER EXECUTE")] +
+                         [(prefix + "/" + name, tarfile.REGTYPE, (root / name).read_bytes()) for name in materials])
             data = fixture.read_bytes()
             name = prefix + "-source.tar.gz"
             sums = (hashlib.sha256(data).hexdigest() + "  " + name + "\n").encode()
-            wrapper = app / "trusted-wrapper.py"; wrapper.write_bytes(b"UNIT TRUSTED WRAPPER")
+            wrapper = app / "trusted-wrapper.py"; wrapper.write_bytes((root / "scripts/go-patched.py").read_bytes())
             args = type("Args", (), {"app_dir": str(app), "target": str(target), "update": True, "version": tag, "install_toolchain": False, "wrapper": str(wrapper)})()
             def transport(url, kind):
                 if "/releases/tags/" in url:
@@ -246,6 +250,13 @@ class InstallerTests(unittest.TestCase):
             def unit_build(command, **kwargs):
                 self.assertEqual(command[1], "-I")
                 self.assertEqual(Path(command[2]).read_bytes(), wrapper.read_bytes())
+                spec = importlib.util.spec_from_file_location("trusted_wrapper_unit", wrapper)
+                trusted = importlib.util.module_from_spec(spec); spec.loader.exec_module(trusted)
+                source = Path(kwargs["cwd"])
+                self.assertEqual(trusted.identity(source)[0]["result_sha256"], trusted.core_identity(source)[0]["start_result_sha256"])
+                core = trusted.core_identity(source)[0]
+                self.assertEqual([pin["result_sha256"] for pin in core["files"]],
+                                 ["00f3a0ae747cafea89123aac2f4aff2bc5a04046225a5252d5fc4a3b54c99da0", "13832fb094c2bbab38704b0b97781075fbe5eb70e5845d734f600acf91582a9f"])
                 self.assertEqual(command[command.index("-tags") + 1], i.TAGS)
                 self.assertEqual(kwargs["env"]["GO_BIN"], "/UNIT/go")
                 Path(command[command.index("-o") + 1]).write_bytes(b"UNIT-NEW-NOT-EXECUTED")

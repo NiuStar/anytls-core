@@ -67,7 +67,7 @@ func recordsTestManifest(t *testing.T, raw []byte, tag, typ string) *cr.Manifest
 }
 func recordsSeal(t *testing.T, m *cr.Manifest) {
 	t.Helper()
-	digest, err := cr.ManifestDigest(*m, recordsManifestBudget(m))
+	digest, err := cr.ManifestDigest(*m, cr.ManifestBudget(m))
 	if err != nil {
 		t.Fatal(err)
 	}

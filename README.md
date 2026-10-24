@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前稳定版 **[v2026-10-23-01](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-23-01)** 提供 Intel（amd64）和 Apple Silicon（arm64）预编译安装包，新增真实路由观察、私有磁盘连接历史、受认证助手分页、桌面／手机日志页及显式私有 IPv4 局域网 WebUI。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；记录不设历史条数配额、不自动删除，写失败明确 GAP。保留预编译网页更新、并发节点测速、配置方案、32 MiB 配置和一次授权助手。该发行提交的候选分支、main、标签三平台 CI 与双架构发布均成功；[版本说明](docs/releases/v2026-10-23-01.md) 列出能力与启用边界，公开附件和安装入口的验证见 [公开核验](docs/releases/v2026-10-23-01-public-validation.md)。用户反馈的 DIRECT 实际故障仍未定位，本版不宣称修复；普通网页更新本身不更新助手或重启 VPN。
+Go 编写的 macOS AnyTLS VPN 客户端。本次版本 **[v2026-10-24-01](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-24-01)** 精简 sing-box 的实际链接路径，移除内置调试 HTTP／pprof 和持久化缓存构造，保留 AnyTLS、mixed TUN、DNS、路由、gVisor 与 Chrome uTLS；提供 Intel（amd64）和 Apple Silicon（arm64）构建。未剥离符号的同条件 arm64 候选减少 1,050,272 字节，Mac Studio 真实 TUN 试验及旧版恢复通过；Intel 目标原生体验由用户另测。正式发行和附件状态以 GitHub Release 为准，见 [版本说明](docs/releases/v2026-10-24-01.md)。保留 [上一稳定版](docs/releases/v2026-10-23-01-public-validation.md) 的路由观察、私有磁盘历史、受认证助手分页、桌面／手机日志页、显式私有 IPv4 局域网 WebUI、预编译网页更新、并发测速、配置方案和 32 MiB 配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -63,7 +63,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 双架构 Release 提供 macOS arm64 / amd64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.26.8**，首次构建需能取得 go.mod 锁定的依赖。
 
-必须使用附带 wrapper 应用已认证的 sing-box Box.Start 清理错误补丁，不能用普通 `go build` 替代发布构建：
+必须使用附带 wrapper 应用已认证的 sing-box Box.Start 清理错误补丁和核心链接裁剪（缓存／调试 HTTP 的显式拒绝）；不能用普通 `go build` 替代发布构建：
 
 ```sh
 export GOTOOLCHAIN=local GOWORK=off GOFLAGS=

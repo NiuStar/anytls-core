@@ -1,0 +1,30 @@
+{
+  "files": [
+    {
+      "file": "box.go",
+      "replacements": [
+        {
+          "new": "",
+          "old": "\t\"github.com/sagernet/sing-box/experimental/cachefile\"\n"
+        },
+        {
+          "new": "",
+          "old": "\tif needCacheFile {\n\t\tcacheFile := cachefile.New(ctx, logFactory.NewLogger(\"cache-file\"), common.PtrValueOrDefault(experimentalOptions.CacheFile))\n\t\tservice.MustRegister[adapter.CacheFile](ctx, cacheFile)\n\t\tinternalServices = append(internalServices, cacheFile)\n\t}\n"
+        },
+        {
+          "new": "\tif experimentalOptions.CacheFile != nil && experimentalOptions.CacheFile.Enabled || options.PlatformLogWriter != nil {\n\t\tneedCacheFile = true\n\t}\n\tif needCacheFile {\n\t\treturn nil, E.New(\"cache file is unsupported in this private core-slim experiment\")\n\t}\n",
+          "old": "\tif experimentalOptions.CacheFile != nil && experimentalOptions.CacheFile.Enabled || options.PlatformLogWriter != nil {\n\t\tneedCacheFile = true\n\t}\n"
+        }
+      ]
+    },
+    {
+      "file": "debug_http.go",
+      "replacements": [
+        {
+          "new": "package box\n\nimport (\n\t\"net/http\"\n\n\t\"github.com/sagernet/sing-box/option\"\n\tE \"github.com/sagernet/sing/common/exceptions\"\n)\n\nfunc startDebugHTTPServer(options option.DebugOptions) (*http.Server, error) {\n\tif options.Listen != \"\" {\n\t\treturn nil, E.New(\"debug HTTP is unsupported in this private core-slim experiment\")\n\t}\n\treturn nil, nil\n}\n",
+          "old": "package box\n\nimport (\n\t\"net\"\n\t\"net/http\"\n\t\"net/http/pprof\"\n\t\"runtime\"\n\t\"runtime/debug\"\n\t\"strings\"\n\n\t\"github.com/sagernet/sing-box/log\"\n\t\"github.com/sagernet/sing-box/option\"\n\t\"github.com/sagernet/sing/common/byteformats\"\n\tE \"github.com/sagernet/sing/common/exceptions\"\n\t\"github.com/sagernet/sing/common/json\"\n\t\"github.com/sagernet/sing/common/json/badjson\"\n\n\t\"github.com/go-chi/chi/v5\"\n)\n\nfunc startDebugHTTPServer(options option.DebugOptions) (*http.Server, error) {\n\tif options.Listen == \"\" {\n\t\treturn nil, nil\n\t}\n\tr := chi.NewMux()\n\tr.Route(\"/debug\", func(r chi.Router) {\n\t\tr.Get(\"/gc\", func(writer http.ResponseWriter, request *http.Request) {\n\t\t\twriter.WriteHeader(http.StatusNoContent)\n\t\t\tgo debug.FreeOSMemory()\n\t\t})\n\t\tr.Get(\"/memory\", func(writer http.ResponseWriter, request *http.Request) {\n\t\t\tvar memStats runtime.MemStats\n\t\t\truntime.ReadMemStats(&memStats)\n\n\t\t\tvar memObject badjson.JSONObject\n\t\t\tmemObject.Put(\"heap\", byteformats.FormatMemoryBytes(memStats.HeapInuse))\n\t\t\tmemObject.Put(\"stack\", byteformats.FormatMemoryBytes(memStats.StackInuse))\n\t\t\tmemObject.Put(\"idle\", byteformats.FormatMemoryBytes(memStats.HeapIdle-memStats.HeapReleased))\n\t\t\tmemObject.Put(\"goroutines\", runtime.NumGoroutine())\n\t\t\tmemObject.Put(\"rss\", rusageMaxRSS())\n\n\t\t\tencoder := json.NewEncoder(writer)\n\t\t\tencoder.SetIndent(\"\", \"  \")\n\t\t\tencoder.Encode(&memObject)\n\t\t})\n\t\tr.Route(\"/pprof\", func(r chi.Router) {\n\t\t\tr.HandleFunc(\"/\", func(writer http.ResponseWriter, request *http.Request) {\n\t\t\t\tif !strings.HasSuffix(request.URL.Path, \"/\") {\n\t\t\t\t\thttp.Redirect(writer, request, request.URL.Path+\"/\", http.StatusMovedPermanently)\n\t\t\t\t} else {\n\t\t\t\t\tpprof.Index(writer, request)\n\t\t\t\t}\n\t\t\t})\n\t\t\tr.HandleFunc(\"/*\", pprof.Index)\n\t\t\tr.HandleFunc(\"/cmdline\", pprof.Cmdline)\n\t\t\tr.HandleFunc(\"/profile\", pprof.Profile)\n\t\t\tr.HandleFunc(\"/symbol\", pprof.Symbol)\n\t\t\tr.HandleFunc(\"/trace\", pprof.Trace)\n\t\t})\n\t})\n\tserver := &http.Server{\n\t\tAddr:    options.Listen,\n\t\tHandler: r,\n\t}\n\tlistener, err := net.Listen(\"tcp\", options.Listen)\n\tif err != nil {\n\t\treturn nil, E.Cause(err, \"listen debug HTTP server\")\n\t}\n\tgo func() {\n\t\terr := server.Serve(listener)\n\t\tif err != nil && !E.IsClosed(err) {\n\t\t\tlog.Error(E.Cause(err, \"serve debug HTTP server\"))\n\t\t}\n\t}()\n\treturn server, nil\n}\n"
+        }
+      ]
+    }
+  ]
+}

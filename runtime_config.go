@@ -72,8 +72,8 @@ func prepareRuntimeMap(o *runtimeOptions, manifest *cr.Manifest) (map[string]any
 				selectionPresent = true
 				current, err = selectedBytes(selectionBytes, nodes)
 			}
-			addCapturedSource(manifest, cr.SourceConfig, configBytes, true)
-			addCapturedSource(manifest, cr.SourceSelection, selectionBytes, selectionPresent)
+			addCapturedSource(manifest, cr.SourceConfig, 0, configBytes, true)
+			addCapturedSource(manifest, cr.SourceSelection, 0, selectionBytes, selectionPresent)
 		}
 		if err != nil {
 			return nil, err

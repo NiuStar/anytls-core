@@ -1,0 +1,23 @@
+{
+  "commit": "7054cac5124465ffdb145870d7c01885566711b1",
+  "files": [
+    {
+      "file": "box.go",
+      "input_sha256": "c0b76515c8efe4c0a3d474d83446c395904c08915efc9d811e4ca9fb187fcf7d",
+      "original_sha256": "35d8a84442bedb1c32ef13515d90bb356d32a1210771f709bde9c4428defb964",
+      "result_sha256": "00f3a0ae747cafea89123aac2f4aff2bc5a04046225a5252d5fc4a3b54c99da0"
+    },
+    {
+      "file": "debug_http.go",
+      "input_sha256": "1234a4e10d999c9f03254ebb6b29b4d16b0076ba42f292aa20bbf902c8c5f682",
+      "original_sha256": "1234a4e10d999c9f03254ebb6b29b4d16b0076ba42f292aa20bbf902c8c5f682",
+      "result_sha256": "13832fb094c2bbab38704b0b97781075fbe5eb70e5845d734f600acf91582a9f"
+    }
+  ],
+  "module": "github.com/sagernet/sing-box",
+  "patch": "core-slim.patch.json",
+  "patch_sha256": "360694bed09a7d89d54d601a28f7f31925768ac2feaabfb891cb649f771c2e5b",
+  "start_identity_sha256": "9679eb6c27343cbdc0bcb3559869638a4c78c2809dca9760439f46f506636c5f",
+  "start_result_sha256": "c0b76515c8efe4c0a3d474d83446c395904c08915efc9d811e4ca9fb187fcf7d",
+  "version": "v1.14.3"
+}

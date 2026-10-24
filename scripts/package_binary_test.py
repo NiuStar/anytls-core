@@ -5,10 +5,12 @@ from pathlib import Path
 import tarfile, tempfile, unittest, zipfile
 spec=importlib.util.spec_from_file_location('packager',Path(__file__).with_name('package-binary.py'))
 p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
+spec=importlib.util.spec_from_file_location('wrapper',Path(__file__).with_name('go-patched.py'))
+w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
 
 class PackagingTests(unittest.TestCase):
  @contextmanager
- def package_fixture(self,arch):
+ def package_fixture(self,arch,missing_material=None):
   # Only external Go/Git inspection is simulated; exercise real packaging,
   # module authentication, source/notice collection and archive writing.
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
@@ -32,6 +34,11 @@ class PackagingTests(unittest.TestCase):
    settings['GOAMD64' if arch=='amd64' else 'GOARM64']='v1' if arch=='amd64' else 'v8.0'
    receipt={'rc':0,'ephemeral_cleanup':'ok','output_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'target':{'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'},'go_version':'go version go1.26.8 darwin/arm64'}
    receipt_path=root/'receipt'
+   start,patch=w.identity();core,core_patch=w.core_identity()
+   materials=['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json','patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json']
+   for name in materials:
+    target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
+   receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']})
    def output(args,**kwargs):
     if args[:2]==['go','version']:return 'unit: go1.26.8\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())
     if args[:3]==['go','env','GOROOT']:return str(goroot)+'\n'
@@ -39,7 +46,10 @@ class PackagingTests(unittest.TestCase):
     if args[:2]==['git','status']:return ''
     raise AssertionError(args)
    source_buffer=io.BytesIO()
-   with tarfile.open(fileobj=source_buffer,mode='w') as t:p.add_bytes(t,'anytls-core-v1.0.0/VERSION',b'v1.0.0\n')
+   with tarfile.open(fileobj=source_buffer,mode='w') as t:
+    p.add_bytes(t,'anytls-core-v1.0.0/VERSION',b'v1.0.0\n')
+    for name in materials:
+     if name!=missing_material:p.add_bytes(t,'anytls-core-v1.0.0/'+name,(root/name).read_bytes())
    def archive(args,**kwargs):
     self.assertEqual(args[:2],['git','archive']);kwargs['stdout'].write(gzip.compress(source_buffer.getvalue(),mtime=0))
    def invoke(out=None,**kwargs):
@@ -68,6 +78,8 @@ class PackagingTests(unittest.TestCase):
      with tarfile.open(out/ccs) as t:
       identity=json.load(t.extractfile(prefix+'/BUILD-IDENTITY.json'))
       self.assertEqual(identity['settings']['GOARCH'],arch);self.assertEqual(identity['certified_build'],receipt)
+      with tarfile.open(fileobj=io.BytesIO(t.extractfile(prefix+'/application-source.tar.gz').read()),mode='r:gz') as app:
+       for name in p.certified_sources(root,receipt):self.assertEqual(app.extractfile(prefix+'/'+name).read(),(root/name).read_bytes())
       self.assertEqual(len(json.load(t.extractfile(prefix+'/MODULES.json'))),37)
       self.assertIn(('darwin/'+arch).encode(),t.extractfile(prefix+'/BUILD.txt').read())
       self.assertEqual(t.extractfile(prefix+'/go-toolchain/LICENSE').read(),b'Go license fixture')
@@ -122,6 +134,23 @@ class PackagingTests(unittest.TestCase):
 
  def test_module_escape(self):
   self.assertEqual(p.module_escape('github.com/Upper/Name'),'github.com/!upper/!name')
+
+ def test_rejects_tampered_or_missing_final_source_identity(self):
+  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim'):
+   with self.subTest(field=field),self.package_fixture('arm64') as (root,settings,receipt,invoke):
+    receipt.pop(field)
+    with self.assertRaisesRegex(ValueError,'source identity'):invoke()
+    self.assertFalse(list((root/'out').glob('*.tar.gz')))
+  with self.package_fixture('arm64') as (root,settings,receipt,invoke):
+   receipt['core_slim']['files'][0]['result_sha256']='0'*64
+   with self.assertRaisesRegex(ValueError,'source identity'):invoke()
+
+ def test_rejects_source_archive_without_core_patch_materials(self):
+  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json'):
+   with self.subTest(name=name),self.package_fixture('arm64',missing_material=name) as (root,settings,receipt,invoke):
+    with self.assertRaises(KeyError):invoke()
+    self.assertFalse(list((root/'out').glob('*corresponding-source.tar.gz')))
+
  def test_zip_hash_matches_go_hash1_algorithm(self):
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
    z=Path(d)/'m.zip'

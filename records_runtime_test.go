@@ -32,7 +32,7 @@ func recordsRuntimeFixture(t *testing.T) (string, compiledRuntime, controlHelper
 	runtimeDigest := hex.EncodeToString(sum[:])
 	sourceDigest := strings.Repeat("a", 64)
 	m := &cr.Manifest{SchemaVersion: 1, Binding: cr.Binding{InstanceID: strings.Repeat("1", 32), Generation: strings.Repeat("2", 32), ManifestID: strings.Repeat("3", 64)}, SelectionGeneration: strings.Repeat("2", 32), RuntimeSHA256: runtimeDigest, CapturedSources: []cr.CapturedSource{{Kind: cr.SourceConfig, Ordinal: 0, Present: true, SHA256: &sourceDigest}, {Kind: cr.SourceSelection, Ordinal: 0, Present: false}}, Rules: []cr.RuleOrigin{}, FinalOrigin: cr.RouteProjection{Evidence: cr.ProvenanceUnknown, Kind: cr.RuleUnknown, TerminalKind: cr.TerminalUnknown}, Outbounds: []cr.OutboundOrigin{}}
-	digest, e := cr.ManifestDigest(*m, manifestBudget(m))
+	digest, e := cr.ManifestDigest(*m, cr.ManifestBudget(m))
 	if e != nil {
 		t.Fatal(e)
 	}

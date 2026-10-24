@@ -130,7 +130,7 @@ func runRecordsBinding(stagedConfig string, compiled compiledRuntime, reg contro
 	if cr.Validate(*m) != nil {
 		return unavailable()
 	}
-	digest, err := cr.ManifestDigest(*m, manifestBudget(m))
+	digest, err := cr.ManifestDigest(*m, cr.ManifestBudget(m))
 	if err != nil || digest != m.ManifestID {
 		return unavailable()
 	}

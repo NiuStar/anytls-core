@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"reflect"
 	"strconv"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
@@ -47,6 +46,7 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 		} else {
 			// CA bytes are pinned again into decoded SDK options before New, compared
 			// to these captures. Runtime JSON remains exactly certificate_path based.
+			caOrdinal := 0
 			for _, raw := range cfg["outbounds"].([]any) {
 				out := raw.(map[string]any)
 				tls, _ := out["tls"].(map[string]any)
@@ -59,10 +59,11 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 					m = nil
 					break
 				}
-				addCapturedSource(m, cr.SourceCA, ca, true)
+				addCapturedSource(m, cr.SourceCA, caOrdinal, ca, true)
+				caOrdinal++
 			}
 			if m != nil {
-				digest, digestErr := cr.ManifestDigest(*m, manifestBudget(m))
+				digest, digestErr := cr.ManifestDigest(*m, cr.ManifestBudget(m))
 				if digestErr != nil {
 					m = nil
 				} else {
@@ -74,15 +75,9 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 	return compiledRuntime{JSON: b, Manifest: m}, nil
 }
 
-func addCapturedSource(m *cr.Manifest, kind cr.SourceKind, b []byte, present bool) {
+func addCapturedSource(m *cr.Manifest, kind cr.SourceKind, ordinal int, b []byte, present bool) {
 	if m == nil {
 		return
-	}
-	ordinal := 0
-	for _, s := range m.CapturedSources {
-		if s.Kind == kind {
-			ordinal++
-		}
 	}
 	s := cr.CapturedSource{Kind: kind, Ordinal: ordinal, Present: present}
 	if present {
@@ -131,49 +126,4 @@ func unknownCompileRoute(tag, typ string) cr.RouteProjection {
 
 func syntheticOrigin(action string, kind cr.SyntheticKind) cr.RuleOrigin {
 	return cr.RuleOrigin{Type: "default", ActionType: action, Synthetic: kind, Route: unknownCompileRoute("", "")}
-}
-
-// An upper bound derived from the accepted manifest itself (6x worst-case JSON
-// escaping plus fixed per-object syntax), not a config or history quota.
-func manifestBudget(m *cr.Manifest) int {
-	max := int(^uint(0) >> 1)
-	total := 1024
-	var walk func(reflect.Value) bool
-	walk = func(v reflect.Value) bool {
-		if !v.IsValid() {
-			return true
-		}
-		if total > max-512 {
-			return false
-		}
-		total += 512
-		switch v.Kind() {
-		case reflect.Pointer:
-			if !v.IsNil() {
-				return walk(v.Elem())
-			}
-		case reflect.String:
-			if v.Len() > (max-total)/6 {
-				return false
-			}
-			total += 6 * v.Len()
-		case reflect.Struct:
-			for i := 0; i < v.NumField(); i++ {
-				if !walk(v.Field(i)) {
-					return false
-				}
-			}
-		case reflect.Slice:
-			for i := 0; i < v.Len(); i++ {
-				if !walk(v.Index(i)) {
-					return false
-				}
-			}
-		}
-		return true
-	}
-	if !walk(reflect.ValueOf(m)) {
-		return 0
-	}
-	return total
 }

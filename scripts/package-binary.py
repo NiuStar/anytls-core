@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
 """Package an already-built binary and matching module sources; no build/download."""
 from pathlib import Path
-import argparse,base64,hashlib,io,json,os,re,subprocess,tarfile,zipfile
+import argparse,base64,hashlib,importlib.util,io,json,os,re,subprocess,tarfile,zipfile
+
+
+def certified_sources(root,receipt):
+ # Load the local official tool, never Python supplied by a source archive.
+ spec=importlib.util.spec_from_file_location('certified_wrapper',Path(__file__).with_name('go-patched.py'))
+ wrapper=importlib.util.module_from_spec(spec);spec.loader.exec_module(wrapper)
+ start,patch=wrapper.identity(root);core,core_patch=wrapper.core_identity(root)
+ expected={'identity_sha256':wrapper.IDENTITY_SHA,'wrapper_sha256':wrapper.sha((root/'scripts/go-patched.py').read_bytes()),
+           'module':wrapper.MODULE,'version':wrapper.VERSION,'commit':start['commit'],
+           'source_sha256':start['source_sha256'],'patch_sha256':wrapper.sha(patch),'result_sha256':start['result_sha256'],
+           'core_slim':{'identity_sha256':wrapper.CORE_IDENTITY_SHA,'patch_sha256':wrapper.sha(core_patch),'files':core['files']}}
+ if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
+ return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
+         'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json']
 
 
 def source_notice(data):
@@ -61,6 +75,7 @@ def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
  build_receipt=ends[0];binary_digest=hashlib.sha256(binary.read_bytes()).hexdigest()
  if binary_digest!=build_receipt.get('output_sha256'):raise ValueError('wrapper END does not bind binary digest')
  if build_receipt.get('target')!={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0'}:raise ValueError('wrapper END target does not match binary architecture')
+ materials=certified_sources(root,build_receipt)
  modules=[]
  sums={}
  for l in (root/'go.sum').read_text().splitlines():
@@ -83,6 +98,10 @@ def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
  prefix='anytls-core-'+tag
  source=out/(prefix+'-source.tar.gz')
  with source.open('wb') as f:subprocess.run(['git','archive','--format=tar.gz','--prefix='+prefix+'/','HEAD'],cwd=root,stdout=f,check=True)
+ with tarfile.open(source,'r:gz') as t:
+  for name in materials:
+   member=t.getmember(prefix+'/'+name)
+   if not member.isfile() or t.extractfile(member).read()!=(root/name).read_bytes():raise ValueError('source archive patch materials mismatch: '+name)
  ccs=out/(prefix+('-corresponding-source.tar.gz' if arch=='arm64' else '-darwin-amd64-corresponding-source.tar.gz'))
  with tarfile.open(ccs,'w:gz') as t:
   t.add(source,arcname=prefix+'/application-source.tar.gz',recursive=False)

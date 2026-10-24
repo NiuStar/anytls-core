@@ -51,7 +51,7 @@ func TestRecordsCompilerExactJSONAndOrigins(t *testing.T) {
 	if m.RuntimeSHA256 != shaHex(want) {
 		t.Fatal("runtime digest")
 	}
-	digest, err := cr.ManifestDigest(*m, manifestBudget(m))
+	digest, err := cr.ManifestDigest(*m, cr.ManifestBudget(m))
 	if err != nil || digest != m.ManifestID {
 		t.Fatalf("manifest digest: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestRecordsCompilerExactJSONAndOrigins(t *testing.T) {
 	if err := os.Remove(filepath.Join(filepath.Dir(o.Config), "set.json")); err != nil {
 		t.Fatal(err)
 	}
-	again, err := cr.ManifestDigest(*m, manifestBudget(m))
+	again, err := cr.ManifestDigest(*m, cr.ManifestBudget(m))
 	if err != nil || again != digest || !bytes.Equal(compiled.JSON, want) {
 		t.Fatal("disk-current backfill")
 	}
@@ -134,6 +134,54 @@ func TestRecordsCompilerCaptureDoesNotRepairInvalidSelection(t *testing.T) {
 	}
 }
 
+func TestRecordsCompilerCAOrdinalsAndDuplicateSources(t *testing.T) {
+	o, _, _ := recordsCompilerFixture(t, " - DOMAIN,one.invalid,b\n - DOMAIN,two.invalid,a\n - DOMAIN,three.invalid,b\n - MATCH,a\n")
+	for _, selection := range []bool{false, true} {
+		if selection {
+			runtimeWrite(t, selectedPath(o.Config), []byte("b\n"), 0600)
+		}
+		compiled, err := prepareRuntimeWithRecords(&o)
+		if err != nil || compiled.Manifest == nil {
+			t.Fatalf("compile: %v", err)
+		}
+		m := compiled.Manifest
+		if m.CapturedSources[0].Kind != cr.SourceConfig || m.CapturedSources[0].Ordinal != 0 || m.CapturedSources[1].Kind != cr.SourceSelection || m.CapturedSources[1].Ordinal != 0 || m.CapturedSources[1].Present != selection {
+			t.Fatal("config/selection compatibility")
+		}
+		var cfg struct {
+			Outbounds []struct {
+				TLS struct {
+					CertificatePath string `json:"certificate_path"`
+				} `json:"tls"`
+			} `json:"outbounds"`
+		}
+		if err = json.Unmarshal(compiled.JSON, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		var want []cr.CapturedSource
+		for _, out := range cfg.Outbounds {
+			if out.TLS.CertificatePath != "" {
+				b, e := os.ReadFile(out.TLS.CertificatePath)
+				if e != nil {
+					t.Fatal(e)
+				}
+				sum := shaHex(b)
+				want = append(want, cr.CapturedSource{Kind: cr.SourceCA, Ordinal: len(want), Present: true, SHA256: &sum})
+			}
+		}
+		var got []cr.CapturedSource
+		for _, s := range m.CapturedSources {
+			if s.Kind == cr.SourceCA {
+				got = append(got, s)
+			}
+		}
+		if len(got) != 2 || !reflect.DeepEqual(got, want) || *got[0].SHA256 != *got[1].SHA256 {
+			t.Fatalf("ordered duplicate CA sources: %#v != %#v", got, want)
+		}
+	}
+	addCapturedSource(nil, cr.SourceCA, 0, nil, true)
+}
+
 func TestRecordsCompilerManifestBudgetScalesWithAcceptedLabels(t *testing.T) {
 	o, _, _ := recordsCompilerFixture(t, " - DOMAIN,first.invalid,outer\n - MATCH,a\n")
 	c, err := prepareRuntimeWithRecords(&o)
@@ -143,7 +191,7 @@ func TestRecordsCompilerManifestBudgetScalesWithAcceptedLabels(t *testing.T) {
 	m := c.Manifest
 	label := strings.Repeat("x", 40000)
 	m.FinalOrigin.ConfiguredTarget = &label
-	if _, err := cr.ManifestDigest(*m, manifestBudget(m)); err != nil {
+	if _, err := cr.ManifestDigest(*m, cr.ManifestBudget(m)); err != nil {
 		t.Fatal("manifest budget introduced unrelated history/config quota", err)
 	}
 }

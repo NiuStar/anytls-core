@@ -510,22 +510,73 @@ func one(s string, values ...string) bool {
 	}
 	return false
 }
-func validHost(s string) bool {
-	if len(s) == 0 || len(s) > 253 || strings.ContainsAny(s, "/:?#@\\ \t\r\n") {
+
+// ValidHost validates the strict wire hostname without allocating.
+func ValidHost(s string) bool {
+	if len(s) == 0 || len(s) > 253 || strings.ContainsAny(s, "/:?#@\\ \t\r\n\x00") {
 		return false
 	}
 	s = strings.TrimSuffix(s, ".")
-	for _, label := range strings.Split(s, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, c := range label {
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i < len(s) && s[i] != '.' {
+			c := s[i]
 			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
 				return false
 			}
+			continue
 		}
+		if i == start || i-start > 63 || s[start] == '-' || s[i-1] == '-' {
+			return false
+		}
+		start = i + 1
 	}
 	return true
+}
+
+// An upper bound derived from the accepted manifest itself (6x worst-case JSON
+// escaping plus fixed per-object syntax), not a config or history quota.
+func ManifestBudget(m *Manifest) int {
+	max := int(^uint(0) >> 1)
+	total := 1024
+	var walk func(reflect.Value) bool
+	walk = func(v reflect.Value) bool {
+		if !v.IsValid() {
+			return true
+		}
+		if total > max-512 {
+			return false
+		}
+		total += 512
+		switch v.Kind() {
+		case reflect.Pointer:
+			if !v.IsNil() {
+				return walk(v.Elem())
+			}
+		case reflect.String:
+			if v.Len() > (max-total)/6 {
+				return false
+			}
+			total += 6 * v.Len()
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if !walk(v.Field(i)) {
+					return false
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				if !walk(v.Index(i)) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	if !walk(reflect.ValueOf(m)) {
+		return 0
+	}
+	return total
 }
 
 // Validate enforces leaf formats and the route-only semantic null rules. It is
@@ -673,7 +724,7 @@ func validateValue(v reflect.Value, depth int) error {
 			return ErrInvalid
 		}
 	case Destination:
-		if x.Host != nil && !validHost(*x.Host) {
+		if x.Host != nil && !ValidHost(*x.Host) {
 			return ErrInvalid
 		}
 		if (x.Host == nil) != (x.HostSource == HostUnknown) {
@@ -688,7 +739,7 @@ func validateValue(v reflect.Value, depth int) error {
 	case Condition:
 		switch x.Kind {
 		case RuleDomain, RuleDomainSuffix:
-			if !validHost(x.Value) {
+			if !ValidHost(x.Value) {
 				return ErrInvalid
 			}
 		case RuleIPCIDR:

@@ -19,6 +19,39 @@ ROOT = Path(__file__).resolve().parent.parent
 IDENTITY_SHA = "9679eb6c27343cbdc0bcb3559869638a4c78c2809dca9760439f46f506636c5f"
 MODULE = "github.com/sagernet/sing-box"
 VERSION = "v1.14.3"
+CORE_IDENTITY_SHA = "7faf6af8e873bb568f15029070f3c8051365af7ba3dd43f343488d78dcaee9e3"
+
+
+def core_identity(root=ROOT):
+    raw = (root / "patches/sing-box/core-slim.identity.json").read_bytes()
+    require(sha(raw) == CORE_IDENTITY_SHA, "core identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION, "unsupported core revision")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "core patch SHA mismatch")
+    require(m["start_identity_sha256"] == IDENTITY_SHA, "Start identity mismatch")
+    return m, patch
+
+
+def apply_core(replacement, m, patch):
+    ops = json.loads(patch)
+    require(set(ops) == {"files"} and [x["file"] for x in ops["files"]] == ["box.go", "debug_http.go"], "fixed two file patch required")
+    require(len(m["files"]) == 2, "fixed two file identity required")
+    results = []
+    for entry, pin in zip(ops["files"], m["files"]):
+        require(entry["file"] == pin["file"], "core file mismatch")
+        p = replacement / pin["file"]
+        source = p.read_bytes()
+        require(sha(source) == pin["input_sha256"], "core input SHA mismatch")
+        text = source.decode()
+        for op in entry["replacements"]:
+            require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1, "core exact replacement mismatch")
+            text = text.replace(op["old"], op["new"], 1)
+        result = text.encode()
+        require(sha(result) == pin["result_sha256"], "core result SHA mismatch")
+        p.write_bytes(result)
+        results.append(dict(pin))
+    return results
 
 
 def sha(data):
@@ -176,6 +209,9 @@ def stage_archive(archive, destination, expected_sum):
 def main(argv):
     go, args, output = arguments(argv, os.environ)
     m, patch = identity()
+    core_m, core_patch = core_identity()
+    require(core_m["commit"] == m["commit"] and core_m["start_result_sha256"] == m["result_sha256"],
+            "core Start chain mismatch")
     env = dict(os.environ, GOFLAGS="-mod=readonly", GOWORK="off")
 
     def read(*cmd):
@@ -197,6 +233,9 @@ def main(argv):
         require(Path(selected["Dir"]).resolve() == directory, "selected module Dir mismatch")
     source = directory / m["file"]
     original = source.read_bytes()
+    cache_debug = directory / "debug_http.go"
+    original_debug = cache_debug.read_bytes()
+    require(sha(original_debug) == core_m["files"][1]["original_sha256"], "cache debug SHA mismatch")
     patched = transform(original, m, patch)
     # Snapshot root inputs: only private copies are ever passed to go mod edit.
     root_inputs = {name: (ROOT / name).read_bytes() for name in ("go.mod", "go.sum")}
@@ -219,6 +258,10 @@ def main(argv):
         staged_source = replacement / m["file"]
         require(staged_source.read_bytes() == original, "archive/cache box.go mismatch")
         staged_source.write_bytes(patched)
+        core_results = apply_core(replacement, core_m, core_patch)
+        receipt["core_slim"] = {"identity_sha256": CORE_IDENTITY_SHA,
+                                "patch_sha256": sha(core_patch), "files": core_results}
+        receipt["result_sha256_scope"] = "Start cleanup intermediate, not final staged box.go; see core_slim.files"
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
@@ -246,9 +289,11 @@ def main(argv):
         receipt["command"] = command
         print("PATCHED_GO_BEGIN " + json.dumps(receipt, sort_keys=True), flush=True)
         rc = subprocess.call(command, cwd=ROOT, env=env)
-        require(source.read_bytes() == original, "module-cache source changed during command")
+        require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
+                "module-cache sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
-        require(staged_source.read_bytes() == patched, "temporary patched source changed")
+        require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
+                    for pin in core_m["files"]), "final staged core sources changed")
         if output and rc == 0:
             require(output.lstat().st_ino == os.fstat(reservation.fileno()).st_ino,
                     "output reservation changed")
@@ -268,9 +313,11 @@ def main(argv):
                 reservation.close()
         finally:
             shutil.rmtree(work)
-        require(source.read_bytes() == original, "module-cache source changed during command")
+        require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
+                "module-cache sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
-    receipt.update(rc=rc, ephemeral_cleanup="ok", root_inputs_unchanged=True, original_box_unchanged=True)
+    receipt.update(rc=rc, ephemeral_cleanup="ok", root_inputs_unchanged=True,
+                   original_box_unchanged=True, original_debug_unchanged=True)
     print("PATCHED_GO_END " + json.dumps(receipt, sort_keys=True), flush=True)
     return rc
 

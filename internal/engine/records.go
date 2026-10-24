@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"reflect"
-	"strings"
 	"sync/atomic"
 	"syscall"
 
@@ -43,52 +42,6 @@ type recordsTracker struct {
 var _ adapter.ConnectionTracker = (*recordsTracker)(nil)
 
 func recordsSHA(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
-
-// Budget scales only with this accepted configuration/manifest. It is not a
-// history cap. Every scalar gets syntax overhead and strings their worst-case
-// six-byte escape expansion. Overflow disables attribution, not traffic.
-func recordsManifestBudget(m *cr.Manifest) int {
-	max := int(^uint(0) >> 1)
-	total := 1024
-	var walk func(reflect.Value) bool
-	walk = func(v reflect.Value) bool {
-		if !v.IsValid() {
-			return true
-		}
-		if total > max-512 {
-			return false
-		}
-		total += 512
-		switch v.Kind() {
-		case reflect.Pointer:
-			if !v.IsNil() {
-				return walk(v.Elem())
-			}
-		case reflect.String:
-			if v.Len() > (max-total)/6 {
-				return false
-			}
-			total += 6 * v.Len()
-		case reflect.Struct:
-			for i := 0; i < v.NumField(); i++ {
-				if !walk(v.Field(i)) {
-					return false
-				}
-			}
-		case reflect.Slice:
-			for i := 0; i < v.Len(); i++ {
-				if !walk(v.Index(i)) {
-					return false
-				}
-			}
-		}
-		return true
-	}
-	if !walk(reflect.ValueOf(m)) {
-		return 0
-	}
-	return total
-}
 
 // The legacy JSON keeps certificate_path byte-for-byte. Freeze the *actual*
 // bytes passed to New into decoded TLS options and compare to compiler captures.
@@ -188,7 +141,7 @@ func bindRecords(instance *box.Box, raw []byte, input *RecordsInput, caVerified 
 		t.report(cr.ProvenanceUnknown)
 		return t
 	}
-	budget := recordsManifestBudget(m)
+	budget := cr.ManifestBudget(m)
 	if budget == 0 || m.RuntimeSHA256 != recordsSHA(raw) {
 		t.report(cr.ProvenanceUnknown)
 		return t
@@ -327,37 +280,13 @@ func (t *recordsTracker) route(matched adapter.Rule, out adapter.Outbound) cr.Ro
 	return r
 }
 
-func recordsHost(s string) bool {
-	// Validation is shared with the strict wire contract, with no raw metadata
-	// serialization and no full-string copy or encoded buffer in the callback.
-	if len(s) == 0 || len(s) > 253 || strings.ContainsAny(s, "/:?#@\\ \t\r\n\x00") {
-		return false
-	}
-	s = strings.TrimSuffix(s, ".")
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i < len(s) && s[i] != '.' {
-			c := s[i]
-			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
-				return false
-			}
-			continue
-		}
-		if i == start || i-start > 63 || s[start] == '-' || s[i-1] == '-' {
-			return false
-		}
-		start = i + 1
-	}
-	return true
-}
-
 func recordsDestination(d M.Socksaddr, domain string) cr.Destination {
 	r := cr.Destination{HostSource: cr.HostUnknown}
-	if recordsHost(d.Fqdn) {
+	if cr.ValidHost(d.Fqdn) {
 		host := d.Fqdn
 		r.Host = &host
 		r.HostSource = cr.HostDestination
-	} else if recordsHost(domain) {
+	} else if cr.ValidHost(domain) {
 		r.Host = &domain
 		r.HostSource = cr.HostMetadata
 	}
