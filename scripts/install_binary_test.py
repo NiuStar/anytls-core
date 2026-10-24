@@ -1042,8 +1042,30 @@ class WebUITests(unittest.TestCase):
         opener.open.assert_called_once_with("http://192.168.5.2:18089/", timeout=1)
         child.terminate.assert_not_called()
 
+    def test_noncanonical_ip_rejected_even_with_permissive_parser(self):
+        canonical = b.ipaddress.IPv4Address("192.168.5.2")
+        identity = (*self.identity[:2], str(self.target) + " webui --listen 192.168.005.2")
+        with mock.patch.object(b.ipaddress, "IPv4Address", return_value=canonical), \
+                mock.patch.object(self.ui, "listeners", return_value={42}), \
+                mock.patch.object(self.ui, "identity", return_value=identity):
+            with self.assertRaisesRegex(ValueError, "unknown"):
+                self.ui.preflight()
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
+    def test_alternate_loopback_rejected_before_any_signal(self):
+        for host in ("127.0.0.2", "127.1.2.3", "127.255.255.254"):
+            identity = (*self.identity[:2], str(self.target) + " webui --listen " + host)
+            with self.subTest(host=host), \
+                    mock.patch.object(self.ui, "listeners", return_value={42}), \
+                    mock.patch.object(self.ui, "identity", return_value=identity), \
+                    self.assertRaisesRegex(ValueError, "unknown"):
+                self.ui.preflight()
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
     def test_listen_forms_preserved_through_preflight_restart(self):
-        hosts = ("127.0.0.1", "127.0.0.2", "10.0.0.1", "10.255.255.254",
+        hosts = ("127.0.0.1", "10.0.0.1", "10.255.255.254",
                  "172.16.0.1", "172.31.255.254", "192.168.5.2")
         for host in hosts:
             for suffix in (" --listen " + host, " --listen=" + host,

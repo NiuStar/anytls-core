@@ -128,9 +128,11 @@ Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-AR
 `ps` 信息核对当前 UID、启动时间和精确目标路径命令；接受
 `~/.anytls/anytls-macos webui`，可带一次 `--port 18089` 和一次 `--listen 192.168.5.2`，
 两者顺序不限，也支持 `--port=18089` / `--listen=192.168.5.2`。省略 listen 时为 `127.0.0.1`。
-listen 仅接受规范的 IPv4 字面量：`127.0.0.0/8` loopback 或 RFC1918 的
+listen 仅接受规范的 IPv4 字面量：`127.0.0.1` loopback 或 RFC1918 的
 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`；拒绝 wildcard、DNS、公网、IPv6、
-链路本地与其他保留地址。重复 flag、缺值、其他端口、位置参数、引号或 shell 表达式一律拒绝；
+链路本地、其他保留地址及替代 loopback 地址（现有控制台 Host 校验不支持）均拒绝。
+规范地址拼写另作字符串比对，不依赖旧 Python 对前导零的宽松行为。
+重复 flag、缺值、其他端口、位置参数、引号或 shell 表达式一律拒绝；
 不将 `ps` 命令文本当作可执行 shell，目标路径（包括空格）必须精确匹配。
 外来占用、多监听或未知参数一律拒绝继续，不根据 basename、子串或历史
 `webui.pid` 杀进程；历史 pidfile 完全不作为权限依据，也不更新它。

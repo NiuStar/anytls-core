@@ -413,12 +413,15 @@ class WebUI:
             return None
         host = options.get("--listen", "127.0.0.1")
         try:
-            octets = ipaddress.IPv4Address(host).packed
+            address = ipaddress.IPv4Address(host)
+            if str(address) != host:
+                return None
+            octets = address.packed
         except ipaddress.AddressValueError:
             return None
-        # Match Go netip's IPv4 loopback/RFC1918 policy, NOT Python is_private
-        # (which also accepts reserved, link-local and documentation addresses).
-        if not (octets[0] in (127, 10) or
+        # RFC1918 matches Go netip.IsPrivate. Only canonical 127.0.0.1 is
+        # manageable: the unchanged console Host gate rejects other 127/8.
+        if not (host == "127.0.0.1" or octets[0] == 10 or
                 (octets[0] == 172 and 16 <= octets[1] <= 31) or
                 (octets[0] == 192 and octets[1] == 168)):
             return None
