@@ -60,6 +60,58 @@ If-Match 是 WebUI 内互斥 + 外部文件乐观二次检查，不声称消除�
 
 共享 Validate/严格编码和解码拒绝任何 continuity CLOSED，或 closed 页的非 UNKNOWN freshness、gap=false、已知 pending/loss 计数及原因；磁盘 State 的既有 CLOSED/已知零兼容性不变。进程内 Shutdown 仍按真实错误返回 IO_FAILED/cleanup UNKNOWN，保留 once-close、锁实际生命周期、前缀与禁止自动删除的合同。UI 始终显示“完整收尾未验证／连续性 UNKNOWN”，CLOSED 另注明仅最后保存的停止采集状态，不代表完整收尾或成功。
 
+
+
+## Add-only pinned subscriptions (candidate, native validation pending)
+
+`POST /api/v1/import/preview` accepts `mode:"append_nodes"`; omitted mode remains
+`replace_config`. Choose exactly one input. Add-only supports YAML or a one-shot
+URL, not `use_saved`. Response includes `mode`, `added_nodes`, counts and warning.
+Commit uses the preview token, CSRF and full If-Match with
+`confirm_append:true,confirm_insecure:true`; `confirm_replace` alone cannot
+approve add-only. Conversion differences still require `accept_conversion:true`.
+
+Trusted server handoff links have exactly this form:
+`https://<public-numeric-IP>[:port]/subscribe/<43-char-unpadded-base64url-token>#anytls-cert-sha256=<64-lowercase-hex>`.
+The token encodes exactly 32 bytes. IPv6 uses brackets. No DNS names, userinfo,
+queries, percent-encoded ambiguities, extra fragments, redirects, proxies or
+non-public addresses are accepted. Numeric port must be canonical 1..65535.
+The fragment never reaches HTTP. TLS >=1.2 compares the SHA256 of the active
+leaf DER before any HTTP request/token is sent. This is **pin-only identity**,
+not public-CA/hostname validation plus a pin. Obtain the complete link over a
+trusted channel; certificate rotation requires a new independently trusted link.
+The existing ordinary HTTPS:443 PKIX/DNS-bound fetch remains unchanged; pinned
+links cannot be used to replace configuration or saved as subscription metadata.
+Node `certificate-public-key-sha256` is a separate canonical base64 SPKI digest,
+not the URL leaf digest. It does not turn on insecure verification.
+
+Add-only validates every incoming AnyTLS node, including inactive nodes, before
+conversion can skip unsupported entries. It imports no groups/rules/providers
+and never fetches their resources. Remote CA file references are rejected before
+file validation. New nodes are appended via YAML AST to one explicit nodes or
+proxies sequence. Ambiguous keys/merge/alias targets fail closed. Existing
+comments, scalar tags, unknown fields, groups and rules are retained semantically;
+formatting can change. Same-name semantically identical full node maps are no-op;
+different values fail the entire preview with `IMPORT_NODE_CONFLICT`. Unsafe AST
+returns `IMPORT_APPEND_UNSAFE`.
+
+Selected-file and saved-subscription bytes **and existence** remain untouched,
+including stale selections and absent files. There is no implicit selection or
+saved append source/automatic refresh. A config-changing commit uses existing
+backup, ETag/session/TTL/readback/rollback and automatic-apply protections; saving
+may briefly interrupt a running VPN, and does not start a stopped VPN. The UI
+has a separate “从此订阅仅添加节点” button and explicit add-only confirmation.
+
+New native tests: `TestWebImportPinnedURLAndTLS`,
+`TestWebImportAppendAuthenticatedPreservesState`,
+`TestWebImportAppendRejectsAmbiguityAndInactiveBadNode`,
+`TestWebImportAppendTransactionBoundaries`,
+`TestWebImportPinnedNoRedirectAndCancellation`,
+`TestWebImportAppendRemoteAndPublicBoundaries`. They use isolated synthetic
+config and a loopback TLS dial seam, not production or public deployment.
+Go runtime tests and Mac/browser acceptance are pending; local syntax checks do
+not constitute passing Go tests.
+
 ## 验证
 
 `web_auth_test.go` 包含 httptest 与真实 TempDir 文件测试。遵守父任务约束，本子流未运行 Linux Go、Mac SSH、真实服务/真实配置或 Web server。Go/gofmt/Node 本地不可用；仅 tree-sitter Go/JS 语法解析，不等同编译或运行测试。父任务需 native gofmt、`go test -run '^TestWeb'`、完整 tests/vet，以及隔离真实浏览器桌面/窄屏验收。

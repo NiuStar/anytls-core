@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -26,6 +28,24 @@ type node struct {
 	EgressIP    string `yaml:"egress-ip"`
 	SNI         string `yaml:"sni"`
 	CA          string `yaml:"ca"`
+
+	CertificatePublicKeySHA256 string `yaml:"certificate-public-key-sha256,omitempty"`
+}
+
+// A pin authenticates the SPKI only, not a PKIX chain or hostname. Keep its
+// spelling canonical and reject mixed trust before either SDK or CA handling.
+func validateNodeSPKITrust(n node) error {
+	if n.CertificatePublicKeySHA256 == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(n.CertificatePublicKeySHA256)
+	if err != nil || len(decoded) != sha256.Size || base64.StdEncoding.EncodeToString(decoded) != n.CertificatePublicKeySHA256 {
+		return errors.New("invalid certificate-public-key-sha256")
+	}
+	if n.CA != "" || n.SkipVerify {
+		return errors.New("certificate-public-key-sha256 conflicts with ca or skip-cert-verify")
+	}
+	return nil
 }
 
 func loadNodes(path string) ([]node, error) {
@@ -96,11 +116,16 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 	if n.EgressIP != "" && net.ParseIP(n.EgressIP) == nil {
 		return nil, errors.New("invalid egress-ip")
 	}
+	if err := validateNodeSPKITrust(n); err != nil {
+		return nil, err
+	}
 	tls := map[string]any{"enabled": true}
 	if n.SNI != "" {
 		tls["server_name"] = n.SNI
 	}
-	if n.CA != "" {
+	if n.CertificatePublicKeySHA256 != "" {
+		tls["certificate_public_key_sha256"] = []string{n.CertificatePublicKeySHA256}
+	} else if n.CA != "" {
 		st, err := os.Stat(n.CA)
 		if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
 			return nil, errors.New("invalid CA PEM file")

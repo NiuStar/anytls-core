@@ -25,6 +25,7 @@ type webImportFile struct {
 	exists bool
 }
 type webImportCandidate struct {
+	mode                                    string
 	conversion                              webConversionReport
 	token, csrf, etag, selected, sourceURL  string
 	expires                                 time.Time
@@ -294,6 +295,7 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		YAML     json.RawMessage `json:"yaml"`
 		URL      json.RawMessage `json:"url"`
 		UseSaved json.RawMessage `json:"use_saved"`
+		Mode     string          `json:"mode"`
 	}
 	if webDecode(rw, r, &fields) != nil {
 		webError(rw, 400, "INVALID_INPUT")
@@ -303,6 +305,14 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		YAML     *string
 		URL      *string
 		UseSaved *bool
+	}
+	mode := fields.Mode
+	if mode == "" {
+		mode = "replace_config"
+	}
+	if mode != "replace_config" && mode != "append_nodes" {
+		webError(rw, 400, "INVALID_INPUT")
+		return
 	}
 	count := 0
 	invalid := false
@@ -337,7 +347,7 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saved, e := webImportSubscription(sub)
-	if e != nil {
+	if e != nil && mode != "append_nodes" {
 		webError(rw, 503, "SUBSCRIPTION_UNAVAILABLE")
 		return
 	}
@@ -346,6 +356,10 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		raw = *in.URL
 	}
 	if in.UseSaved != nil {
+		if mode == "append_nodes" {
+			webError(rw, 400, "INVALID_INPUT")
+			return
+		}
 		raw = saved
 		if raw == "" {
 			webError(rw, 409, "SUBSCRIPTION_NOT_CONFIGURED")
@@ -358,12 +372,19 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		b = []byte(*in.YAML)
 	} else {
 		u, e := webImportURL(raw)
+		pinned := mode == "append_nodes" && strings.Contains(raw, "#")
+		if pinned {
+			u, _, e = webImportPinnedURL(raw)
+		}
 		if e != nil {
 			webError(rw, 422, "IMPORT_URL_UNSAFE")
 			return
 		}
 		host = u.Hostname()
 		fetch := w.importFetch
+		if pinned {
+			fetch = func(ctx context.Context, raw string) ([]byte, error) { return webImportPinnedFetch(ctx, raw) }
+		}
 		if fetch == nil {
 			fetch = webImportSecureFetch
 		}
@@ -391,6 +412,13 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if mode == "append_nodes" {
+		b, e = webImportAppendInput(b, raw != "")
+		if e != nil {
+			webError(rw, 422, e.Error())
+			return
+		}
+	}
 	converted, conversion, convertErr := webConvertConfiguration(ctx, b, raw != "", fetch)
 	if convertErr != nil {
 		webError(rw, 422, webConversionErrorCode(convertErr))
@@ -401,7 +429,15 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b = converted
-	if e = webImportFormat(b, false); e != nil {
+	added := 0
+	if mode == "append_nodes" {
+		b, added, e = webImportAppend(old.data, b)
+		if e != nil {
+			webError(rw, 422, e.Error())
+			return
+		}
+	}
+	if e = webImportFormat(b, false); e != nil && mode != "append_nodes" {
 		webError(rw, 422, e.Error())
 		return
 	}
@@ -415,25 +451,34 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selected, _ := selectedBytes(sel.data, nodes)
-	if selected == "" {
-		for _, n := range nodes {
-			if selectable(n) {
-				selected = n.Name
-				break
+	if mode == "append_nodes" {
+		selected = strings.TrimSpace(string(sel.data))
+	}
+	if mode != "append_nodes" {
+		if selected == "" {
+			for _, n := range nodes {
+				if selectable(n) {
+					selected = n.Name
+					break
+				}
 			}
 		}
+		if selected == "" {
+			webError(rw, 422, "IMPORT_NO_SELECTABLE_NODES")
+			return
+		}
+		chosen, e := choose(nodes, selected)
+		if e != nil {
+			webError(rw, 422, "CONFIG_VALIDATION_FAILED")
+			return
+		}
+		if _, e = buildNode(chosen, "proxy", 11080, true); e != nil {
+			webError(rw, 422, "CONFIG_VALIDATION_FAILED")
+			return
+		}
 	}
-	if selected == "" {
-		webError(rw, 422, "IMPORT_NO_SELECTABLE_NODES")
-		return
-	}
-	chosen, e := choose(nodes, selected)
-	if e != nil {
-		webError(rw, 422, "CONFIG_VALIDATION_FAILED")
-		return
-	}
-	if _, e = buildNode(chosen, "proxy", 11080, true); e != nil {
-		webError(rw, 422, "CONFIG_VALIDATION_FAILED")
+	if r.Context().Err() != nil {
+		webError(rw, 422, "CONFIG_CONVERSION_CANCELED")
 		return
 	}
 	if !webImportSame(old) || !webImportSame(sel) || !webImportSame(sub) {
@@ -446,7 +491,7 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := `"` + shaHex(old.data) + `"`
-	w.importPending = &webImportCandidate{conversion: conversion, token: token, csrf: r.Header.Get("X-CSRF-Token"), etag: etag, selected: selected, sourceURL: raw, expires: w.now().Add(10 * time.Minute), data: bytes.Clone(b), oldConfig: old, oldSelected: sel, oldSubscription: sub}
+	w.importPending = &webImportCandidate{mode: mode, conversion: conversion, token: token, csrf: r.Header.Get("X-CSRF-Token"), etag: etag, selected: selected, sourceURL: raw, expires: w.now().Add(10 * time.Minute), data: bytes.Clone(b), oldConfig: old, oldSelected: sel, oldSubscription: sub}
 	var doc struct {
 		Groups []proxyGroup `yaml:"proxy-groups"`
 		Rules  []string     `yaml:"rules"`
@@ -462,7 +507,10 @@ func (w *webConsole) importPreview(rw http.ResponseWriter, r *http.Request) {
 	if raw == "" && saved != "" {
 		warning += " Existing subscription is kept unchanged; this local import does not refresh it."
 	}
-	out := map[string]any{"conversion": conversion, "token": token, "etag": etag, "nodes": len(nodes), "groups": len(doc.Groups), "rules": len(doc.Rules), "selected": selected, "warning": warning}
+	if mode == "append_nodes" {
+		warning = "Adds validated AnyTLS nodes only. Incoming groups and rules are ignored. Existing selection, saved subscription, groups and rules stay unchanged; select a new node explicitly. A running VPN may briefly disconnect on automatic apply."
+	}
+	out := map[string]any{"mode": mode, "added_nodes": added, "conversion": conversion, "token": token, "etag": etag, "nodes": len(nodes), "groups": len(doc.Groups), "rules": len(doc.Rules), "selected": selected, "warning": warning}
 	if host != "" {
 		out["source_host"] = host
 	}
@@ -521,16 +569,21 @@ func (w *webConsole) importCommit(rw http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Token            string `json:"token"`
 		ConfirmReplace   bool   `json:"confirm_replace"`
+		ConfirmAppend    bool   `json:"confirm_append"`
 		ConfirmInsecure  bool   `json:"confirm_insecure"`
 		AcceptConversion bool   `json:"accept_conversion"`
 	}
-	if webDecode(rw, r, &in) != nil || !in.ConfirmReplace || !in.ConfirmInsecure {
+	if webDecode(rw, r, &in) != nil || (!in.ConfirmReplace && !in.ConfirmAppend) || !in.ConfirmInsecure {
 		webError(rw, 400, "IMPORT_CONFIRMATION_REQUIRED")
 		return
 	}
 	p := w.importPending
 	if p == nil || !w.now().Before(p.expires) || !webEqual(in.Token, p.token) || !webEqual(r.Header.Get("X-CSRF-Token"), p.csrf) {
 		webError(rw, 409, "IMPORT_PREVIEW_EXPIRED")
+		return
+	}
+	if (p.mode == "append_nodes" && !in.ConfirmAppend) || (p.mode != "append_nodes" && !in.ConfirmReplace) {
+		webError(rw, 400, "IMPORT_CONFIRMATION_REQUIRED")
 		return
 	}
 	if (len(p.conversion.Warnings) > 0 || len(p.conversion.Skipped) > 0) && !in.AcceptConversion {
@@ -543,6 +596,10 @@ func (w *webConsole) importCommit(rw http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get("If-Match") != p.etag {
 		webError(rw, 412, "CONFIG_CONFLICT")
+		return
+	}
+	if p.mode == "append_nodes" {
+		w.importAppendCommit(rw, r, p, in.ConfirmInsecure)
 		return
 	}
 	files := []webImportFile{p.oldConfig, p.oldSelected, p.oldSubscription}

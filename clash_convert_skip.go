@@ -26,6 +26,14 @@ func conversionSanitize(root *yaml.Node, r *webConversionReport, remote bool) {
 			skip(path+".ca", "remote local-file dependency; entire node removed")
 			continue
 		}
+		if pin := conversionField(n, "certificate-public-key-sha256"); pin != nil && (pin.Kind != yaml.ScalarNode || pin.Tag != "!!str" || pin.Value == "") {
+			skip(path+".certificate-public-key-sha256", "invalid SPKI trust field; entire node removed")
+			continue
+		}
+		if err := validateNodeSPKITrust(typed); err != nil {
+			skip(path+".certificate-public-key-sha256", "invalid or conflicting SPKI trust; entire node removed")
+			continue
+		}
 		valid[typed.Name] = true
 		kept = append(kept, n)
 	}

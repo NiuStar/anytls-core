@@ -75,7 +75,7 @@
           <div class="profiles-body"><div class="profile-create"><label for="profile-name">新方案名称</label><input id="profile-name" autocomplete="off" placeholder="例如：家庭网络"><button id="save-profile">保存当前为方案</button></div><p id="profiles-status" class="hint" role="status">尚未读取方案</p><div id="profiles-list" class="stack"></div><p class="hint">切换前保留旧配置备份；运行中的 VPN 会自动应用并短暂重连，未运行时仅保存。切换会清空编辑草稿和导入预览。</p></div>
         </section>
         <section class="panel import-panel" aria-labelledby="import-heading">
-          <div class="panel-toolbar"><div><h3 id="import-heading">导入配置</h3><span class="hint">先预览，再备份并替换。运行中的 VPN 会自动重连。</span></div></div>
+          <div class="panel-toolbar"><div><h3 id="import-heading">导入配置</h3><span class="hint">先预览，再确认仅添加节点或替换完整配置。保存后运行中的 VPN 可能短暂重连。</span></div></div>
           <div class="import-body">
             <p class="hint import-format">自动识别 Clash / Mihomo YAML 并转换为 AnyTLS 配置，原生 YAML 不需转换。alias / merge 自动展开；HTTP provider 转为内联内容，缓存路径不会读取本机文件。不支持的协议或内容会跳过并列出清单，其余可用部分仍可导入；不会将其他协议节点改名为 AnyTLS。暂不支持 URI 或 Base64 订阅。</p>
             <p class="hint import-format">自动测速、故障切换等策略如需降为手动 select，会在预览中列出差异；导入时再明确确认。预览和导出均不会应用配置。</p>
@@ -86,7 +86,8 @@
               <p class="hint">文件与粘贴导入默认保留已保存的订阅。</p>
             </div>
             <div id="import-url-panel" role="tabpanel" aria-labelledby="import-tab-url" hidden>
-              <label for="subscription-url">订阅 URL</label><input id="subscription-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" aria-describedby="subscription-help"><p id="subscription-help" class="hint">URL 可能含令牌，请勿在共享屏幕输入。仅在确认导入成功后保存；不会存入浏览器本地存储。</p>
+              <label for="subscription-url">订阅 URL</label><input id="subscription-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" aria-describedby="subscription-help"><p id="subscription-help" class="hint">URL 可能含令牌，请勿在共享屏幕输入。替换模式成功后保存来源；仅添加节点不保存此链接。不会存入浏览器本地存储。</p>
+              <button id="append-subscription" type="button">从此订阅仅添加节点</button><p class="hint">添加模式不替换选择、规则、策略组或已保存订阅。支持可信分发的数字公网 IP 证书固定链接；固定证书不等于公共 CA 验证。</p>
               <div class="subscription-row"><span id="subscription-status" class="hint" role="status">尚未读取订阅状态</span><button id="refresh-subscription" type="button" disabled>刷新已保存订阅</button></div>
             </div>
             <div class="import-actions"><button id="preview-import" type="button">预览导入</button><span id="import-source-status" class="hint" role="status" aria-live="polite"></span></div>

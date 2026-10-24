@@ -1,5 +1,57 @@
 # 配置导入与 HTTPS 订阅
 
+
+
+## Add-only pinned subscriptions (candidate, native validation pending)
+
+`POST /api/v1/import/preview` accepts `mode:"append_nodes"`; omitted mode remains
+`replace_config`. Choose exactly one input. Add-only supports YAML or a one-shot
+URL, not `use_saved`. Response includes `mode`, `added_nodes`, counts and warning.
+Commit uses the preview token, CSRF and full If-Match with
+`confirm_append:true,confirm_insecure:true`; `confirm_replace` alone cannot
+approve add-only. Conversion differences still require `accept_conversion:true`.
+
+Trusted server handoff links have exactly this form:
+`https://<public-numeric-IP>[:port]/subscribe/<43-char-unpadded-base64url-token>#anytls-cert-sha256=<64-lowercase-hex>`.
+The token encodes exactly 32 bytes. IPv6 uses brackets. No DNS names, userinfo,
+queries, percent-encoded ambiguities, extra fragments, redirects, proxies or
+non-public addresses are accepted. Numeric port must be canonical 1..65535.
+The fragment never reaches HTTP. TLS >=1.2 compares the SHA256 of the active
+leaf DER before any HTTP request/token is sent. This is **pin-only identity**,
+not public-CA/hostname validation plus a pin. Obtain the complete link over a
+trusted channel; certificate rotation requires a new independently trusted link.
+The existing ordinary HTTPS:443 PKIX/DNS-bound fetch remains unchanged; pinned
+links cannot be used to replace configuration or saved as subscription metadata.
+Node `certificate-public-key-sha256` is a separate canonical base64 SPKI digest,
+not the URL leaf digest. It does not turn on insecure verification.
+
+Add-only validates every incoming AnyTLS node, including inactive nodes, before
+conversion can skip unsupported entries. It imports no groups/rules/providers
+and never fetches their resources. Remote CA file references are rejected before
+file validation. New nodes are appended via YAML AST to one explicit nodes or
+proxies sequence. Ambiguous keys/merge/alias targets fail closed. Existing
+comments, scalar tags, unknown fields, groups and rules are retained semantically;
+formatting can change. Same-name semantically identical full node maps are no-op;
+different values fail the entire preview with `IMPORT_NODE_CONFLICT`. Unsafe AST
+returns `IMPORT_APPEND_UNSAFE`.
+
+Selected-file and saved-subscription bytes **and existence** remain untouched,
+including stale selections and absent files. There is no implicit selection or
+saved append source/automatic refresh. A config-changing commit uses existing
+backup, ETag/session/TTL/readback/rollback and automatic-apply protections; saving
+may briefly interrupt a running VPN, and does not start a stopped VPN. The UI
+has a separate “从此订阅仅添加节点” button and explicit add-only confirmation.
+
+New native tests: `TestWebImportPinnedURLAndTLS`,
+`TestWebImportAppendAuthenticatedPreservesState`,
+`TestWebImportAppendRejectsAmbiguityAndInactiveBadNode`,
+`TestWebImportAppendTransactionBoundaries`,
+`TestWebImportPinnedNoRedirectAndCancellation`,
+`TestWebImportAppendRemoteAndPublicBoundaries`. They use isolated synthetic
+config and a loopback TLS dial seam, not production or public deployment.
+Go runtime tests and Mac/browser acceptance are pending; local syntax checks do
+not constitute passing Go tests.
+
 ## 本次范围
 
 在“配置与规则”页增加本地 YAML 文件、粘贴 YAML、HTTPS 订阅地址入口。首版只接收本工具兼容的配置（AnyTLS 节点、select 策略组与既有分流规则），不声称兼容所有 Clash/Mihomo 特性；不支持的协议、分组或 provider 必须明确拒绝，不能静默过滤。URI 列表、Base64 和 Surge profile 暂不转换。
