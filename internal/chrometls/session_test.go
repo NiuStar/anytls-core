@@ -85,7 +85,7 @@ func sessionTestExchange(t *testing.T, listener net.Listener, serverConfig *tls.
 	payload := bytes.Repeat([]byte{0x41, 0x00, 0xff, byte(attempt)}, 12*1024)
 	type result struct {
 		state tls.ConnectionState
-		err error
+		err   error
 	}
 	done := make(chan result, 1)
 	go func() {
