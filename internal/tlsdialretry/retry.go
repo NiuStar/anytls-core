@@ -3,6 +3,8 @@ package tlsdialretry
 
 import (
 	"context"
+	stdtls "crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -70,6 +72,13 @@ func resetOnly(err error) bool {
 		return false
 	}
 	for depth := 0; err != nil && depth < 32; depth++ {
+		switch err.(type) {
+		case *stdtls.CertificateVerificationError, *stdtls.ECHRejectionError,
+			stdtls.RecordHeaderError, stdtls.AlertError,
+			x509.CertificateInvalidError, x509.HostnameError, x509.UnknownAuthorityError,
+			x509.SystemRootsError, x509.InsecureAlgorithmError:
+			return false
+		}
 		if _, joined := err.(interface{ Unwrap() []error }); joined {
 			return false
 		}

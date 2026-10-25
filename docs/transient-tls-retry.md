@@ -18,6 +18,8 @@ to locate resets before the certificate phase.
   wrappers, EOF, cancellation, permissions, TLS/security/protocol errors and
   same-text lookalikes are not retryable. Error classification is bounded to 32
   unwrap steps and never matches strings.
+  Explicit standard TLS/x509 security error types are rejected even if a verifier
+  wraps a transport reset; a separate native RED/GREEN regression binds this case.
 * Each attempt uses the original dialer, destination and multiplex-session
   context: interface binding, detour, SNI, Chrome/Go TLS and strict leaf pin are
   unchanged. There is no raw TCP redial or peer-address shortcut.
