@@ -99,10 +99,13 @@ class ChromePatchTests(unittest.TestCase):
                 cached.write_bytes(original)
             final = next(n for n in transaction.body if isinstance(n, ast.Expr)
                          and isinstance(n.value, ast.Call) and any(isinstance(a, ast.Constant)
-                         and a.value == 'final staged Chrome source changed' for a in n.value.args))
+                         and a.value == 'final staged retry source changed' for a in n.value.args))
+            # Chrome is now an immutable intermediate, retry binds final output.
+            ctx['patched_retry'] = w.transform_retry(transformed, *w.retry_identity())
+            target.write_bytes(ctx['patched_retry'])
             code = compile(ast.Module(body=[final], type_ignores=[]), 'actual-final-guard', 'exec')
             exec(code, ctx); target.write_bytes(original)
-            with self.assertRaisesRegex(ValueError, 'final staged Chrome'):
+            with self.assertRaisesRegex(ValueError, 'final staged retry'):
                 exec(code, ctx)
 
     def test_historical_identity_pins_unchanged(self):

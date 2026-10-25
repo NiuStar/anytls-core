@@ -4,9 +4,14 @@ package engine
 import (
 	"context"
 
+	"net"
+	"time"
+
 	"github.com/NiuStar/anytls-core/internal/chrometls"
+	"github.com/NiuStar/anytls-core/internal/tlsdialretry"
 	"github.com/sagernet/sing-box/common/tls"
 	"github.com/sagernet/sing-box/option"
+	M "github.com/sagernet/sing/common/metadata"
 	singService "github.com/sagernet/sing/service"
 
 	box "github.com/sagernet/sing-box"
@@ -50,5 +55,8 @@ func Context(ctx context.Context) context.Context {
 	local.RegisterTransport(dnsTransports)
 
 	ctx = box.Context(ctx, inbounds, outbounds, endpoint.NewRegistry(), dnsTransports, service.NewRegistry(), certificate.NewRegistry())
+	ctx = singService.ContextWith[interface {
+		DialAnyTLS(context.Context, tls.Dialer, M.Socksaddr, time.Duration) (net.Conn, error)
+	}](ctx, tlsdialretry.Factory{})
 	return singService.ContextWith[chromeClientFactory](ctx, chrometls.Factory{})
 }

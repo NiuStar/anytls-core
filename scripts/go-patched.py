@@ -26,6 +26,43 @@ LEAF_IDENTITY_SHA = "0e28b9a7e7258f2f588b49ce4820739998f610abdaf465a4f8b7b7530ce
 LEAF_FILES = ("option/tls.go", "common/tls/std_client.go", "common/tls/utls_client.go", "common/tls/client.go")
 
 
+RETRY_IDENTITY_SHA = "0d0c382ffa625c89bc044294a2cd07b6e1c65d8b1878c56a1bc7c98ed874f70d"
+
+
+def retry_identity(root=ROOT):
+    raw = (root / "patches/sing-box/retry.identity.json").read_bytes()
+    require(sha(raw) == RETRY_IDENTITY_SHA, "retry identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION and m["toolchain"] == CURRENT_GO
+            and m["file"] == "protocol/anytls/outbound.go", "unsupported retry revision/toolchain")
+    require((m["start_identity_sha256"], m["core_identity_sha256"], m["chrome_identity_sha256"],
+             m["leaf_identity_sha256"]) == (IDENTITY_SHA, CORE_IDENTITY_SHA, CHROME_IDENTITY_SHA, LEAF_IDENTITY_SHA),
+            "retry historical chain mismatch")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "retry patch SHA mismatch")
+    return m, patch
+
+
+def transform_retry(source, m, patch):
+    require(sha(source) == m["source_sha256"], "retry source SHA mismatch")
+    ops = json.loads(patch)
+    require(set(ops) == {"replacements"} and len(ops["replacements"]) == 2, "invalid retry patch")
+    text = source.decode("utf-8")
+    for op in ops["replacements"]:
+        require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1,
+                "retry exact replacement mismatch")
+        text = text.replace(op["old"], op["new"], 1)
+    result = text.encode("utf-8")
+    require(sha(result) == m["result_sha256"], "retry result SHA mismatch")
+    return result
+
+
+def retry_receipt(m, patch):
+    return {"identity_sha256": RETRY_IDENTITY_SHA, "patch_sha256": sha(patch),
+            "file": m["file"], "source_sha256": m["source_sha256"],
+            "result_sha256": m["result_sha256"], "toolchain": CURRENT_GO}
+
+
 def leaf_identity(root=ROOT):
     raw = (root / "patches/sing-box/leaf.identity.json").read_bytes()
     require(sha(raw) == LEAF_IDENTITY_SHA, "leaf identity SHA mismatch")
@@ -291,6 +328,9 @@ def main(argv):
     core_m, core_patch = core_identity()
     chrome_m, chrome_patch = chrome_identity()
     leaf_m, leaf_patch = leaf_identity()
+    retry_m, retry_patch = retry_identity()
+    require(all(retry_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum"))
+            and retry_m["source_sha256"] == chrome_m["result_sha256"], "retry upstream chain mismatch")
     require(all(leaf_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
             "leaf upstream chain mismatch")
     require(all(chrome_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
@@ -325,6 +365,7 @@ def main(argv):
     cache_chrome = directory / chrome_m["file"]
     original_chrome = cache_chrome.read_bytes()
     patched_chrome = transform_chrome(original_chrome, chrome_m, chrome_patch)
+    patched_retry = transform_retry(patched_chrome, retry_m, retry_patch)
     original_leaf = {name: (directory / name).read_bytes() for name in LEAF_FILES}
     require(all(sha(original_leaf[pin["file"]]) == pin["source_sha256"] for pin in leaf_m["files"]),
             "module-cache leaf source SHA mismatch")
@@ -361,6 +402,10 @@ def main(argv):
                 "archive/cache leaf sources mismatch")
         apply_leaf(replacement, leaf_m, leaf_patch)
         receipt["leaf_certificate"] = leaf_receipt(leaf_m, leaf_patch)
+        require(staged_chrome.read_bytes() == patched_chrome, "retry intermediate source mismatch")
+        staged_chrome.write_bytes(patched_retry)
+        receipt["transient_retry"] = retry_receipt(retry_m, retry_patch)
+        receipt["chrome_result_sha256_scope"] = "Chrome intermediate; transient_retry binds final outbound"
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
@@ -396,7 +441,7 @@ def main(argv):
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in core_m["files"]), "final staged core sources changed")
-        require(staged_chrome.read_bytes() == patched_chrome, "final staged Chrome source changed")
+        require(staged_chrome.read_bytes() == patched_retry, "final staged retry source changed")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
         if output and rc == 0:

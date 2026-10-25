@@ -31,6 +31,10 @@ leaf_spec = importlib.util.spec_from_file_location("leaf_patch_tests", SCRIPT.pa
 leaf_tests = importlib.util.module_from_spec(leaf_spec)
 leaf_spec.loader.exec_module(leaf_tests)
 LeafPatchTests = leaf_tests.LeafPatchTests
+retry_spec = importlib.util.spec_from_file_location("retry_patch_tests", SCRIPT.parent / "tests/test-retry-patched.py")
+retry_tests = importlib.util.module_from_spec(retry_spec)
+retry_spec.loader.exec_module(retry_tests)
+RetryPatchTests = retry_tests.RetryPatchTests
 
 
 class ValidationTests(unittest.TestCase):

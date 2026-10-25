@@ -43,11 +43,13 @@ class PackagingTests(unittest.TestCase):
    leaf,leaf_patch=w.leaf_identity()
    materials=['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json','patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json']
    materials+=['patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json']
+   materials+=['patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json']
    for name in materials:
     target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
    receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']},chrome_backend=w.chrome_receipt(chrome,chrome_patch))
    receipt['go_bin']=str(compiler)
    receipt['leaf_certificate']=w.leaf_receipt(leaf,leaf_patch)
+   receipt['transient_retry']=w.retry_receipt(*w.retry_identity())
    def output(args,**kwargs):
     if args[1:]==['version']:return (root/'packaging-go-version').read_text()
     if args[1:3]==['version','-m']:return 'unit: go1.27.3\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())

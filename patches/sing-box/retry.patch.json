@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "\t\"os\"",
+      "new": "\t\"os\"\n\t\"time\""
+    },
+    {
+      "old": "\treturn h.dialer.DialTLSContext(adapter.ContextForMultiplexSession(ctx), h.server)",
+      "new": "\tctx = adapter.ContextForMultiplexSession(ctx)\n\tif retry := service.FromContext[interface {\n\t\tDialAnyTLS(context.Context, tls.Dialer, M.Socksaddr, time.Duration) (net.Conn, error)\n\t}](h.ctx); retry != nil {\n\t\treturn retry.DialAnyTLS(ctx, h.dialer, h.server, h.tlsConfig.HandshakeTimeout())\n\t}\n\treturn h.dialer.DialTLSContext(ctx, h.server)"
+    }
+  ]
+}
