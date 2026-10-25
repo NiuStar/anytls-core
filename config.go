@@ -28,6 +28,7 @@ type node struct {
 	SkipVerify  bool   `yaml:"skip-cert-verify"`
 	EgressIP    string `yaml:"egress-ip"`
 	SNI         string `yaml:"sni"`
+	DisableSNI  bool   `yaml:"disable-sni,omitempty"`
 	CA          string `yaml:"ca"`
 
 	CertificatePublicKeySHA256 string `yaml:"certificate-public-key-sha256,omitempty"`
@@ -43,6 +44,19 @@ func (n *node) UnmarshalYAML(value *yaml.Node) error {
 	var fields map[string]yaml.Node
 	if err := value.Decode(&fields); err != nil {
 		return err
+	}
+	if flag, present := fields["disable-sni"]; present {
+		// Node decoding retains aliases; inspect the resolved scalar, not the
+		// bool zero value (which would silently accept explicit YAML null).
+		p := &flag
+		seen := map[*yaml.Node]bool{}
+		for p != nil && p.Kind == yaml.AliasNode && !seen[p] {
+			seen[p] = true
+			p = p.Alias
+		}
+		if p == nil || p.Kind != yaml.ScalarNode || p.Tag != "!!bool" {
+			return errors.New("invalid disable-sni: expected bool")
+		}
 	}
 	if pin, present := fields["fingerprint"]; present {
 		if pin.Kind != yaml.ScalarNode || pin.Tag != "!!str" || pin.Value == "" {
@@ -193,6 +207,11 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 	tls := map[string]any{"enabled": true, "min_version": minVersion}
 	if n.SNI != "" {
 		tls["server_name"] = n.SNI
+	}
+	if n.DisableSNI {
+		// Keep server_name as the CA hostname reference. The TLS backend
+		// suppresses only its ClientHello extension, not identity validation.
+		tls["disable_sni"] = true
 	}
 	if n.CertificateSHA256 != "" {
 		pin, _ := hex.DecodeString(n.CertificateSHA256) // validated above

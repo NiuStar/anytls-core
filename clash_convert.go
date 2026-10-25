@@ -417,7 +417,7 @@ func (c *conversionState) addNodes(seq *yaml.Node, path string) {
 		for j := 0; j < len(n.Content); j += 2 {
 			key := n.Content[j].Value
 			switch key {
-			case "name", "type", "server", "port", "password", "udp", "client-fingerprint", "idle-session-check-interval", "idle-session-timeout", "min-idle-session", "skip-cert-verify", "egress-ip", "sni", "ca", "certificate-public-key-sha256", "fingerprint", "tls-min-version":
+			case "name", "type", "server", "port", "password", "udp", "client-fingerprint", "idle-session-check-interval", "idle-session-timeout", "min-idle-session", "skip-cert-verify", "egress-ip", "sni", "disable-sni", "ca", "certificate-public-key-sha256", "fingerprint", "tls-min-version":
 				conversionSet(next, key, n.Content[j+1])
 			case "servername":
 				if conversionField(n, "sni") != nil {

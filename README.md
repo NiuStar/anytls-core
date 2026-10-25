@@ -106,6 +106,10 @@ anytls stop
 
 严格 CA 模式要求 CA PEM；节点可使用 `fingerprint: '<64位十六进制 SHA-256>'` 固定**完整叶证书 DER**（大小写均接受，读取后规范为小写），与 `client-fingerprint: chrome`／`golang` 的 ClientHello 配置完全不同。`fingerprint` 是可选的 pin-only 身份认证，不校验证书 CA 链、主机名或有效期；必须由可信渠道独立取得，证书更新后需更新指纹。不得与 `ca`、`certificate-public-key-sha256` 或 `skip-cert-verify: true` 混用；空值、null、非字符串、非64位十六进制均拒绝，不会退回跳过校验。纯数字指纹也必须加引号。原有 `certificate-public-key-sha256` 仍表示固定公钥 SPKI 的 base64 SHA-256，不是完整证书指纹；两种 pin-only 模式均无需本地 CA 文件，不提供公共 CA／主机名校验。已有跳过校验节点仍需显式确认；它不提供服务器身份安全保证。sudo 密码只在本机终端输入，不发到聊天。
 
+### 显式关闭 SNI（默认不变）
+
+节点可设置布尔 `disable-sni: true`，仅关闭 ClientHello 的 SNI 扩展；已有 `sni` 不会被静默删除，在 CA 模式下仍用作主机名验证参考，链验证与整叶 pin 保持不变。显式 null／非布尔拒绝。数字 IP＋可信整叶 pin 不需要 SNI；已有配置可显式关闭，与面板对新订阅默认不输出 SNI 是独立策略，不自动迁移。此为 SNI 敏感路径的候选规避选项，不宣称完整根因修复或长期稳定。转换、保存编辑和 YAML 导出保留该字段；详见 [SNI 配置与验证边界](docs/disable-sni.md)。
+
 ### 无域名公网 IP 服务端订阅
 
 与 [anytls-go v0.0.28](https://github.com/NiuStar/anytls-go/releases/tag/v0.0.28) 联动：服务端一键安装生成持久证书和私有订阅链接；本客户端 v2026-10-24-03 在“配置与规则 → HTTPS 订阅 → 从此订阅仅添加节点”预览、确认后追加节点，保留现有选择和分流。完整链接是私有凭据，必须可信交付；不会从未经验证的地址接受指纹。两项目匹配版本发布后使用，详见 [公网 IP 私有订阅](docs/public-ip-private-subscription.md)。
