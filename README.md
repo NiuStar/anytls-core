@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。本次发行候选 **v2026-10-25-01** 新增显式 `disable-sni`，仅关闭线上 SNI、保留严格叶证书指纹或 CA／主机名验证；既有配置不自动迁移，原 SNI 触发并非每次必败，不宣称长期掉线已根治。版本内容及验证边界见 [本版说明](docs/releases/v2026-10-25-01.md)，是否已公开以 [Release 页面](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-25-01) 为准。普通 AnyTLS 默认／Chrome 使用独立 Chrome155 TLS 后端，构建固定 Go1.27.3，显式 `golang` 保留回退；支持公网 IP 私有订阅、严格整叶／SPKI 认证，以及保留原有分流的“仅添加节点”。提供 Intel（amd64）和 Apple Silicon（arm64）预编译包，默认只下载程序包与校验和。见 [使用说明](docs/public-ip-private-subscription.md)。保留核心裁剪、路由观察、私有磁盘历史、认证分页、局域网 WebUI、并发测速、配置方案与32MiB配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
+Go 编写的 macOS AnyTLS VPN 客户端。本次发行候选 **v2026-10-25-02** 新增 WebUI `0.0.0.0` 通配监听，无需逐台指定本机地址；不包含 TUN IPv6／DNS 修复。保留显式 `disable-sni`，仅关闭线上 SNI、保留严格叶证书指纹或 CA／主机名验证；既有配置不自动迁移，原 SNI 触发并非每次必败，不宣称长期掉线已根治。版本内容及验证边界见 [本版说明](docs/releases/v2026-10-25-02.md)，是否已公开以 [Release 页面](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-25-02) 为准。普通 AnyTLS 默认／Chrome 使用独立 Chrome155 TLS 后端，构建固定 Go1.27.3，显式 `golang` 保留回退；支持公网 IP 私有订阅、严格整叶／SPKI 认证，以及保留原有分流的“仅添加节点”。提供 Intel（amd64）和 Apple Silicon（arm64）预编译包，默认只下载程序包与校验和。见 [使用说明](docs/public-ip-private-subscription.md)。保留核心裁剪、路由观察、私有磁盘历史、认证分页、局域网 WebUI、并发测速、配置方案与32MiB配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -41,7 +41,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 默认发布构建内嵌精简 sing-box 核心，无需独立 sing-box 可执行文件。保留外部核心构建模式用于对照和回退。本项目不是 SagerNet 官方应用。
 
-### WebUI IPv4 监听（源码候选）
+### WebUI IPv4 监听（v2026-10-25-02）
 
 默认仍只监听 `127.0.0.1`。需要所有 IPv4 网卡访问时，普通用户运行：
 
@@ -49,7 +49,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 anytls webui --listen 0.0.0.0 --port 18089
 ```
 
-浏览器使用 `http://服务器IP或主机名:18089`，不是 `0.0.0.0`；无需逐台配置网卡地址或 Host 白名单。也可显式绑定本机已分配的规范 IPv4（含公网地址）。监听参数不接受 DNS、IPv6、前导零或附带端口。默认回环与 root 禁止不变；登录、同请求 Host 的精确 Origin、CSRF 与无 CORS 保留。非回环显示 `network-http`，HTTP 不加密凭据与会话，网络访问控制和传输保护由部署环境管理。本次仅修改隔离源码候选，未部署、重启或发布；已发行程序不会自动获得该能力。
+浏览器使用 `http://服务器IP或主机名:18089`，不是 `0.0.0.0`；无需逐台配置网卡地址或 Host 白名单。也可显式绑定本机已分配的规范 IPv4（含公网地址）。监听参数不接受 DNS、IPv6、前导零或附带端口。默认回环与 root 禁止不变；登录、同请求 Host 的精确 Origin、CSRF 与无 CORS 保留。非回环显示 `network-http`，HTTP 不加密凭据与会话，网络访问控制和传输保护由部署环境管理。已有程序须安装本版并以所需监听参数启动才具有该能力；发布不自动部署或重启。安装器保留已有绑定，切换到通配监听前须退出旧 WebUI，避免端口冲突。
 
 ## 功能
 
