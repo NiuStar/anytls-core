@@ -19,7 +19,7 @@ class BootstrapTests(unittest.TestCase):
             scripts = {
                 'uname': "import sys;print('Darwin' if '-s' in sys.argv else 'x86_64')",
                 'python3': "import os,sys,json\nif '-c' in sys.argv:sys.exit(int(os.environ.get('PROBE_RC','0')))\nopen(os.environ['RESULT'],'w').write(json.dumps({'args':sys.argv[1:],'ca':os.environ.get('SSL_CERT_FILE'),'dir':os.environ.get('SSL_CERT_DIR')}))",
-                'curl': "import sys,os,shutil\na=sys.argv[1:];out=a[a.index('-o')+1]\nif out.endswith('/install.sh'):shutil.copyfile(os.environ['BOOTSTRAP'],out)\nelse:open(out,'w').write('# fixture only\\n')",
+                'curl': "import sys,os,shutil\na=sys.argv[1:];out=a[a.index('-o')+1]\nif out.endswith('/install.sh'):shutil.copyfile(os.environ['BOOTSTRAP'],out)\nelse:open(out,'w').write('#!/usr/bin/env python3\\n# fixture only\\n')",
             }
             for name, code in scripts.items():
                 target = binary / name

@@ -12,6 +12,14 @@ Go 编写的 macOS AnyTLS VPN 客户端。本次发行候选 **v2026-10-25-02** 
 curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | bash
 ```
 
+若首个 `raw.githubusercontent.com` 请求出现 TLS reset／无法连接，改用 **GitHub 官方 API** 取得同一 `main/get.sh`（不是第三方镜像）：
+
+```bash
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/NiuStar/anytls-core/contents/get.sh?ref=main' | bash
+```
+
+脚本下载后的三个组件请求优先使用 raw；curl 失败时会提示并改用官方 API，保留 HTTPS／证书校验、超时与进度。两处都失败即停止，不执行失败下载；空响应或 JSON／HTML 等非脚本响应也会拒绝。首次入口尚未下载，不能自行回退，故需上述备用命令；API 限流或二进制 Release 下载故障仍可能阻断安装，不修改 DNS、不跳过 TLS 校验。
+
 脚本按硬件架构从官方 Release 下载 `darwin-arm64`（Apple Silicon）或 `darwin-amd64`（Intel）二进制包及 `SHA256SUMS`，校验后在本机进行系统授权安装助手；**默认不下载应用源码、对应源码／依赖包，不需要安装 Go、不在用户电脑编译**。二进制包内的许可证／NOTICE 仍保留。已有配置与密码保留，旧程序先备份，不自动停止／重载 VPN。缺 Python 3 时会提示安装；没有对应架构二进制附件的旧 Release 会明确拒绝，不自动转源码构建。
 
 默认安装最新稳定版，无需指定版本；正常公共证书环境无需手动 export CA。若代理／私有 CA 不在可信证书库中，仍需配置经独立确认可信的 CA，校验失败会停止，绝不绕过。旧的 `install-control-helper.sh` URL 继续可用，`--version` 仅用于主动固定版本。内部下载仍强制 HTTPS／TLS1.2 和证书校验；Python 没有加载任何默认 CA 且未显式指定 CA 时，脚本仅为本次安装选择可用的 `/etc/ssl/cert.pem`，不改系统信任、不自动信任代理证书。

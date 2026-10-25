@@ -16,10 +16,24 @@ app="$HOME/.anytls"
 mkdir -p "$app"
 work="$(mktemp -d "$app/binary-bootstrap.XXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
+download_component() {
+  local path="$1" output="$2"
+  if ! curl --fail --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 \
+    "https://raw.githubusercontent.com/NiuStar/anytls-core/main/$path" -o "$output"; then
+    printf '%s\n' '[AnyTLS] raw 下载失败，改用官方 GitHub API…' >&2
+    curl --fail --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 \
+      -H 'Accept: application/vnd.github.raw+json' \
+      "https://api.github.com/repos/NiuStar/anytls-core/contents/$path?ref=main" -o "$output"
+  fi
+  local first_line
+  IFS= read -r first_line < "$output" && [[ "$first_line" == '#!/usr/bin/env python3' ]] || {
+    printf '%s\n' 'Invalid installer response (expected Python script).' >&2; exit 1;
+  }
+}
 printf '%s\n' '[AnyTLS] 正在下载安装组件（1/2）；网络无响应将超时报错，不会停止 VPN。' >&2
-curl --fail --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 https://raw.githubusercontent.com/NiuStar/anytls-core/main/scripts/install.py -o "$work/install.py"
+download_component scripts/install.py "$work/install.py"
 printf '%s\n' '[AnyTLS] 正在下载安装组件（2/2）…' >&2
-curl --fail --progress-bar --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 https://raw.githubusercontent.com/NiuStar/anytls-core/main/scripts/install-binary.py -o "$work/install-binary.py"
+download_component scripts/install-binary.py "$work/install-binary.py"
 # Python.org builds can lack their default CA bundle although macOS curl works.
 # Use the existing system PEM only when Python has no loaded default CA at all;
 # preserve an explicitly configured SSL_CERT_FILE/SSL_CERT_DIR, including errors.

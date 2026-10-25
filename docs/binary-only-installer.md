@@ -14,6 +14,18 @@
 - 已发行 CLI／WebUI 内嵌的旧 Python 更新器不随 main 脚本改变。当前已安装程序的网页更新仍按其内嵌版本运行，不能称其已被远程修复。后继新二进制发行才会包含修改后的共享脚本。
 - 本次检查验证下载不安装助手、不替换生产程序、不重启 VPN；系统密码仍仅由实际安装时本机 sudo 处理。
 
+## 官方脚本下载备用路径
+
+外部 `get.sh` 取得 `install-control-helper.sh`，后者取得 `scripts/install.py` 与 `scripts/install-binary.py`：三次请求均优先 raw，curl 非零退出时才使用同仓库固定路径的 GitHub Contents API（`?ref=main`，`Accept: application/vnd.github.raw+json`）重下到同一临时文件，覆盖失败的部分响应。每次请求保持 `--fail`、HTTPS／TLS1.2、20秒连接／180秒总超时与原进度模式；API 同样失败时停止并清理临时文件，不调用失败的脚本。首行必须匹配已知脚本 shebang，拒绝空正文、API JSON 和 HTML；这是响应类型检查，不是独立签名验证。没有第三方镜像、新依赖、全局 DNS／CA 改动或跳验。
+
+首次 raw 入口失败时，脚本尚未取得，不能自行回退；普通用户可直接使用官方 API 入口：
+
+```bash
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/NiuStar/anytls-core/contents/get.sh?ref=main' | bash
+```
+
+这是 main 外部引导脚本修复，不修改产品二进制、版本或 Release 附件；保留参数透传、root 禁止、无 Go 安装与 `--check-download` 语义。API 限流和后续 Release 资产下载仍可能失败。自动回归以真实 Bash 加假 curl／uname／Python 执行整条链，验证回退、失败关闭、原参数及清理；属于隔离平台模拟，不代表 Mac 原生安装或网络恢复已经验收。
+
 ## 验证要求
 
 arm64／amd64 各验证二进制附件与校验和的精确请求集合；缺少源码／对应源码不阻断，有来源错误／重复的所选二进制或缺校验和仍拒绝。完整安装和 update-only 保留许可证、旧程序备份和原配置；check-only 不执行子进程。干净源码 Python 全套、平台分支模拟、Mac 真实只读下载与公开 raw 脚本读回分别记录，完成后再追加实际证据。
