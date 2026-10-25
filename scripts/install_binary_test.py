@@ -1026,6 +1026,38 @@ class WebUITests(unittest.TestCase):
         for suffix in (" webui", " webui --port 18089", " webui --port=18089"):
             self.assertTrue(self.ui.known((self.identity[0], self.identity[1], str(self.target) + suffix)))
 
+    def test_wildcard_public_preflight_restart_preserves_bind_and_concrete_probe(self):
+        for host in ("0.0.0.0", "8.8.8.8", "127.0.0.2"):
+            with self.subTest(host=host):
+                self.ui = b.WebUI(self.target, {"HOME": str(self.app)})
+                identity = (*self.identity[:2], str(self.target) + " webui --listen=" + host)
+                child, opener, _ = self.start_fixture()
+                self.kill.reset_mock()
+                with mock.patch.object(self.ui, "listeners", side_effect=[{42}, {42}, set(), {77}, {77}]), \
+                        mock.patch.object(self.ui, "identity", side_effect=[identity, identity, identity, None]):
+                    self.ui.preflight()
+                    self.ui.restart()
+                self.assertEqual(self.popen.call_args.args[0],
+                                 [str(self.target), "webui", "--port", "18089", "--listen", host])
+                probe = "127.0.0.1" if host == "0.0.0.0" else host
+                opener.open.assert_called_once_with("http://" + probe + ":18089/", timeout=1)
+                self.kill.assert_called_once_with(42, b.signal.SIGTERM)
+                child.terminate.assert_not_called()
+
+    def test_wildcard_unknown_uid_or_process_never_signals(self):
+        command = str(self.target) + " webui --listen=0.0.0.0"
+        invalid = [(str(os.getuid() + 1), self.identity[1], command),
+                   (*self.identity[:2], command.replace(str(self.target), "/other/anytls-macos")),
+                   (*self.identity[:2], command + " --port=18090")]
+        for identity in invalid:
+            with self.subTest(identity=identity), \
+                    mock.patch.object(self.ui, "listeners", return_value={42}), \
+                    mock.patch.object(self.ui, "identity", return_value=identity), \
+                    self.assertRaisesRegex(ValueError, "unknown"):
+                self.ui.preflight()
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
     def test_lan_preflight_restart_preserves_listen_and_readiness(self):
         identity = ("501", self.identity[1],
                     str(self.target) + " webui --port 18089 --listen 192.168.5.2")
@@ -1053,19 +1085,9 @@ class WebUITests(unittest.TestCase):
         self.kill.assert_not_called()
         self.popen.assert_not_called()
 
-    def test_alternate_loopback_rejected_before_any_signal(self):
-        for host in ("127.0.0.2", "127.1.2.3", "127.255.255.254"):
-            identity = (*self.identity[:2], str(self.target) + " webui --listen " + host)
-            with self.subTest(host=host), \
-                    mock.patch.object(self.ui, "listeners", return_value={42}), \
-                    mock.patch.object(self.ui, "identity", return_value=identity), \
-                    self.assertRaisesRegex(ValueError, "unknown"):
-                self.ui.preflight()
-        self.kill.assert_not_called()
-        self.popen.assert_not_called()
 
     def test_listen_forms_preserved_through_preflight_restart(self):
-        hosts = ("127.0.0.1", "10.0.0.1", "10.255.255.254",
+        hosts = ("0.0.0.0", "8.8.8.8", "127.0.0.2", "127.0.0.1", "10.0.0.1", "10.255.255.254",
                  "172.16.0.1", "172.31.255.254", "192.168.5.2")
         for host in hosts:
             for suffix in (" --listen " + host, " --listen=" + host,
@@ -1083,16 +1105,14 @@ class WebUITests(unittest.TestCase):
                     self.assertEqual(self.popen.call_args.args[0],
                                      [str(self.target), "webui", "--port", "18089", "--listen", host])
                     self.assertNotIn("shell", self.popen.call_args.kwargs)
-                    opener.open.assert_called_once_with("http://" + host + ":18089/", timeout=1)
+                    probe = "127.0.0.1" if host == "0.0.0.0" else host
+                    opener.open.assert_called_once_with("http://" + probe + ":18089/", timeout=1)
                     self.kill.assert_called_once_with(42, b.signal.SIGTERM)
                     child.terminate.assert_not_called()
 
     def test_unsafe_listen_and_ambiguous_arguments_never_signal(self):
-        hosts = ("0.0.0.0", "localhost", "example.com", "8.8.8.8", "::1", "fc00::1",
-                 "::ffff:192.168.5.2", "169.254.1.1", "192.0.0.1", "192.0.2.1",
-                 "198.51.100.1", "203.0.113.1", "100.64.0.1", "198.18.0.1",
-                 "224.0.0.1", "240.0.0.1", "255.255.255.255", "0.1.2.3",
-                 "172.15.255.255", "172.32.0.1", "192.167.1.1", "192.169.1.1",
+        hosts = ("localhost", "example.com", "::1", "fc00::1",
+                 "::ffff:192.168.5.2",
                  "192.168.005.2", "127.1", "2130706433", "192.168.5.256",
                  "192.168.5.2/24", "192.168.5.2:18089", "192.168.5.2%en0")
         suffixes = [" --listen=" + host for host in hosts] + [
@@ -1224,6 +1244,13 @@ class WebUITests(unittest.TestCase):
         response.__enter__.return_value.read.return_value = b"<title>AnyTLS actual console</title>"
         opener = mock.Mock()
         opener.open.return_value = response
+        def open_console(url, timeout):
+            # Mirror the console's Host contract instead of accepting any URL.
+            host = b.urllib.parse.urlsplit(url).netloc
+            expected = ("127.0.0.1" if self.ui.listen == "0.0.0.0" else self.ui.listen) + ":18089"
+            self.assertEqual(host, expected, "readiness must use a concrete Host accepted by the console")
+            return response
+        opener.open.side_effect = open_console
         mock.patch.object(b.urllib.request, "build_opener", return_value=opener).start()
         return child, opener, response
 

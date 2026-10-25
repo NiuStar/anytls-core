@@ -77,9 +77,9 @@ func webRecordsQuery(raw string) (cr.PageRequest, error) {
 }
 func (w *webConsole) getConnections(rw http.ResponseWriter, r *http.Request) {
 	app, site := r.Header.Values("X-AnyTLS-Origin"), r.Header.Values("Sec-Fetch-Site")
-	// Insecure LAN HTTP may omit Fetch Metadata. Only explicit LAN listeners
+	// Insecure network HTTP may omit Fetch Metadata. Explicit network listeners
 	// accept absence, still requiring the exact custom origin (and no CORS).
-	siteOK := len(site) == 1 && site[0] == "same-origin" || len(site) == 0 && w.lanListen()
+	siteOK := len(site) == 1 && site[0] == "same-origin" || len(site) == 0 && w.networkListen()
 	if len(app) != 1 || app[0] != "http://"+r.Host || !siteOK || (len(r.Header.Values("Origin")) > 0 && !w.originOK(r)) {
 		webRecordsError(rw, cr.Forbidden)
 		return

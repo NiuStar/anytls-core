@@ -128,9 +128,8 @@ Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-AR
 `ps` 信息核对当前 UID、启动时间和精确目标路径命令；接受
 `~/.anytls/anytls-macos webui`，可带一次 `--port 18089` 和一次 `--listen 192.168.5.2`，
 两者顺序不限，也支持 `--port=18089` / `--listen=192.168.5.2`。省略 listen 时为 `127.0.0.1`。
-listen 仅接受规范的 IPv4 字面量：`127.0.0.1` loopback 或 RFC1918 的
-`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`；拒绝 wildcard、DNS、公网、IPv6、
-链路本地、其他保留地址及替代 loopback 地址（现有控制台 Host 校验不支持）均拒绝。
+listen 接受规范 IPv4 字面量，保留 `0.0.0.0` 通配、回环、私有或公网显式绑定；
+不接受 DNS、IPv6、CIDR、zone 或附带端口。
 规范地址拼写另作字符串比对，不依赖旧 Python 对前导零的宽松行为。
 重复 flag、缺值、其他端口、位置参数、引号或 shell 表达式一律拒绝；
 不将 `ps` 命令文本当作可执行 shell，目标路径（包括空格）必须精确匹配。
@@ -142,9 +141,10 @@ listen 仅接受规范的 IPv4 字面量：`127.0.0.1` loopback 或 RFC1918 的
 消失且端口空闲；身份变化不再发信号，超时不使用 `SIGKILL`。helper 失败不会
 关闭旧 WebUI。新进程以 `webui --port 18089`（需要保留显式 listen 时追加 `--listen 地址`）独立会话启动，stdin 为 `/dev/null`，
 stdout/stderr 追加到 `0600` 的 `~/.anytls/webui.log`。必须确认监听 PID 等于
-新子进程 PID，且在同一保留地址探测的首页 HTTP 200 含实际控制台标记，并再次确认端口归属，才报告成功。
-新版 WebUI 自身仍校验地址确实分配给本机网卡；旧 LAN 地址失效会启动失败，不自动回退 loopback。
-LAN 使用明文 HTTP，会向本地网络暴露凭据；不要转发此端口。
+新子进程 PID，且首页 HTTP 200 含实际控制台标记，并再次确认端口归属，才报告成功。
+显式地址使用同一地址探测；通配监听保留 `--listen 0.0.0.0`，但就绪 URL 使用具体的 `http://127.0.0.1:18089/`，不访问 `0.0.0.0`。
+新版 WebUI 校验显式地址确实分配给本机网卡；通配地址跳过接口分配检查。旧显式地址失效会启动失败，不自动回退 loopback。
+网络 HTTP 无 TLS，凭据与会话未经传输加密；网络访问控制由部署环境管理。
 
 如果发布后无法停止旧 WebUI 或新版启动/就绪失败，会返回非零并明确报告
 `binary installed but WebUI start failed`；二进制已经安装，不伪称整笔回滚。

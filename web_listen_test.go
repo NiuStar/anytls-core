@@ -13,12 +13,12 @@ import (
 )
 
 func TestWebListenValidator(t *testing.T) {
-	for _, h := range []string{"127.0.0.1", "127.0.0.2", "10.0.0.1", "172.16.0.1", "192.168.5.2"} {
+	for _, h := range []string{"0.0.0.0", "127.0.0.1", "127.0.0.2", "10.0.0.1", "172.16.0.1", "192.168.5.2", "8.8.8.8", "169.254.1.1", "100.64.0.1", "172.32.0.1"} {
 		if webValidateListen(h) != nil {
 			t.Fatal(h)
 		}
 	}
-	for _, h := range []string{"", "localhost", "0.0.0.0", "8.8.8.8", "169.254.1.1", "100.64.0.1", "224.0.0.1", "255.255.255.255", "::1", "::ffff:192.168.5.2", "192.168.005.2", "192.168.5.2:18089", "192.168.5.2%en0", "172.32.0.1", "192.168.5.999"} {
+	for _, h := range []string{"", "localhost", "::1", "::ffff:192.168.5.2", "192.168.005.2", "192.168.5.2:18089", "192.168.5.2%en0", "192.168.5.999", "127.1", "2130706433", "192.168.5.2/24", " 0.0.0.0"} {
 		if webValidateListen(h) == nil {
 			t.Fatal(h)
 		}
@@ -27,6 +27,14 @@ func TestWebListenValidator(t *testing.T) {
 	assigned.IP = net.ParseIP("192.168.5.2")
 	if webListenAssigned("192.168.5.2", []net.Addr{assigned}) != nil || webListenAssigned("192.168.5.3", []net.Addr{assigned}) == nil {
 		t.Fatal("assignment validation")
+	}
+	if webListenAssigned("0.0.0.0", nil) != nil || webListenAssigned("8.8.8.8", nil) == nil {
+		t.Fatal("wildcard skips assignment; explicit address does not")
+	}
+	_, public, _ := net.ParseCIDR("8.8.8.8/24")
+	public.IP = net.ParseIP("8.8.8.8")
+	if webListenAssigned("8.8.8.8", []net.Addr{public}) != nil {
+		t.Fatal("assigned public IPv4 rejected")
 	}
 }
 func TestWebLANServeHTTP(t *testing.T) {
@@ -67,7 +75,7 @@ func TestWebLANServeHTTP(t *testing.T) {
 		t.Fatal("session flags")
 	}
 	status := request("GET", "/api/v1/status", nil, cookie, "", nil)
-	if status.Code != 200 || !bytes.Contains(status.Body.Bytes(), []byte(`"transport":"lan-http"`)) {
+	if status.Code != 200 || !bytes.Contains(status.Body.Bytes(), []byte(`"transport":"network-http"`)) {
 		t.Fatal(status.Code, status.Body.String())
 	}
 	for _, tc := range []struct {

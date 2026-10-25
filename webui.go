@@ -66,7 +66,7 @@ func newWebConsole(config, password string, port int) *webConsole {
 func webuiCommand(args []string) error {
 	fs := flag.NewFlagSet("webui", flag.ContinueOnError)
 	port := fs.Int("port", 18089, "HTTP port (1024-65535)")
-	listen := fs.String("listen", "127.0.0.1", "literal local private IPv4 or loopback address (no wildcard; HTTP has no TLS)")
+	listen := fs.String("listen", "127.0.0.1", "literal local IPv4 address or 0.0.0.0 for all IPv4 interfaces (HTTP has no TLS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -76,12 +76,14 @@ func webuiCommand(args []string) error {
 	if err := webValidateListen(*listen); err != nil {
 		return err
 	}
-	addresses, err := net.InterfaceAddrs()
-	if err != nil {
-		return err
-	}
-	if err := webListenAssigned(*listen, addresses); err != nil {
-		return err
+	if *listen != "0.0.0.0" {
+		addresses, err := net.InterfaceAddrs()
+		if err != nil {
+			return err
+		}
+		if err := webListenAssigned(*listen, addresses); err != nil {
+			return err
+		}
 	}
 	if os.Geteuid() == 0 {
 		return errors.New("WebUI must run as your ordinary user, never root")
@@ -101,27 +103,34 @@ func webuiCommand(args []string) error {
 	defer listener.Close()
 	w := newWebConsole(config, passwordPath, *port)
 	w.listenHost = *listen
-	fmt.Printf("WebUI: http://%s:%d\nTransport: %s (HTTP, no TLS). Never forward this port; LAN access exposes credentials to the local network.\nAccount: admin; recover password with 'anytls password'.\n", *listen, *port, w.transport())
+	fmt.Printf("WebUI listening on %s:%d\nTransport: %s (HTTP, no TLS). Network access transmits credentials and session data without encryption; use a reachable host/IP, not 0.0.0.0, in your browser.\nAccount: admin; recover password with 'anytls password'.\n", *listen, *port, w.transport())
 	server := &http.Server{Handler: w, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 	return server.Serve(listener)
 }
 func (w *webConsole) allowedHost(host string) bool {
 	p := strconv.Itoa(w.port)
-	if w.lanListen() {
+	if w.listenHost == "0.0.0.0" {
+		h, port, err := net.SplitHostPort(host)
+		return err == nil && port == p && host == net.JoinHostPort(h, port) && cr.ValidHost(h)
+	}
+	if w.networkListen() {
 		return host == net.JoinHostPort(w.listenHost, p)
 	}
-	return host == "127.0.0.1:"+p || host == "localhost:"+p || host == "[::1]:"+p
+	return host == "127.0.0.1:"+p || host == "localhost:"+p || host == "[::1]:"+p || w.listenHost != "" && host == net.JoinHostPort(w.listenHost, p)
 }
 func webValidateListen(host string) error {
 	ip, err := netip.ParseAddr(host)
-	if err != nil || !ip.Is4() || (!ip.IsPrivate() && !ip.IsLoopback()) {
-		return errors.New("listen must be a literal private IPv4 or loopback address; wildcard, DNS and public addresses are forbidden")
+	if err != nil || !ip.Is4() || ip.String() != host {
+		return errors.New("listen must be a canonical literal IPv4 address (0.0.0.0 listens on all IPv4 interfaces)")
 	}
 	return nil
 }
 func webListenAssigned(host string, addresses []net.Addr) error {
 	if err := webValidateListen(host); err != nil {
 		return err
+	}
+	if host == "0.0.0.0" {
+		return nil
 	}
 	for _, a := range addresses {
 		ip, _, err := net.ParseCIDR(a.String())
@@ -131,13 +140,13 @@ func webListenAssigned(host string, addresses []net.Addr) error {
 	}
 	return errors.New("listen address is not assigned to a local interface")
 }
-func (w *webConsole) lanListen() bool {
+func (w *webConsole) networkListen() bool {
 	ip, err := netip.ParseAddr(w.listenHost)
-	return err == nil && ip.Is4() && ip.IsPrivate()
+	return err == nil && ip.Is4() && !ip.IsLoopback()
 }
 func (w *webConsole) transport() string {
-	if w.lanListen() {
-		return "lan-http"
+	if w.networkListen() {
+		return "network-http"
 	}
 	return "loopback-http"
 }

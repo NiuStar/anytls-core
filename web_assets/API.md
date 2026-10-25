@@ -3,13 +3,13 @@
 ## 启动与密码
 
 - 父入口挂接 `webuiCommand(args []string) error`、`passwordCommand(args []string) error`。
-- `anytls webui [--port 18089]` 只 bind `127.0.0.1`；端口 1024–65535；root 拒绝。无 listen 参数，无公网监听。HTTP 无 TLS，禁止转发端口。
+- `anytls webui [--listen 127.0.0.1] [--port 18089]` 默认 bind `127.0.0.1`；端口 1024–65535；root 拒绝。显式 `--listen 0.0.0.0` 监听所有 IPv4 网卡，无需逐机地址配置；其他规范 IPv4（含公网）必须已分配给本机接口。拒绝 DNS、IPv6、前导零、zone、CIDR 和附带端口。HTTP 无 TLS，网络访问时凭据与会话未经传输加密；网络访问控制由部署环境管理。
 - `anytls password` 创建或真实读回应用专用密码；`anytls password reset` 轮换 24 个随机字节（base64url 32 字符）。固定账户 admin。路径为 `servicePaths()` 配置所在目录的 `webui.password`，0600；不接触 macOS/Keychain/sudo 密码。
 - reset 后各请求重新读取凭据摘要并拒绝旧会话。会话仅内存，32 个随机字节，8h，最多 32 会话；Cookie HttpOnly、SameSite=Strict、Path=/。回环 HTTP 不设 Secure。密码摘要比较使用 constant-time SHA256，专用高熵密码可 CLI 恢复，不使用不必要慢哈希。
 
 ## 请求边界
 
-允许 Host 恰为 `127.0.0.1:PORT`、`localhost:PORT`、`[::1]:PORT`。监听本身仍仅 IPv4 loopback。所有 POST/PUT（含登录）必须单个 `Origin: http://与Host完全相同`；无 Origin 的 API 客户端同样拒绝，不提供 CORS。敏感 GET 需登录且不缓存。
+默认回环允许 Host 恰为 `127.0.0.1:PORT`、`localhost:PORT`、`[::1]:PORT`；显式其他回环地址额外允许该地址。显式非回环 IPv4 仅允许该监听 IP:PORT。`0.0.0.0` 通配监听接受语法有效的主机名或 IPv4 Host，端口必须精确匹配，无接口／IP／DNS 名称白名单；浏览器使用实际可达 IP 或主机名，不把 `0.0.0.0` 当作访问地址。不信任 Forwarded/X-Forwarded-Host。所有 POST/PUT（含登录）必须单个 `Origin: http://与请求Host完全相同`；无 Origin 的 API 客户端同样拒绝，不提供 CORS。敏感 GET 需登录且不缓存。
 
 登录之外的 POST/PUT 必须 Cookie + `X-CSRF-Token`；令牌由登录或登录后 session GET 的 JSON 返回，未写 localStorage。JSON 请求需 Content-Type application/json；未知字段及多个 JSON 值拒绝。普通 JSON 上限 16KiB；仅 PUT `/api/v1/config` 和 POST `/api/v1/import/preview` 的完整配置 JSON 上限为 `6 × 32MiB + 16KiB`（最坏 JSON 转义及信封开销），解码 YAML 和转换输出均限制为 32MiB。转换输出超限返回 `CONFIG_CONVERSION_TOO_LARGE`，不删除或去重规则来缩小配置。登录每分钟 5 次失败后阻断一分钟。
 
@@ -24,7 +24,7 @@
 | POST /login | `{username:"admin",password:"..."}` → `{csrf,expiresIn:28800,username}` + Cookie |
 | GET /session | `{csrf,username}` |
 | POST /logout | `{}` + CSRF；删除会话及 Cookie |
-| GET /status | `{loaded,running,availability,pendingReload,pendingKnown,version,readiness:"NOT_OBSERVED",transport:"loopback-http"}`；实际只读 serviceState，不用 PID 冒充 ready |
+| GET /status | `{loaded,running,availability,pendingReload,pendingKnown,version,readiness:"NOT_OBSERVED",transport,listenHost}`；transport 为 `loopback-http` 或非回环（含通配／私有／公网）的 `network-http`，替代旧 `lan-http`；实际只读 serviceState，不用 PID 冒充 ready |
 | GET /nodes | `{nodes:[{name,type,server,port,hasPassword,selectable,skipVerify,sni,selected}],etag}` |
 | POST /nodes/selection | `{name}`；实际 saveSelection + readback → `{ok,changed,pendingReload}` |
 | PUT /nodes | `{name,server,port,password,sni}` + If-Match；空 password 保留；只编辑既有显式节点，保留未知字段/注释，拒绝共享 alias 目标 → `{ok,changed,etag,pendingReload}` |
@@ -39,7 +39,7 @@
 | GET /config | 显式敏感编辑操作 → `{yaml,etag}`，同时 ETag header；etag 是双引号包裹的完整原文件 SHA256 |
 | PUT /config | `{yaml}` + `If-Match: "SHA256"`；无 header 428，冲突412，无效422；同目录0600原子写入并读回 → `{ok,changed,etag,pendingReload}` |
 | POST /service/start, /service/stop, /service/reload | `{confirm_insecure:false}`；只布尔同意，不接收命令；原生授权及 launchd 状态读回 → `{ok,loaded,running,pendingReload,readiness}` |
-| GET /connections | 连接记录只读页，必须 Cookie + 精确 `X-AnyTLS-Origin: http://Host` + `Sec-Fetch-Site: same-origin`；可选 Origin 存在时同样精确验证。query 仅 after（canonical uint64 十进制字符串，默认0）、limit（1..500，默认100）、完整 instance_id/generation/manifest_id；拒绝未知/重复/部分绑定。无绑定仅发现无行；有绑定不回退最新。严格共享 PageResponse，≤1MiB，无 LIVE/connected 声明；失败400 INVALID_REQUEST、403 FORBIDDEN、409 BUSY/STALE_GENERATION、503 TELEMETRY_UNAVAILABLE/STORE_INVALID/UNSUPPORTED。认证先于 helper，no-store；不持 action 锁，不安装/更新/reload，不读当前 YAML 回填历史。 |
+| GET /connections | 连接记录只读页，必须 Cookie + 精确 `X-AnyTLS-Origin: http://Host` + `Sec-Fetch-Site: same-origin`；仅非回环网络 HTTP（含通配）允许 Fetch Metadata 完全缺失，仍强制精确自定义 Origin。空值／重复／cross-site／same-site 拒绝；可选 Origin 存在时同样精确验证。query 仅 after（canonical uint64 十进制字符串，默认0）、limit（1..500，默认100）、完整 instance_id/generation/manifest_id；拒绝未知/重复/部分绑定。无绑定仅发现无行；有绑定不回退最新。严格共享 PageResponse，≤1MiB，无 LIVE/connected 声明；失败400 INVALID_REQUEST、403 FORBIDDEN、409 BUSY/STALE_GENERATION、503 TELEMETRY_UNAVAILABLE/STORE_INVALID/UNSUPPORTED。认证先于 helper，no-store；不持 action 锁，不安装/更新/reload，不读当前 YAML 回填历史。 |
 | GET /version | `{version}` 是当前控制台进程版本，不假冒活动快照版本 |
 | GET /update-check | 固定自身 `update --check` 有界子进程；保持 sibling 五字段 CLI contract，只输出 `{status,current,installed,latest,available,sourceOnly,updated,restartRequired}`。current 永远是本 WebUI 内存版本，installed 是磁盘 sibling 报告；不相同时 restartRequired=true，status=RESTART_REQUIRED（可安装更新时优先 UPDATE_AVAILABLE）。响应丢失后重查仍保留重启提示。 |
 | POST /update | `{confirm:true}`；先固定自身 check，再 `update --version CHECKED_VERSION` 用户级子进程；丢弃输出，执行替换后自身 `version`（独立20秒期限）读回匹配才报告 UPDATED，installed=目标版本、restartRequired=true；不重启WebUI/VPN。失败503，只投影固定错误码 UPDATE_CHECK_FAILED(40)、UPDATE_PYTHON_REQUIRED(41)、UPDATE_BINARY_UNAVAILABLE(42)、UPDATE_DOWNLOAD_FAILED(43)、UPDATE_VALIDATION_FAILED(44)、UPDATE_PUBLISH_FAILED(45)、UPDATE_VERIFY_FAILED(46)、UPDATE_UNAVAILABLE(47/未知)。核验失败或超时不保证旧文件未变，不自动回滚，需独立核对磁盘版本、摘要和备份。 |

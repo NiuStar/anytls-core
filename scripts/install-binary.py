@@ -416,15 +416,9 @@ class WebUI:
             address = ipaddress.IPv4Address(host)
             if str(address) != host:
                 return None
-            octets = address.packed
         except ipaddress.AddressValueError:
             return None
-        # RFC1918 matches Go netip.IsPrivate. Only canonical 127.0.0.1 is
-        # manageable: the unchanged console Host gate rejects other 127/8.
-        if not (host == "127.0.0.1" or octets[0] == 10 or
-                (octets[0] == 172 and 16 <= octets[1] <= 31) or
-                (octets[0] == 192 and octets[1] == 168)):
-            return None
+        # Match the console's canonical IPv4 syntax, including wildcard/public.
         return host, "--listen" in options
 
     def known(self, identity):
@@ -483,7 +477,8 @@ class WebUI:
                 i.require(child.poll() is None, "new WebUI exited before readiness")
                 if self.listeners() == {child.pid}:
                     try:
-                        with opener.open("http://" + self.listen + ":18089/", timeout=1) as response:
+                        probe_host = "127.0.0.1" if self.listen == "0.0.0.0" else self.listen
+                        with opener.open("http://" + probe_host + ":18089/", timeout=1) as response:
                             ready = response.status == 200 and b"<title>AnyTLS" in response.read(1024 * 1024)
                         if ready and child.poll() is None and self.listeners() == {child.pid}:
                             return

@@ -132,7 +132,7 @@ async function status() {
  polling=true;
  try {
   const state=await api('/status');serviceState=state;renderServiceButtons();
-  const transport=state.transport==='lan-http'?'局域网 HTTP 无 TLS · 凭据未经传输加密 · 不要转发端口':state.transport==='loopback-http'?'回环 HTTP 无 TLS · 不要转发端口':'传输方式未知';
+  const transport=state.transport==='network-http'?'网络 HTTP 无 TLS · 凭据与会话未经传输加密':state.transport==='loopback-http'?'回环 HTTP 无 TLS':'传输方式未知';
   $('transport-footer').textContent=transport;$('transport-badge').textContent=transport;
   const unavailable=state.availability!=='AVAILABLE';
   const title=unavailable?'状态不可用':state.running?'VPN 已启动':state.loaded?'VPN 已加载 · 未运行':'VPN 未启动';

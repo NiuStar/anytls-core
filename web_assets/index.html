@@ -9,7 +9,7 @@
     <h1>登录 AnyTLS</h1><p class="muted">使用应用专用密码，不使用系统管理员密码。</p>
     <form id="login-form"><label for="username">账户</label><input id="username" name="username" value="admin" autocomplete="username" required><label for="password">应用专用密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="128"><button class="primary" type="submit">登录</button></form>
     <p class="hint">在终端运行 <code>anytls password</code> 查看密码。<br>忘记密码？运行 <code>anytls password reset</code>，现有登录会失效。</p><p id="login-error" class="error" role="alert"></p>
-  </div><div class="login-footer">HTTP 无 TLS · 不使用云端账户 · 不收集系统密码</div>
+  </div><div class="login-footer">HTTP 无 TLS · 网络访问时凭据与会话未经传输加密 · 不收集系统密码</div>
 </section>
 <div id="console-view" hidden>
   <button id="drawer-shade" class="shade" aria-label="关闭导航" hidden></button>
