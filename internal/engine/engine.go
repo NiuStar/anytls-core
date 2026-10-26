@@ -82,12 +82,22 @@ func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInp
 		return err
 	}
 	caVerified := false
-	if records != nil && records.Sink != nil {
+	if records != nil && (records.Sink != nil || records.OpenSink != nil) {
 		caVerified = pinRecordsCA(&options, records.Manifest)
 	}
 	instance, err := box.New(box.Options{Options: options, Context: ctx})
 	if err != nil {
 		return lifecycleError("construct", err)
+	}
+	if records != nil && records.Sink == nil && records.OpenSink != nil && ctx.Err() == nil {
+		// Keep the caller's input immutable and open durable recording only once
+		// runtime validation has succeeded. No second decode or Box is needed.
+		input := *records
+		input.Sink = input.OpenSink()
+		records = &input
+		if reporter, ok := records.Sink.(cr.ProvenanceReporter); ok {
+			reporter.SetProvenanceStatus(cr.ProvenanceUnknown)
+		}
 	}
 	if records != nil && records.Sink != nil {
 		instance.Router().AppendTracker(bindRecords(instance, runtimeJSON, records, caVerified))

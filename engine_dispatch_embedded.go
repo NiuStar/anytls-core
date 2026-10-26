@@ -39,10 +39,10 @@ func dispatchEngine(command string, b []byte, config, core string) error {
 
 func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ string, recordService bool) error {
 	b := compiled.JSON
-	if err := engine.Check(context.Background(), b); err != nil {
-		return err
-	}
 	if command == "check" {
+		if err := engine.Check(context.Background(), b); err != nil {
+			return err
+		}
 		fmt.Println("embedded configuration valid")
 		return nil
 	}
@@ -50,18 +50,28 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 	defer stop()
 	var input *engine.RecordsInput
 	if recordService && command == "run" {
-		writer, err := openRunRecords(config, compiled)
-		if err == nil && writer != nil {
-			input = &engine.RecordsInput{Manifest: compiled.Manifest, Sink: writer, StopAdmission: writer.StopAdmission}
-			defer func() {
+		var writer *cr.Writer
+		input = &engine.RecordsInput{Manifest: compiled.Manifest, OpenSink: func() cr.Sink {
+			var err error
+			writer, err = openRunRecords(config, compiled)
+			if err != nil || writer == nil {
+				fmt.Fprintln(os.Stderr, "connection recording unavailable")
+				return nil
+			}
+			return writer
+		}, StopAdmission: func() {
+			if writer != nil {
+				writer.StopAdmission()
+			}
+		}}
+		defer func() {
+			if writer != nil {
 				writer.StopAdmission()
 				cleanup, cancel := context.WithTimeout(context.Background(), cr.TelemetryTimeout)
 				defer cancel()
 				writer.Shutdown(cleanup)
-			}()
-		} else {
-			fmt.Fprintln(os.Stderr, "connection recording unavailable")
-		}
+			}
+		}()
 	}
 	return engine.RunWithRecords(ctx, b, input)
 }

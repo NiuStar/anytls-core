@@ -28,6 +28,10 @@ type RecordsInput struct {
 	Manifest      *cr.Manifest
 	Sink          cr.Sink
 	StopAdmission func()
+	// OpenSink, when Sink is nil, runs synchronously after successful decode/New
+	// and before Start. Returning nil disables recording, not traffic. Manifest
+	// is supplied beforehand so CA bytes are pinned before New, not after it.
+	OpenSink func() cr.Sink
 }
 
 type recordsTracker struct {
