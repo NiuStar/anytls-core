@@ -116,6 +116,11 @@ func routeOrigin(m *cr.Manifest, nodes []node, index int, kind, value, target, t
 	}
 	if kind != string(cr.RuleMatch) && kind != string(cr.RuleDefault) {
 		r.Condition = &cr.Condition{Kind: cr.RuleKind(kind), Value: value}
+		// Routing accepts values the strict records codec cannot represent.
+		// Lose only this rule's attribution, never the whole run's records.
+		if cr.Validate(*r.Condition) != nil {
+			return unknownCompileRoute(tag, o.Type)
+		}
 	}
 	return r
 }

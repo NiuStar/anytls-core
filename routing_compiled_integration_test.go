@@ -143,6 +143,14 @@ func routingCompiledGate(t *testing.T, records bool) {
 				name, rules, host, want string
 				set                     bool
 			}{"default_selected", "", "127.0.0.1", "proxy", false},
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"unicode_unrelated_direct", "DOMAIN-SUFFIX,例子.com,P\n - DOMAIN,localhost,DIRECT\n - MATCH,P", "localhost", "direct", false},
+			struct {
+				name, rules, host, want string
+				set                     bool
+			}{"unicode_unrelated_proxy", "DOMAIN,例子.com,DIRECT\n - DOMAIN,localhost,P\n - MATCH,P", "localhost", "proxy", false},
 		)
 	}
 	for _, tc := range cases {
@@ -380,7 +388,7 @@ func routingCompiledGate(t *testing.T, records bool) {
 						t.Fatalf("actual SDK winner unknown: %#v", r)
 					}
 					index := 0
-					if tc.name == "shared_group" || tc.name == "match_final" {
+					if tc.name == "shared_group" || tc.name == "match_final" || strings.HasPrefix(tc.name, "unicode_unrelated_") {
 						index = 1
 					}
 					if tc.name == "default_selected" {
