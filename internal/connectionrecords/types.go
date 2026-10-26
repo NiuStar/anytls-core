@@ -131,6 +131,7 @@ const (
 	RuleDomain       RuleKind = "DOMAIN"
 	RuleDomainSuffix RuleKind = "DOMAIN-SUFFIX"
 	RuleIPCIDR       RuleKind = "IP-CIDR"
+	RuleGeoIP        RuleKind = "GEOIP"
 	RuleSet          RuleKind = "RULE-SET"
 	RuleMatch        RuleKind = "MATCH"
 	RuleDefault      RuleKind = "DEFAULT_SELECTED"

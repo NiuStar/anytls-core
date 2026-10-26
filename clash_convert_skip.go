@@ -177,7 +177,7 @@ func conversionSanitize(root *yaml.Node, r *webConversionReport, remote bool) {
 				continue
 			}
 			isMatch := len(p) == 2 && p[0] == "MATCH"
-			supported := isMatch || len(p) == 3 && (p[0] == "DOMAIN" || p[0] == "DOMAIN-SUFFIX" || p[0] == "IP-CIDR" || p[0] == "RULE-SET") || len(p) == 4 && p[0] == "RULE-SET" && p[3] == "no-resolve"
+			supported := supportedGeoIPRule(p) || isMatch || len(p) == 3 && (p[0] == "DOMAIN" || p[0] == "DOMAIN-SUFFIX" || p[0] == "IP-CIDR" || p[0] == "RULE-SET") || len(p) == 4 && p[0] == "RULE-SET" && p[3] == "no-resolve"
 			if !supported {
 				skip(path, "unsupported rule type or shape")
 				continue

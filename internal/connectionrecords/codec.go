@@ -684,7 +684,7 @@ func validateValue(v reflect.Value, depth int) error {
 			return ErrInvalid
 		}
 	case RuleKind:
-		if !one(string(x), "DOMAIN", "DOMAIN-SUFFIX", "IP-CIDR", "RULE-SET", "MATCH", "DEFAULT_SELECTED", "UNKNOWN") {
+		if !one(string(x), "DOMAIN", "DOMAIN-SUFFIX", "IP-CIDR", "GEOIP", "RULE-SET", "MATCH", "DEFAULT_SELECTED", "UNKNOWN") {
 			return ErrInvalid
 		}
 	case HistoryKind:
@@ -738,6 +738,10 @@ func validateValue(v reflect.Value, depth int) error {
 		}
 	case Condition:
 		switch x.Kind {
+		case RuleGeoIP:
+			if x.Value != "CN" {
+				return ErrInvalid
+			}
 		case RuleDomain, RuleDomainSuffix:
 			if !ValidHost(x.Value) {
 				return ErrInvalid

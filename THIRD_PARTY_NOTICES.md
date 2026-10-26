@@ -9,3 +9,33 @@ Source archives contain the independent application and patch description. Binar
 - Other important build dependencies include sing, sing-tun, sing-anytls (GPL family), SagerNet gVisor (Apache-2.0 plus file-level exceptions), MetaCubeX uTLS (BSD family) and Go runtime/standard library. Consult the exact dependency source licenses; these summaries do not override their original terms or certify binary redistribution compliance.
 
 When redistributing a built binary, provide its exact corresponding source/build material and all applicable copyright, license and NOTICE texts. Merely linking this source release does not establish that a separately modified binary satisfies all obligations.
+
+## Embedded CN IPv4/IPv6 data (MIT)
+
+Complete, unmodified `china.txt` and `china6.txt` from
+https://github.com/gaoyifan/china-operator-ip/tree/375060e2299aa6344a87f309568ac3d748baf0cc
+(data dated 2026-10-26). Attribution: Yifan Gao / china-operator-ip.
+See `assets/geoip/SOURCE.json` for exact hashes and classification boundaries.
+This data is not DB-IP or MaxMind data. No upstream endorsement is implied.
+
+MIT License
+
+Copyright (c) 2017 Yifan Gao
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

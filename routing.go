@@ -12,7 +12,7 @@ import (
 )
 
 // applyRouting accepts only the small, explicit Clash rule subset documented in README.
-// ponytail: no provider/group/GEOIP emulation; add each only with a separate verified contract.
+// GEOIP is limited to the embedded, pinned CN IPv4/IPv6 dataset.
 func applyRouting(path string, nodes []node, selected node, cfg map[string]any, allowInsecure bool) error {
 	b, err := readSnapshotSource(path, snapshotConfigLimit, true)
 	if err != nil {
@@ -69,6 +69,7 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 	addDirect := false
 	loadedSets := map[string]bool{}
 	sets := []any{}
+	geoIPResolve := false
 	for i, raw := range doc.Rules {
 		parts := strings.Split(raw, ",")
 		if len(parts) < 2 {
@@ -87,7 +88,7 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 			}
 			matched = true
 		} else {
-			if len(parts) != 3 && !(len(parts) == 4 && parts[0] == "RULE-SET" && parts[3] == "no-resolve") {
+			if len(parts) != 3 && !(len(parts) == 4 && (parts[0] == "RULE-SET" || parts[0] == "GEOIP") && parts[3] == "no-resolve") {
 				return fmt.Errorf("rules[%d]: expected TYPE,value,target", i)
 			}
 			value = strings.TrimSpace(parts[1])
@@ -104,6 +105,10 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 		case "IP-CIDR":
 			if _, _, e := net.ParseCIDR(value); e != nil {
 				return fmt.Errorf("rules[%d]: invalid CIDR: %w", i, e)
+			}
+		case "GEOIP":
+			if !supportedGeoIPRule(parts) {
+				return fmt.Errorf("rules[%d]: GEOIP supports only exact CN with optional no-resolve", i)
 			}
 		case "RULE-SET":
 			spec, ok := doc.Sets[value]
@@ -127,7 +132,8 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 		default:
 			return fmt.Errorf("rules[%d]: unsupported rule %q", i, kind)
 		}
-		if kind == "RULE-SET" && doc.Sets[value].ResolveIP && len(parts) == 3 {
+		if (kind == "RULE-SET" && doc.Sets[value].ResolveIP || kind == "GEOIP") && len(parts) == 3 {
+			geoIPResolve = geoIPResolve || kind == "GEOIP"
 			if _, ok := cfg["dns"]; !ok {
 				cfg["dns"] = map[string]any{"servers": []any{map[string]any{"type": "https", "tag": "secure-dns", "server": "1.1.1.1", "tls": map[string]any{"server_name": "cloudflare-dns.com"}, "detour": "anytls-out"}}, "final": "secure-dns"}
 			}
@@ -215,6 +221,12 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 			rule["domain_suffix"] = []string{value}
 		case "IP-CIDR":
 			rule["ip_cidr"] = []string{value}
+		case "GEOIP":
+			cidrs, err := geoIPCNCIDRs()
+			if err != nil {
+				return err
+			}
+			rule["ip_cidr"] = cidrs
 		case "RULE-SET":
 			rule["rule_set"] = []string{value}
 		}
@@ -236,7 +248,7 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 	if !matched {
 		return errors.New("routing rules require a final MATCH target")
 	}
-	if len(sets) > 0 {
+	if len(sets) > 0 || geoIPResolve {
 		rules = append(rules[:1], append([]any{map[string]any{"protocol": []string{"dns"}, "action": "hijack-dns"}}, rules[1:]...)...)
 		if manifest != nil {
 			manifest.Rules = append(manifest.Rules[:1], append([]cr.RuleOrigin{syntheticOrigin("hijack-dns", cr.SyntheticHijack)}, manifest.Rules[1:]...)...)

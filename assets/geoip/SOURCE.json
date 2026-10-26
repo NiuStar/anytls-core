@@ -1,0 +1,16 @@
+{
+  "country": "CN",
+  "repository": "https://github.com/gaoyifan/china-operator-ip",
+  "data_commit": "375060e2299aa6344a87f309568ac3d748baf0cc",
+  "data_commit_date": "2026-10-26T08:13:38Z",
+  "generator_commit": "b2b8edc0ddd9cf2bc638ec77587301bbf84b8db9",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2017 Yifan Gao",
+  "files": [
+    {"path": "china.txt", "bytes": 101178, "prefixes": 6525, "sha256": "cd9c414cb1c6d3818cf4434e12d3e32c95aaac57afd0b4faac44ee46cb5bb33f"},
+    {"path": "china6.txt", "bytes": 58129, "prefixes": 3489, "sha256": "a2f14c3d600dc7612638c51fd741d3d4cf4f115519436e05d4558d49e50664c9"}
+  ],
+  "modifications": "None: verbatim complete upstream china.txt and china6.txt. Runtime combines their CIDRs without rewriting user YAML.",
+  "classification": "Upstream trusted domestic BGP classification plus unannounced RIR-CN allocation fallback; not guaranteed physical geography or exhaustive commercial geolocation.",
+  "maintenance": "Upstream generates daily; this product snapshot updates only through a reviewed source change. No runtime downloads or automatic expiry. Re-fetch exact Git commit, validate license, SHA, canonical prefixes, counts and positive/negative SDK membership before updating."
+}

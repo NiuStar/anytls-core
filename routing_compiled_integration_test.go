@@ -9,10 +9,13 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,6 +28,7 @@ import (
 	"github.com/NiuStar/anytls-core/internal/engine"
 	anytls "github.com/anytls/sing-anytls"
 	"github.com/anytls/sing-anytls/padding"
+	"github.com/miekg/dns"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -112,6 +116,12 @@ func routingCompiledGate(t *testing.T, records bool) {
 		set                     bool
 	}{
 		{"literal_direct", "IP-CIDR,127.0.0.1/32,DIRECT\n - MATCH,P", "127.0.0.1", "direct", false},
+		{"geoip_non_cn_proxy", "GEOIP,CN,DIRECT,no-resolve\n - MATCH,P", "127.0.0.1", "proxy", false},
+		{"geoip_fixture_literal_direct", "GEOIP,CN,DIRECT,no-resolve\n - MATCH,P", "127.0.0.1", "direct", false},
+		{"geoip_fixture_resolve_direct", "GEOIP,CN,DIRECT\n - MATCH,P", "localhost", "direct", false},
+		{"geoip_earlier_domain_direct", "DOMAIN,localhost,DIRECT\n - GEOIP,CN,P\n - MATCH,P", "localhost", "direct", false},
+		{"geoip_earlier_reject", "DOMAIN,localhost,REJECT\n - GEOIP,CN,DIRECT\n - MATCH,P", "localhost", "reject", false},
+		{"geoip_no_resolve_domain_proxy", "GEOIP,CN,DIRECT,no-resolve\n - MATCH,P", "localhost", "proxy", false},
 		{"literal_proxy_control", "IP-CIDR,127.0.0.1/32,P\n - MATCH,P", "127.0.0.1", "proxy", false},
 		{"literal_reject", "IP-CIDR,127.0.0.1/32,REJECT\n - MATCH,P", "127.0.0.1", "reject", false},
 		{"domain_direct", "DOMAIN,localhost,DIRECT\n - MATCH,P", "localhost", "direct", false},
@@ -268,6 +278,61 @@ func routingCompiledGate(t *testing.T, records bool) {
 				manifest = compiled.Manifest
 				recordsInput = &engine.RecordsInput{Manifest: manifest, Sink: sink}
 			}
+			// Controlled test-only DoH and predicate substitution; no public dialing.
+			var dnsQueries atomic.Int64
+			if strings.HasPrefix(tc.name, "geoip_") {
+				var runtime map[string]any
+				if e = json.Unmarshal(b, &runtime); e != nil {
+					t.Fatal(e)
+				}
+				if strings.HasPrefix(tc.name, "geoip_fixture_") {
+					for _, raw := range runtime["route"].(map[string]any)["rules"].([]any) {
+						r := raw.(map[string]any)
+						if ips, ok := r["ip_cidr"].([]any); ok && len(ips) == 10014 {
+							r["ip_cidr"] = []string{"127.0.0.0/8"}
+						}
+					}
+				}
+				if d, ok := runtime["dns"].(map[string]any); ok {
+					srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						dnsQueries.Add(1)
+						wire, _ := io.ReadAll(r.Body)
+						var q dns.Msg
+						if q.Unpack(wire) != nil {
+							w.WriteHeader(400)
+							return
+						}
+						var a dns.Msg
+						a.SetReply(&q)
+						for _, question := range q.Question {
+							if question.Qtype == dns.TypeA {
+								a.Answer = append(a.Answer, &dns.A{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")})
+							}
+						}
+						wire, _ = a.Pack()
+						w.Header().Set("Content-Type", "application/dns-message")
+						_, _ = w.Write(wire)
+					}))
+					t.Cleanup(srv.Close)
+					host, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+					pn, _ := strconv.Atoi(port)
+					certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
+					d["servers"] = []any{map[string]any{"type": "https", "tag": "secure-dns", "server": host, "server_port": pn, "tls": map[string]any{"server_name": "example.com", "certificate": []string{certPEM}}}}
+				}
+				b, e = json.Marshal(runtime)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if manifest != nil {
+					manifest.RuntimeSHA256 = shaHex(b)
+					manifest.ManifestID = ""
+					id, err := cr.ManifestDigest(*manifest, cr.ManifestBudget(manifest))
+					if err != nil {
+						t.Fatal(err)
+					}
+					manifest.ManifestID = id
+				}
+			}
 			runCtx, stop := context.WithTimeout(ctx, 8*time.Second)
 			ended := make(chan error, 1)
 			go func() { ended <- engine.RunWithRecords(runCtx, b, recordsInput) }()
@@ -374,6 +439,12 @@ func routingCompiledGate(t *testing.T, records bool) {
 			}
 			c.Close()
 			if records {
+				if tc.name == "geoip_fixture_resolve_direct" && dnsQueries.Load() == 0 {
+					t.Fatal("resolve rule did not query local DoH")
+				}
+				if tc.name == "geoip_earlier_reject" && dnsQueries.Load() != 0 {
+					t.Fatal("GEOIP resolved before earlier REJECT")
+				}
 				rows := sink.snapshot()
 				if tc.want == "reject" {
 					if len(rows) != 0 {
@@ -388,7 +459,7 @@ func routingCompiledGate(t *testing.T, records bool) {
 						t.Fatalf("actual SDK winner unknown: %#v", r)
 					}
 					index := 0
-					if tc.name == "shared_group" || tc.name == "match_final" || strings.HasPrefix(tc.name, "unicode_unrelated_") {
+					if tc.name == "shared_group" || tc.name == "match_final" || tc.name == "geoip_non_cn_proxy" || tc.name == "geoip_no_resolve_domain_proxy" || strings.HasPrefix(tc.name, "unicode_unrelated_") {
 						index = 1
 					}
 					if tc.name == "default_selected" {

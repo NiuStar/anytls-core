@@ -166,7 +166,7 @@ Schema version 1 record, explicit nullable fields:
   configured_target,group_path,terminal_kind,final_node_id,final_node_label,
   outbound_tag,outbound_type,selection_generation}`. Terminal kind
   DIRECT|NODE|UNKNOWN; attribution null on mismatch except actual tag/type.
-  condition only typed DOMAIN/DOMAIN-SUFFIX/IP-CIDR scalar or RULE-SET label;
+  condition only typed DOMAIN/DOMAIN-SUFFIX/IP-CIDR scalar, exact GEOIP country CN, or RULE-SET label;
   never raw YAML/rule text. MATCH/default condition is null.
 - `state=ROUTED,connected=null,active=null,duration=null,ended_at=null,error=null`.
 

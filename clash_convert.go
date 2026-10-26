@@ -580,6 +580,10 @@ func (c *conversionState) group(g *yaml.Node, path string) *yaml.Node {
 
 func (c *conversionState) rule(out *yaml.Node, raw, path string) {
 	p := conversionParts(raw)
+	if supportedGeoIPRule(p) {
+		out.Content = append(out.Content, conversionString(strings.Join(p, ",")))
+		return
+	}
 	if len(p) == 4 && p[3] == "no-resolve" && (p[0] == "IP-CIDR" || p[0] == "IP-CIDR6") {
 		p = p[:3]
 		c.warn(path + ".no-resolve: native inline IP rules do not initiate resolution")

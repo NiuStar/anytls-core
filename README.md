@@ -134,7 +134,11 @@ anytls stop
 
 ## 配置与分流
 
-支持 `DOMAIN`、`DOMAIN-SUFFIX`、`IP-CIDR`、`RULE-SET` 和末尾唯一 `MATCH`；目标为 AnyTLS 节点、select 组、DIRECT 或 REJECT（MATCH 不支持 REJECT）。第一条匹配决定出口。不支持完整 Clash 配置或 SS 出站；未知语法不静默忽略。
+支持 `DOMAIN`、`DOMAIN-SUFFIX`、`IP-CIDR`、`GEOIP,CN`、`RULE-SET` 和末尾唯一 `MATCH`；目标为 AnyTLS 节点、select 组、DIRECT 或 REJECT（MATCH 不支持 REJECT）。第一条匹配决定出口。不支持完整 Clash 配置或 SS 出站；未知语法不静默忽略。
+
+`GEOIP,CN,DIRECT` 和 `GEOIP,CN,DIRECT,no-resolve` 均可原生编译、导入、保存、导出与快照使用，目标也可为节点、组或 REJECT。仅接受精确 `CN`，不把 `gcn`、`cn` 或其他国家自动改为 CN。Clash 导入保留支持的 CN 规则；其他国家仍按现有不支持项预览跳过并提示，原生配置则拒绝。内置完整上游 CN IPv4/IPv6 快照（6525/3489 条，2026-10-26），来源 gaoyifan/china-operator-ip，MIT；定义为可信国内 BGP 分类＋未宣告 RIR-CN 登记兜底，不保证物理所在地或商业数据库完整度。精确提交、SHA、许可和更新方式见 `assets/geoip/SOURCE.json`；不在运行时联网下载、不自动过期。
+
+无 `no-resolve` 时，仅流量到达该规则位置才执行解析，复用现有 secure-dns（1.1.1.1 DoH，经 anytls-out）与 prefer_ipv4 策略，随后匹配 IPv4/IPv6。域名解析结果中任一地址属于内置 CN 集合即命中；实际拨号仍可能使用完整地址列表，因此命中 `GEOIP,CN` 不保证最终连接 IP 属于 CN。此前已匹配的规则不会因该 GEOIP 主动解析。此模式会为原本无 DNS block 的 mixed 配置加入该 DNS 服务，并启用 DNS hijack/reverse_mapping；较早 DOMAIN→DIRECT 的实际拨号仍可能需要该 DNS 服务。`no-resolve` 不新增解析动作或 DNS block，仅匹配已有目标 IP（包括先前已解析结果）。非 GEOIP 配置不改变 DNS 或规则编译结果。固定 sing-box v1.14.3 使用原生 `ip_cidr`，不用已移除的旧 GeoIP 选项、不升级 SDK。连接记录显示真实规则种类 GEOIP/CN 与实际出口，不猜测命中的子网或成功状态。
 
 本地规则集为 sing-box source JSON `version: 3`、非空 `rules`，配置需要 `path` 与文件 SHA-256。`resolve-ip: true` 在非 `no-resolve` 引用前插入解析。规则和所需 CA 会复制进当次 root 私有运行快照。远程 provider 不自动下载、替换或转换。
 

@@ -72,7 +72,7 @@ func TestConversionSkipAllUnsupported(t *testing.T) {
 	if e != nil || len(r.Issues) == 0 || len(r.Skipped) == 0 {
 		t.Fatalf("all unsupported must block: %v %+v", e, r)
 	}
-	b, r, e := webConvertConfiguration(context.Background(), []byte("proxies: [{name: good, type: anytls, server: 192.0.2.1, port: 443, password: pass}]\nrules: ['GEOIP,CN,DIRECT']"), true, nil)
+	b, r, e := webConvertConfiguration(context.Background(), []byte("proxies: [{name: good, type: anytls, server: 192.0.2.1, port: 443, password: pass}]\nrules: ['GEOIP,ZZ,DIRECT']"), true, nil)
 	if e != nil || len(r.Issues) != 0 || strings.Contains(string(b), "rules:") || len(r.Warnings) == 0 {
 		t.Fatalf("all rules handling: %s %v %+v", b, e, r)
 	}
@@ -110,7 +110,7 @@ func TestConversionSkipMixed(t *testing.T) {
 	for i := 0; i < 17; i++ {
 		raw += " - {name: n" + string(rune('a'+i)) + ", type: anytls, server: 192.0.2.1, port: 443, password: pass}\n"
 	}
-	raw += " - {name: secret, type: ss, password: SECRET}\nproxy-groups: [{name: outer, type: select, proxies: [inner], selected: inner}, {name: inner, type: select, proxies: [secret, na], selected: secret}, {name: empty, type: select, proxies: [secret]}]\nrules: ['GEOIP,CN,DIRECT', 'DOMAIN,example.com,secret', 'MATCH,outer']\n"
+	raw += " - {name: secret, type: ss, password: SECRET}\nproxy-groups: [{name: outer, type: select, proxies: [inner], selected: inner}, {name: inner, type: select, proxies: [secret, na], selected: secret}, {name: empty, type: select, proxies: [secret]}]\nrules: ['GEOIP,ZZ,DIRECT', 'DOMAIN,example.com,secret', 'MATCH,outer']\n"
 	b, r, e := webConvertConfiguration(context.Background(), []byte(raw), true, nil)
 	if e != nil || len(r.Issues) != 0 {
 		t.Fatalf("mixed blocked: %v %+v", e, r)
