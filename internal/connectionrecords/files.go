@@ -30,7 +30,11 @@ func newRecordStore(root, anchor string, uid uint32) recordStore {
 	return recordStore{root: root, anchor: anchor, uid: uid, write: func(f *os.File, b []byte) (int, error) { return f.Write(b) }, sync: func(f *os.File) error { return f.Sync() }, close: func(f *os.File) error { return f.Close() }, rename: os.Rename, readAt: func(f *os.File, b []byte, o int64) (int, error) { return f.ReadAt(b, o) }, openFile: syscall.Open}
 }
 func (s recordStore) safe(info os.FileInfo, dir, private bool) bool {
-	if info == nil || info.Mode()&(os.ModeSymlink|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+	if info == nil || info.Mode()&(os.ModeSymlink|os.ModeSetuid|os.ModeSetgid) != 0 {
+		return false
+	}
+	// Sticky is harmless on trusted ancestors, never on private storage or files.
+	if info.Mode()&os.ModeSticky != 0 && (!dir || private) {
 		return false
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
