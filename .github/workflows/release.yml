@@ -8,7 +8,7 @@ permissions:
 jobs:
   release:
     # Legacy source-only tags; these newer releases are explicitly binary-owned.
-    if: github.ref_name != 'v2026-10-24-04' && github.ref_name != 'v2026-10-25-02' && github.ref_name != 'v2026-10-26-01' && github.ref_name != 'v2026-10-26-02' && (github.ref_name == 'v2026-10-19-01' || github.ref_name == 'v2026-10-21-01' || github.ref_name == 'v2026-10-21-02')
+    if: github.ref_name != 'v2026-10-24-04' && github.ref_name != 'v2026-10-25-02' && github.ref_name != 'v2026-10-26-01' && github.ref_name != 'v2026-10-26-02' && github.ref_name != 'v2026-10-26-03' && (github.ref_name == 'v2026-10-19-01' || github.ref_name == 'v2026-10-21-01' || github.ref_name == 'v2026-10-21-02')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。本次发行候选 **v2026-10-26-02** 修复连接记录守卫拒绝可信、非 group/world 可写的 sticky 祖先目录的问题，兼容实际 root-owned `01755 /Library/PrivilegedHelperTools`；私有目录0700、文件0600及单链接、owner和其他特殊位拒绝仍保留，不修改系统目录权限。已审实现通过 Mac 原生完整回归、真实01755祖先只读守卫与隔离 writer 追加／提交／关闭／读取；这只移除已证初始化前置障碍，**尚未验收正式 root 写者、已安装助手记录IPC或TUN恢复**，所有其他root初始化错误未穷尽排除，约四万条规则归属 UNKNOWN 仍单独待查。保留01版记录归属隔离与单次 decode/New、独立 `check`、严格TLS、原分流及记录失败不阻断VPN合同；01版普通用户真实流量→私有磁盘→认证HTTP证据不升级为正式root验收。不宣称 DIRECT／IP白名单、全部间歇启动失败或IPv6／DNS已修复。保留 WebUI `0.0.0.0` 通配监听及显式 `disable-sni`；既有配置不自动迁移，不宣称长期掉线根治。版本内容及验证边界见 [本版说明](docs/releases/v2026-10-26-02.md)，是否已公开以 [Release 页面](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-26-02) 为准。普通 AnyTLS 默认／Chrome 使用独立 Chrome155 TLS 后端，构建固定 Go1.27.3，显式 `golang` 保留回退；支持公网 IP 私有订阅、严格整叶／SPKI 认证，以及保留原有分流的“仅添加节点”。提供 Intel（amd64）和 Apple Silicon（arm64）预编译包，默认只下载程序包与校验和。见 [使用说明](docs/public-ip-private-subscription.md)。保留核心裁剪、路由观察、私有磁盘历史、认证分页、局域网 WebUI、并发测速、配置方案与32MiB配置支持。ROUTED 不等于连接成功，DNS／REJECT／早期错误仍有覆盖缺口；普通更新不自动更新助手或重启 VPN，不宣称修复 Intel START_FAILED 或此前 DIRECT 问题。
+Go 编写的 macOS AnyTLS VPN 客户端。当前版本 **v2026-10-26-03** 新增内置完整 CN IPv4/IPv6 快照的原生 `GEOIP,CN` 规则，支持可选 `no-resolve`、节点／组／DIRECT／REJECT 目标以及真实 GEOIP 规则连接记录；仅接受精确 `CN`，不自动修改配置或添加规则。支持范围、解析副作用和拨号边界见下方“配置与分流”及 [本版说明](docs/releases/v2026-10-26-03.md)，公开发行以 [Release 页面](https://github.com/NiuStar/anytls-core/releases/tag/v2026-10-26-03) 为准。保留02版可信 sticky 祖先守卫兼容、01版记录归属隔离与单次 decode/New、独立 `check`、严格TLS和既有分流合同。提供 Intel（amd64）和 Apple Silicon（arm64）预编译包；固定 Go1.27.3／sing-box v1.14.3，SDK、补丁、构建 wrapper、打包器不变，默认只下载程序包与校验和。发布不安装程序、不改正式配置／规则、不更新助手、不切换 WebUI、不重启 VPN 或 TUN。既有正式 root 记录遥测可用，不代表本版 GEOIP 已在正式 TUN 规则中验收；不宣称物理出口、DIRECT／IP白名单、Intel START_FAILED、IPv6／DNS或长期掉线已修复。保留公网 IP 私有订阅、严格整叶／SPKI 认证、仅添加节点、配置方案、并发测速与32MiB配置能力。ROUTED 不等于连接成功，普通更新不自动更新助手或重启 VPN。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -146,12 +146,12 @@ anytls stop
 
 ## 本版验证与已知限制
 
-- Mac 原生完整测试：114 顶层与 252 子测试通过，3 项跳过；vet、构建通过。
-- 已验证真实节点的代理 HTTPS 与 UDP DNS；先前内嵌版完成短时 TUN 新旧对比，公网／服务器路由、HTTPS 与 DNS 成功。
-- 本版新增启动重试有旧源码业务失败／新源码通过的原生回归；**修复版持续 TUN 使用尚待用户体验，不宣称所有节点、规则和启动失败根因均已验收**。
+- 本版实现候选 Mac 原生完整测试455项顶层与1310项子测试通过，5项跳过，vet及干净构建通过；最终发行提交另行通过原生测试／构建／打包和公开 CI 门。
+- 用户实际 URL 的私有配置副本仅在 MATCH 前加入一条 GEOIP 后，返回 HTTP 200，同一内嵌引擎观察到 GEOIP/CN→DIRECT；外层正式 TUN 保持活动，物理出口 UNKNOWN。普通用户内存观察不是正式 TUN／root 写者验收。
+- 补充6组非 GEOIP 配置编译 JSON 字节不变验证；实际 Mac 观察回放至 Linux 普通 UID 私有磁盘后，认证 HTTP 200／未认证401通过。回放未发起新完整网络流，不冒充正式 root／TUN 验收。
 - 曾出现间歇 DNS／TLS 超时。有限重试不是连通性保证，持续失败仍停止并恢复网络。
 - 策略组保存会重新序列化 YAML，可能丢注释、未知组字段或改变未加引号的数字字符串。编辑前备份，密码等数字字符串应加引号；本版不宣称任意 YAML 无损往返。
-- 无 kill-switch、自动规则更新、开机自启、测速或无缝热切换。TUN 节点服务器需固定 IP。DNS／嗅探不保证等同 Mihomo。
+- 无 kill-switch、自动规则更新、开机自启或无缝热切换。TUN 节点服务器需固定 IP。DNS／嗅探不保证等同 Mihomo。
 
 ## 许可证
 

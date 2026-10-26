@@ -1,5 +1,13 @@
 # Changelog
 
+## v2026-10-26-03
+
+- 新增原生 `GEOIP,CN,target[,no-resolve]`，支持导入／保存／导出／快照与真实 GEOIP/CN 记录；仅精确 CN，不支持其他国家或自动规范 gcn。
+- 内置 gaoyifan/china-operator-ip 的完整 MIT CN 快照：6525条IPv4、3489条IPv6；来源／提交／SHA／许可随源码交付，无运行时下载；SDK、依赖、补丁、wrapper、打包器不变。
+- 非 no-resolve 会在规则处解析并可能增加全局 DNS 服务／hijack／reverse_mapping；任一解析地址属于 CN 即命中，但实际拨号仍可用完整地址列表，不保证最终连接 IP 为 CN。
+- 实现候选 Mac 原生455顶层／1310子测试PASS、5 SKIP、vet及干净构建通过；实际用户URL私有副本HTTP200与同引擎GEOIP/CN→DIRECT已观察，外层TUN活动，物理出口UNKNOWN。补充6组旧配置JSON字节不变与观察回放→普通UID磁盘→认证HTTP200／401负例通过；不冒充新完整网络或正式root验收。
+- 最终发行身份重新原生测试／构建／打包，分支／main／标签及双架构公开CI独立验证。仅公开发行，不安装、不保存或修改生产配置／规则、不更新助手、不切换WebUI、不重启VPN／TUN。详见 [版本说明](docs/releases/v2026-10-26-03.md)。
+
 ## v2026-10-26-02
 
 - 修复连接记录在可信、非 group/world 可写的非私有祖先目录带 sticky 位时被拒绝的问题，兼容 root 拥有的 `01755 /Library/PrivilegedHelperTools`；不更改系统目录权限。
