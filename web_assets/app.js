@@ -59,13 +59,18 @@ function serviceFeedback(code,data,operation) {
  return [coarse,result,'阶段：'+diagnosticStages[d.stage][0]+'；原因：'+reason,'回滚：'+recoveryLabels[d.rollback]+'；网络恢复：'+recoveryLabels[d.restoration],'快照清理：'+recoveryLabels[d.cleanup]+'；诊断回执：'+receiptLabels[d.receipt],'作业观察：'+observations[d.job]+'；TUN 观察：'+observations[d.tun],'下一步：'+diagnosticStages[d.stage][1]+(d.restoration==='FAILED'||d.restoration==='UNKNOWN'?' 网络恢复尚未确认，请核实路由与 DNS。':'')+(d.operation==='RELOAD'?' 新启动回滚不代表旧 VPN 已恢复。':'')].join('\n');
 }
 async function api(path, options = {}) {
+ const session=sessionGeneration;
+ const startupMutation=Boolean(options.method&&options.method!=='GET'&&(/^\/service\/(start|stop|reload)$/.test(path)||['/config','/nodes','/groups/selection','/nodes/selection','/rules','/profiles/switch','/import/commit'].includes(path)));
+ const trace=startupMutation&&typeof startupBegin==='function'?startupBegin(!path.startsWith('/service/')):null;if(trace)trace.mutation=true;
  const headers = new Headers(options.headers || {});
  if (options.body !== undefined) { headers.set('Content-Type','application/json'); options.body = JSON.stringify(options.body); }
  if (options.method && options.method !== 'GET') headers.set('X-CSRF-Token',csrf);
- const response = await fetch('/api/v1'+path, { ...options, headers, credentials:'same-origin', cache:'no-store', redirect:'error' });
- let data; try { data = await response.json(); } catch { throw new Error('服务器未返回有效数据。'); }
+ let response,data;try{response=await fetch('/api/v1'+path, { ...options, headers, credentials:'same-origin', cache:'no-store', redirect:'error' });data=await response.json();}catch(error){if(trace&&startupCurrent(trace))startupResult({startup_operation:{timeline_schema:1,operation_id:trace.id,availability:trace.id?'AVAILABLE':'UNAVAILABLE'}},trace);throw new Error(trace?'服务器未返回有效数据；已发送的服务操作不会自动重试。':'服务器未返回有效数据。');}
+ if(session!==sessionGeneration&&(startupMutation||path==='/status'||path==='/helper/status'))throw new Error('会话已更换，忽略旧操作响应。');
+ if(trace&&!startupCurrent(trace))throw new Error('操作已更换，忽略旧操作响应。');
+ if(trace&&session===sessionGeneration)startupResult(data,trace);
  if (!response.ok) {
-  if (response.status === 401 && path !== '/login') showLogin();
+  if (response.status === 401 && path !== '/login'&&session===sessionGeneration) showLogin();
   const serviceOperation={'/service/start':'START','/service/reload':'RELOAD','/service/stop':'STOP'}[path];
   const feedback=serviceOperation?serviceFeedback(data.error,data,serviceOperation):'';
   const error=new Error(feedback || (typeof data.error==='string'&&own(messages,data.error)?messages[data.error]:'操作失败（'+response.status+'）。请检查本机配置或命令行状态。')); error.code=data.error; error.details=data; throw error;
@@ -104,11 +109,14 @@ function savedFeedback(data) {
  notice(text+(detail?'\n'+detail:data.apply_error&&typeof data.apply_error==='string'&&own(messages,data.apply_error)?' '+messages[data.apply_error]:''),Boolean(failed));
 }
 async function refreshAfterSave(refresh) {
+ const session=sessionGeneration;
  const savedNotice=$('notice').textContent;
  const savedFailure=$('notice').classList.contains('failure');
  let warning='';
  try { if(refresh) await refresh(); } catch(e) { warning='列表刷新失败，可稍后重新读取。'; }
+ if(session!==sessionGeneration||!csrf)return;
  await status();
+ if(session!==sessionGeneration||!csrf)return;
  if (!serviceState) warning+=(warning?' ':'')+'服务状态刷新失败，请稍后确认。';
  notice(savedNotice+(warning?' '+warning:''),savedFailure||Boolean(warning));
 }
@@ -116,7 +124,7 @@ function notice(text, failure = false) { $('notice').style.whiteSpace='pre-line'
 async function operation(label, fn) {
  if (busy) return;
  const session=sessionGeneration;
- busy=true; const enabled=[...document.querySelectorAll('button')].filter(b=>!b.disabled); enabled.forEach(b=>b.disabled=true); renderExtraButtons();notice(label+'，请稍候…');
+ busy=true; const enabled=[...document.querySelectorAll('button')].filter(b=>!b.disabled&&b.id!=='startup-copy'&&b.id!=='startup-refresh'); enabled.forEach(b=>b.disabled=true); renderExtraButtons();notice(label+'，请稍候…');
  // An invalidated probe batch may release its UI immediately. Its late finally
  // must never unlock a newer operation or restore that operation's buttons.
  const finish=()=>{if(finishOperation!==finish)return;finishOperation=null;busy=false;enabled.forEach(b=>{if(b.isConnected)b.disabled=false;});if(!etag)$('save-config').disabled=true;$('run-update').disabled=!updateAvailable;renderServiceButtons();renderImportButtons();renderExtraButtons();};
@@ -124,15 +132,15 @@ async function operation(label, fn) {
  try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
  finally { finish(); }
 }
-function showLogin() {recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
-async function enterConsole(data) {csrf=data.csrf;$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();}
+function showLogin() {if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();polling=false;recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
+async function enterConsole(data) {csrf=data.csrf;if(typeof startupResume==='function')startupResume();$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';try{await enterConsole(await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}}));}catch(e){$('password').value='';$('login-error').textContent=e.message;}finally{button.disabled=false;}});
 $('logout').addEventListener('click',()=>{cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
 async function status() {
  if (!csrf || polling) return;
- polling=true;
+ const session=sessionGeneration,owner={};polling=owner;
  try {
-  const state=await api('/status');serviceState=state;renderServiceButtons();
+  const state=await api('/status');if(session!==sessionGeneration||!csrf)return;serviceState=state;renderServiceButtons();
   const transport=state.transport==='network-http'?'网络 HTTP 无 TLS · 凭据与会话未经传输加密':state.transport==='loopback-http'?'回环 HTTP 无 TLS':'传输方式未知';
   $('transport-footer').textContent=transport;$('transport-badge').textContent=transport;
   const unavailable=state.availability!=='AVAILABLE';
@@ -140,17 +148,17 @@ async function status() {
   syncServiceUI(state,title);
   $('connection-detail').textContent=unavailable?'无法读取服务管理器。请在本机终端检查状态。':'状态来自本机服务管理器；尚未执行网络连通性验证。';
   $('pending').hidden=!state.pendingReload;$('version').textContent=state.version;
-  $('helper-detail').textContent='正在检查特权助手…';try{const helper=await api('/helper/status');$('helper-detail').textContent=helper.available?'已连接受限特权助手，系统操作无需反复授权。':helper.code==='HELPER_CONFIG_MISMATCH'?messages.HELPER_CONFIG_MISMATCH:'请在本机终端运行 anytls helper install，完成一次系统授权。';}catch{$('helper-detail').textContent='无法连接助手，请在终端检查 anytls helper status。';}
+  $('helper-detail').textContent='正在检查特权助手…';try{const helper=await api('/helper/status');if(session!==sessionGeneration||!csrf)return;$('helper-detail').textContent=helper.available?'已连接受限特权助手，系统操作无需反复授权。':helper.code==='HELPER_CONFIG_MISMATCH'?messages.HELPER_CONFIG_MISMATCH:'请在本机终端运行 anytls helper install，完成一次系统授权。';}catch{if(session!==sessionGeneration||!csrf)return;$('helper-detail').textContent='无法连接助手，请在终端检查 anytls helper status。';}
   $('pending-detail').textContent=state.pendingReload?'配置尚未确认生效。网页保存会自动尝试应用；失败后可重试，外部文件更改请手动重载。':state.pendingKnown?'本次控制台操作后未检测到配置更改。':'尚未确认当前快照与磁盘配置是否一致；必要时明确重载。';
- } catch(e){if(csrf){serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('connection-detail').textContent='服务状态读取失败，请在本机检查；之前的状态不再作为当前依据。';$('pending').hidden=true;$('version').textContent='—';$('pending-detail').textContent='状态读取失败，无法确认配置是否生效。';$('helper-detail').textContent='状态未确认，请在本机检查特权助手。';notice(e.message,true);}}
- finally{polling=false;}
+ } catch(e){if(csrf&&session===sessionGeneration){serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('connection-detail').textContent='服务状态读取失败，请在本机检查；之前的状态不再作为当前依据。';$('pending').hidden=true;$('version').textContent='—';$('pending-detail').textContent='状态读取失败，无法确认配置是否生效。';$('helper-detail').textContent='状态未确认，请在本机检查特权助手。';notice(e.message,true);}}
+ finally{if(polling===owner)polling=false;}
 }
 setInterval(()=>{if(!document.hidden)status();},3000);
 function closeDrawer(){document.body.classList.remove('drawer-open');$('drawer-shade').hidden=true;$('drawer-toggle').setAttribute('aria-expanded','false');}
 $('drawer-toggle').onclick=()=>{const open=!document.body.classList.contains('drawer-open');document.body.classList.toggle('drawer-open',open);$('drawer-shade').hidden=!open;$('drawer-toggle').setAttribute('aria-expanded',String(open));};
 $('drawer-shade').onclick=closeDrawer;document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer();});
 for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>{
- currentView=button.dataset.view;cancelRecords(true);if(currentView==='connections')openRecords();for(const section of document.querySelectorAll('.view'))section.hidden=section.id!=='view-'+currentView;
+ currentView=button.dataset.view;cancelRecords(true);if(typeof startupCancel==='function'){if(currentView==='overview')startupResume();else startupCancel();}if(currentView==='connections')openRecords();for(const section of document.querySelectorAll('.view'))section.hidden=section.id!=='view-'+currentView;
  for(const nav of document.querySelectorAll('[data-view]')){nav.classList.toggle('active',nav===button);if(nav===button)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');}
  $('page-title').textContent=button.textContent.trim();closeDrawer();notice('');
  if(currentView==='nodes'&&!busy)loadNodes().catch(e=>notice(e.message,true));
