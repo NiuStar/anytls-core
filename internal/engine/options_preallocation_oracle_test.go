@@ -107,6 +107,26 @@ func TestRouteRulePreallocationOracle(t *testing.T) {
 	}
 }
 
+func TestRouteRulePreallocationComments(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"leading-line", "// leading\n{}"},
+		{"inline-block", "{/* inner */ \"route\":{\"rules\":[{\"action\":\"reject\"}]}}"},
+		{"trailing-line", "{\"route\":{\"rules\":[{\"action\":\"reject\"}]}} // trailing\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte(tc.content)
+			_, want, err := originalOptions(context.Background(), content)
+			if err != nil || want.CommentsSet == nil {
+				t.Fatal("oracle must accept input and retain comment metadata")
+			}
+			assertOriginalDecode(t, content) // Includes the full CommentsSet, not just acceptance.
+		})
+	}
+}
+
 func TestRouteRulePreallocationFreshConcurrent(t *testing.T) {
 	type key struct{}
 	parent, cancel := context.WithTimeout(context.WithValue(context.Background(), key{}, "kept"), time.Minute)

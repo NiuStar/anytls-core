@@ -36,6 +36,14 @@ func decodeOptions(ctx context.Context, runtimeJSON []byte) (context.Context, op
 // syntax-error decoration while the SDK still owns all parsing and validation.
 type preallocatedOptions option.Options
 
+func (o *preallocatedOptions) Comments() *json.CommentSet {
+	return (*option.Options)(o).Comments()
+}
+
+func (o *preallocatedOptions) SetComments(comments *json.CommentSet) {
+	(*option.Options)(o).SetComments(comments)
+}
+
 func (o *preallocatedOptions) UnmarshalJSONContext(ctx context.Context, content []byte) error {
 	if count := routeRuleCapacityHint(content); count > 0 {
 		o.Route = &option.RouteOptions{Rules: make([]option.Rule, 0, count)}
