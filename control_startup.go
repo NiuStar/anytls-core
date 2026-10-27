@@ -331,8 +331,14 @@ func startupRead(ctx context.Context, operationID *string) (st.ReadResponse, err
 	return r, e
 }
 func startupControl(ctx context.Context, action string, allow bool, operationID string) (st.MutationResponse, error) {
+	return startupControlWithRequest(ctx, action, allow, operationID, startupRequest)
+}
+
+// The per-call transport seam is used only by private-socket integration tests;
+// the normal entry retains fixed socket validation and root-peer authentication.
+func startupControlWithRequest(ctx context.Context, action string, allow bool, operationID string, request func(context.Context, any, any, time.Duration) error) (st.MutationResponse, error) {
 	var r st.MutationResponse
-	e := startupRequest(ctx, st.MutationRequest{TimelineSchema: 1, Action: action, AllowInsecure: allow, OperationID: operationID}, &r, 6*time.Minute)
+	e := request(ctx, st.MutationRequest{TimelineSchema: 1, Action: action, AllowInsecure: allow, OperationID: operationID}, &r, 6*time.Minute)
 	if e == nil && !r.OK {
 		e = errors.New(r.Code)
 	}
