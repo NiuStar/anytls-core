@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {
+ RULE_INVALID_INPUT:'规则输入无效：类型、匹配值、目标不能为空，不支持逗号或换行；no-resolve 仅适用于 GEOIP / RULE-SET。', RULE_VALUE_INVALID:'匹配值或当前配置未通过原生校验；GEOIP 仅支持 CN，规则集必须已定义并通过摘要审计。', RULE_TARGET_INVALID:'目标已失效，请重新打开新增规则并选择有效目标。', RULE_POSITION_INVALID:'位置无效：请输入现有规则序号，不能放在最终 MATCH 后。', RULE_EDIT_UNSUPPORTED:'当前规则不是可安全插入的普通块列表，或缺少最终 MATCH。请使用原始配置编辑器调整为显式 rules 列表并保留最终 MATCH，再重新打开新增规则。别名、合并和流式规则列表不会自动改写。',
  UPDATE_CHECK_FAILED:'检查更新失败，未取得可信版本信息。请检查网络后重新检查。', UPDATE_PYTHON_REQUIRED:'无法安装更新：本机缺少 Python 3。无需 Go 或系统授权；请先安装 Python 3 后重新检查。', UPDATE_BINARY_UNAVAILABLE:'当前平台没有完整的官方预编译更新包，不能安装；不会改用源码编译。', UPDATE_DOWNLOAD_FAILED:'更新材料下载失败，尚未发布新程序。请检查网络后重新检查。', UPDATE_VALIDATION_FAILED:'更新材料或候选程序校验失败，未发布新程序。请重新检查更新。', UPDATE_PUBLISH_FAILED:'更新材料保留、程序备份或发布失败；程序文件状态需核对。请保留备份及材料，核对后再试。', UPDATE_VERIFY_FAILED:'替换后的程序版本核验失败，安装结果待核对。请保留备份及材料，由维护者核对磁盘版本、摘要及备份；不会自动回滚或重启 VPN。',
  PROFILE_INVALID:'方案名称或标识无效，请检查后重试。', PROFILE_NOT_FOUND:'方案已不存在，请刷新方案列表。', PROFILE_CONFLICT:'配置或方案已改变，请刷新后再切换。', PROFILE_STORE_UNAVAILABLE:'方案存储不可用，请检查本机目录权限。', PROFILE_SAVE_FAILED:'方案保存失败，请检查本机目录权限后刷新确认。', PROFILE_SWITCH_FAILED_ROLLED_BACK:'方案切换失败，已恢复旧配置；请检查配置后重试。', PROFILE_STATE_UNCERTAIN:'严重警告：方案切换恢复未能确认，配置与运行状态未知。请检查本机配置与备份，不要继续覆盖。',
  CONFIG_CONVERSION_TIMEOUT:'订阅已进入配置转换，但获取远程规则集或展开转换超过处理期限。不是订阅格式判定失败；原配置未改变，请检查规则集网络连接。', CONFIG_CONVERSION_CANCELED:'配置转换已取消，未生成预览，原配置未改变。', CONFIG_CONVERSION_TOO_LARGE:'转换后的配置超过 32 MiB，未生成预览或修改原配置；规则未被删除或去重。', CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
@@ -94,7 +95,7 @@ function renderServiceButtons() {
 // This flag permits existing skip-cert-verify nodes, never enables it on others.
 function saveBody(body) {return {...body,confirm_insecure:true};}
 function savedFeedback(data) {
- if(data.changed){invalidateNodes();invalidateGroups();clearProfiles();}
+ if(data.changed){invalidateNodes();invalidateGroups();clearProfiles();invalidateRules();}
  const result=data.apply_status;
  const applied=result==='APPLIED';
  const failed=data.changed && !applied && result!=='SAVED_STOPPED';
@@ -123,7 +124,7 @@ async function operation(label, fn) {
  try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
  finally { finish(); }
 }
-function showLogin() {recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
+function showLogin() {recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
 async function enterConsole(data) {csrf=data.csrf;$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';try{await enterConsole(await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}}));}catch(e){$('password').value='';$('login-error').textContent=e.message;}finally{button.disabled=false;}});
 $('logout').addEventListener('click',()=>{cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
@@ -198,7 +199,61 @@ async function loadGroups(){
   row.append(content,select,save);target.append(row);
  }
 }
-$('load-rules').onclick=()=>operation('读取规则',async()=>{const data=await api('/rules');$('rules-list').replaceChildren(...data.rules.map(rule=>element('li',rule)));if(!data.rules.length)$('rules-list').append(element('li','没有分流规则。'));});
+let rulesRequest=0, rulesSnapshot=null, ruleCommitting=false;
+function invalidateRules(){rulesRequest++;rulesSnapshot=null;$('rule-form').hidden=true;$('rule-form').reset();$('rule-target').replaceChildren();$('rule-set').replaceChildren();$('rule-preview').textContent='';$('rule-feedback').textContent='';$('rules-list').replaceChildren();renderRuleButtons();}
+async function loadRules(open=false){
+ invalidateRules();const request=rulesRequest,session=sessionGeneration;
+ let data;try{data=await api('/rules');}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
+ if(!Array.isArray(data.rules)||!Array.isArray(data.targets)||!Array.isArray(data.rule_sets)||typeof data.etag!=='string'||!data.etag)throw new Error('规则响应不完整，请重新读取。');
+ rulesSnapshot={...data,request,session};$('rules-list').replaceChildren(...data.rules.map(rule=>element('li',rule)));
+ if(!data.rules.length)$('rules-list').append(element('li','没有分流规则。'));
+ if(open){if(!data.editable){$('rule-feedback').textContent=messages.RULE_EDIT_UNSUPPORTED;return;}
+  for(const name of data.targets){const option=element('option',name);option.value=name;$('rule-target').append(option);}
+  for(const name of data.rule_sets){const option=element('option',name);option.value=name;$('rule-set').append(option);}
+  $('rule-index').max=String(data.rules.length);$('rule-form').hidden=false;rulePreview();$('rule-type').focus();
+ }
+}
+function renderRuleButtons(){
+ $('save-rule').disabled=busy||ruleCommitting||!csrf||!rulesSnapshot||rulesSnapshot.request!==rulesRequest||rulesSnapshot.session!==sessionGeneration||$('rule-type').value==='RULE-SET'&&!$('rule-set').value;
+}
+function ruleValue(){return $('rule-type').value==='RULE-SET'?$('rule-set').value:$('rule-type').value==='GEOIP'?$('rule-country').value:$('rule-value').value;}
+function rulePreview(){
+ const kind=$('rule-type').value,set=kind==='RULE-SET',geo=kind==='GEOIP',flag=geo||set;
+ $('rule-value').hidden=set||geo;$('rule-value').required=!set&&!geo;$('rule-country').hidden=!geo;$('rule-country').required=geo;$('rule-set').hidden=!set;$('rule-set').required=set;
+ $('rule-no-resolve').disabled=!flag;if(!flag)$('rule-no-resolve').checked=false;
+ const index=$('rule-position').value==='index';$('rule-index-label').hidden=!index;$('rule-index').required=index;
+ const value=ruleValue();
+ $('rule-preview').textContent=kind+','+value+','+$('rule-target').value+($('rule-no-resolve').checked?',no-resolve':'')+' · '+(index?'放在现有第 '+$('rule-index').value+' 条前':$('rule-position').value==='first'?'放在最前面':'放在最终 MATCH 前');
+ renderRuleButtons();
+}
+for(const id of ['rule-type','rule-value','rule-country','rule-set','rule-target','rule-position','rule-index','rule-no-resolve'])$(id).addEventListener('input',rulePreview);
+$('load-rules').onclick=()=>operation('读取规则',()=>loadRules(false));
+$('add-rule').onclick=()=>operation('读取新增规则选项',()=>loadRules(true));
+$('cancel-rule').onclick=()=>{if(!ruleCommitting)invalidateRules();};
+$('rule-form').onsubmit=event=>{
+ event.preventDefault();const snapshot=rulesSnapshot;
+ const current=()=>snapshot&&snapshot.request===rulesRequest&&snapshot.session===sessionGeneration&&Boolean(csrf);
+ if(busy||!current())return;
+ const body=saveBody({type:$('rule-type').value,value:ruleValue(),target:$('rule-target').value,no_resolve:$('rule-no-resolve').checked,position:$('rule-position').value});if(body.position==='index')body.index=Number($('rule-index').value)-1;
+ return operation('保存单条规则',async()=>{
+  if(!current())return;ruleCommitting=true;$('rule-fields').disabled=true;
+  try{
+   const data=await api('/rules',{method:'POST',headers:{'If-Match':snapshot.etag},body});if(!current())return;
+   if(data.changed&&etag){etag='';$('save-config').disabled=true;$('editor-info').textContent='单条规则已保存。原始配置草稿已保留但版本过期，请先复制草稿，再重新读取并合并；不能直接覆盖保存。';}
+   savedFeedback(data);const feedback=(data.inserted?'已新增规则。':'相同规则已存在，未插入、未重新连接。')+' '+$('notice').textContent;
+   const savedFailure=$('notice').classList.contains('failure');
+   $('rule-feedback').textContent=feedback;$('rule-form').hidden=true;
+   // Save result remains visible even if later status/list refresh fails.
+   const refreshRequest=rulesRequest+1,refreshed=()=>refreshRequest===rulesRequest&&snapshot.session===sessionGeneration&&Boolean(csrf);let warning='';
+   try{await loadRules(false);}catch{warning=' 规则列表刷新失败，请重新读取。';}
+   if(!refreshed())return;$('rule-feedback').textContent=feedback+warning;
+   await status();if(!refreshed())return;
+   if(!serviceState)warning+=' 服务状态刷新失败，请稍后确认。';
+   $('rule-feedback').textContent=feedback+warning;notice(feedback+warning,savedFailure||Boolean(warning));
+  }catch(error){if(current()){$('rule-feedback').textContent=error.message;if(error.code==='CONFIG_CONFLICT'){rulesRequest++;rulesSnapshot=null;$('save-rule').disabled=true;}}throw error;
+  }finally{ruleCommitting=false;$('rule-fields').disabled=false;renderRuleButtons();}
+ });
+};
 $('load-config').onclick=()=>{if(etag&& !confirm('重新读取会丢弃编辑区尚未保存的修改。继续？'))return;operation('读取原始配置',async()=>{const data=await api('/config');$('yaml-editor').value=data.yaml;etag=data.etag;$('yaml-editor').disabled=false;$('save-config').disabled=false;$('editor-info').textContent='已读取配置（含节点密码）。保存后，运行中的 VPN 会自动重新连接以应用配置。';});};
 $('save-config').onclick=()=>operation('校验并保存配置',async()=>{const data=await api('/config',{method:'PUT',headers:{'If-Match':etag},body:saveBody({yaml:$('yaml-editor').value})});etag=data.etag;$('editor-info').textContent=data.changed?'已保存并读回校验；未知字段、注释和原始文字保留。':'内容未变化，没有重写文件。';savedFeedback(data);await refreshAfterSave();});
 let importGeneration=0, importPreview=null, importMode='local', subscriptionConfigured=false, subscriptionRequest=0, importCommitting=false;
@@ -369,6 +424,7 @@ function updateOperation(install) {
 }
 $('check-update').onclick=()=>updateOperation(false);
 function renderExtraButtons(){
+ renderRuleButtons();
  $('profile-name').disabled=busy||!csrf;
  for(const id of ['save-profile','refresh-profiles'])$(id).disabled=busy||!csrf;
  for(const button of document.querySelectorAll('[data-profile-action]'))button.disabled=busy||!csrf||!profilesEtag;
@@ -398,7 +454,7 @@ async function loadProfiles(){
 }
 $('refresh-profiles').onclick=()=>operation('刷新方案',loadProfiles);
 $('save-profile').onclick=()=>{if(busy)return;const name=$('profile-name').value.trim();if(!name){notice('请输入新方案名称。',true);return;}return operation('保存磁盘配置为方案',async()=>{const session=sessionGeneration;await api('/profiles',{method:'POST',body:{name}});if(session!==sessionGeneration||!csrf)return;$('profile-name').value='';notice('磁盘上的当前配置已保存为方案；未保存编辑未包含，也未切换 VPN。');await loadProfiles();});};
-function invalidateConfigViews(){clearImportSecrets();clearConfigDraft();invalidateNodes();invalidateGroups();clearProfiles();$('rules-list').replaceChildren();}
+function invalidateConfigViews(){invalidateRules();clearImportSecrets();clearConfigDraft();invalidateNodes();invalidateGroups();clearProfiles();$('rules-list').replaceChildren();}
 function switchProfile(id){
  if(busy||!profilesEtag||!confirm('切换会备份旧配置，并清空编辑草稿和导入预览。运行中的 VPN 会自动应用，期间短暂断网重连；未运行时仅保存。继续？'))return;
  const expected=profilesEtag;

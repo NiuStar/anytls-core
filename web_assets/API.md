@@ -35,7 +35,8 @@
 | POST /profiles/switch | `{id,confirm_replace:true,confirm_insecure:true}` + If-Match；校验、备份、一起切换配置／选择／订阅、读回；失败回滚／不确定独立报告，成功沿现有saved/applied链。 |
 | GET /groups | `{groups:[{name,type,choices,selected,resolved,valid}],etag}`；etag 来自解析策略组的同一份配置字节 |
 | POST /groups/selection | `{group,choice}`；新控制台携带读取时的 If-Match，冲突返回412 CONFIG_CONFLICT且不写入／不调用服务；省略header保留旧客户端兼容。复用真实 saveGroupChoice + readback → `{ok,changed,pendingReload}`；同值不写 |
-| GET /rules | `{rules:[原始规则字符串]}`，登录后明确读取，UI 以 textContent 展示 |
+| GET /rules | `{rules:[原始规则字符串],etag,targets:[有效目标名称],rule_sets:[已审计标签],editable,edit_error}`；ETag 响应头与 etag 字段均为同次捕获配置的完整 SHA-256（含双引号）。旧 rules 字段不变，不返回 YAML、节点凭据或规则集路径 |
+| POST /rules | 添加单条规则；完整合同见下文，复用认证 / 同源 / CSRF / actionMu 与保存后自动应用 |
 | GET /config | 显式敏感编辑操作 → `{yaml,etag}`，同时 ETag header；etag 是双引号包裹的完整原文件 SHA256 |
 | PUT /config | `{yaml}` + `If-Match: "SHA256"`；无 header 428，冲突412，无效422；同目录0600原子写入并读回 → `{ok,changed,etag,pendingReload}` |
 | POST /service/start, /service/stop, /service/reload | `{confirm_insecure:false}`；只布尔同意，不接收命令；原生授权及 launchd 状态读回 → `{ok,loaded,running,pendingReload,readiness}` |
@@ -101,6 +102,26 @@ saved append source/automatic refresh. A config-changing commit uses existing
 backup, ETag/session/TTL/readback/rollback and automatic-apply protections; saving
 may briefly interrupt a running VPN, and does not start a stopped VPN. The UI
 has a separate “从此订阅仅添加节点” button and explicit add-only confirmation.
+
+## Single-rule add contract
+
+`POST /api/v1/rules` requires JSON, authenticated session, exact Origin, CSRF and exactly one full `If-Match` from `GET /rules` (missing 428 `IF_MATCH_REQUIRED`, mismatch 412 `CONFIG_CONFLICT`, busy 409 `ACTION_BUSY`). Body:
+
+```json
+{"type":"DOMAIN","value":"example.com","target":"DIRECT","no_resolve":false,"position":"before_match","confirm_insecure":true}
+```
+
+Required fields: `type`, `value`, `target`, `no_resolve` (boolean, not null), `position`. Types: DOMAIN, DOMAIN-SUFFIX, IP-CIDR, GEOIP, RULE-SET. GEOIP accepts exact `CN` only; RULE-SET accepts only an existing label whose configured local content passes the existing SHA audit and real embedded `engine.Check` decode/construct/close, never a supplied path/URL. The inventory excludes SDK-invalid sets, and POST validates every activated set before disk mutation; this check never calls Start or binds a listener. Optional `no-resolve` is supported only for GEOIP/RULE-SET. MATCH cannot be added. Values are preserved exactly, not case-corrected or normalized; empty, leading/trailing whitespace, comma, CR/LF/NUL and native-invalid values are rejected. Native-accepted Unicode domains remain supported. Targets are DIRECT/REJECT or an existing resolvable group/node whose terminal node passes buildNode; existing skip-cert-verify is not changed. Optional `confirm_insecure` defaults false and UI sends true per existing policy; no new checkbox.
+
+Position is `before_match` (default UI selection), `first`, or `index`. For `index`, supply integer `index` in [0, rules.length-1], meaning insert **before** that existing 0-based item. UI displays 1-based rule numbers and subtracts exactly one. For other positions index must be omitted or null. Never insert after final MATCH. Earlier rules remain higher priority.
+
+Response is existing finishConfigSave fields plus `inserted` boolean, `index` (0-based inserted/existing item), canonical `rule`, and current `etag`/ETag header. A duplicate after trimming each existing comma-separated component is NO_CHANGE at its existing index, regardless of requested insertion position; no rewrite/reload. Different targets/flags remain different rules. Save is read back before applying; APPLIED, SAVED_STOPPED, APPLY_FAILED, STATE_UNAVAILABLE remain distinct. No stopped VPN is started.
+
+Only an explicit nonempty ordinary block `rules` sequence of scalar rules with one final MATCH is locally editable. Flow/alias/merge/anchored target sequences, aliased keys/items, multiline scalar rules and missing MATCH return 422 `RULE_EDIT_UNSUPPORTED`; GET sets editable=false and UI directs users to the original editor. Unrelated anchors are preserved. Saving inserts one single-quoted line into original UTF-8 bytes with the target line's indentation/newline style; all original bytes, comments, scalar spelling, unknown fields, other rules, selection and subscription are unchanged. Existing comments immediately above the target remain byte-identical above the new line. This add action reuses atomic config save, not the import backup transaction; export/save a named profile first for a manual backup. UI keeps an already-open raw draft but revokes its stale save ETag; copy and reread/merge before saving it.
+
+Validation errors return only fixed codes, never raw native errors: 422 RULE_INVALID_INPUT, RULE_VALUE_INVALID, RULE_TARGET_INVALID, RULE_POSITION_INVALID, RULE_EDIT_UNSUPPORTED. Same read/validate/recheck/write/readback and in-process action lock as existing saves; not an OS-wide lock against external editors.
+
+The UI uses actual select controls for type, target, position, GEOIP country (CN only) and audited RULE-SET label. DOMAIN/DOMAIN-SUFFIX/IP-CIDR use text, the displayed rule number uses a numeric input, and no-resolve uses a checkbox. Inputs are locked while committing. A preview cannot re-enable save while another operation is busy. Session/config generations reject stale list/save/refresh results after logout or profile invalidation; authoritative saved/applied feedback remains visible even if subsequent list or status refresh fails. Browser fixture evidence uses real Chromium with synthetic API responses, not a live Mac/helper/VPN acceptance.
 
 New native tests: `TestWebImportPinnedURLAndTLS`,
 `TestWebImportAppendAuthenticatedPreservesState`,

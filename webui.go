@@ -433,22 +433,7 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 		}
 		webJSON(rw, 200, map[string]any{"groups": list, "etag": `"` + shaHex(b) + `"`})
 	case "/api/v1/rules":
-		b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
-		if err != nil {
-			webError(rw, 500, "CONFIG_UNAVAILABLE")
-			return
-		}
-		var doc struct {
-			Rules []string `yaml:"rules"`
-		}
-		if yaml.Unmarshal(b, &doc) != nil {
-			webError(rw, 422, "CONFIG_INVALID")
-			return
-		}
-		if doc.Rules == nil {
-			doc.Rules = []string{}
-		}
-		webJSON(rw, 200, map[string]any{"rules": doc.Rules})
+		w.getRules(rw, r)
 	case "/api/v1/config":
 		b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
 		if err != nil {
@@ -479,7 +464,7 @@ func (w *webConsole) saved() { w.metaMu.Lock(); w.pending = true; w.metaMu.Unloc
 
 // Called only after save readback, while ServeHTTP still owns actionMu. A
 // successful disk write is never reported as a failed save if apply fails.
-func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, changed bool, etag string, consent bool) {
+func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, changed bool, etag string, consent bool, extra ...map[string]any) {
 	status, applied := "NO_CHANGE", false
 	applyError := ""
 	var diagnostics *startDiagnostics
@@ -530,11 +515,18 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 		rw.Header().Set("ETag", etag)
 		result["etag"] = etag
 	}
+	for _, fields := range extra {
+		for key, value := range fields {
+			result[key] = value
+		}
+	}
 	webJSON(rw, 200, result)
 }
 
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/api/v1/rules" && r.Method == "POST":
+		w.addRule(rw, r)
 	case r.URL.Path == "/api/v1/profiles" && r.Method == "POST":
 		w.saveProfile(rw, r)
 	case r.URL.Path == "/api/v1/profiles/copy" && r.Method == "POST":

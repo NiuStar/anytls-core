@@ -95,7 +95,18 @@
             <div class="import-confirm"><button id="commit-import" class="primary" type="button" disabled>备份并导入</button><button id="export-converted" type="button" disabled>导出转换后配置</button><span class="hint">含节点密码 · 导出不应用</span></div>
           </div>
         </section>
-        <div class="panel rules-panel"><div class="panel-toolbar"><h3>分流规则</h3><button id="load-rules">查看规则列表</button></div><ol id="rules-list" class="rules-list"></ol></div>
+        <div class="panel rules-panel"><div class="panel-toolbar"><h3>分流规则</h3><div class="actions"><button id="load-rules">查看规则列表</button><button id="add-rule">新增规则</button></div></div>
+          <form id="rule-form" hidden><fieldset id="rule-fields"><legend>新增单条规则</legend>
+            <p class="note">按从上到下的顺序匹配。默认放在最终 MATCH 前，前面的规则仍优先。保存会自动应用到运行中的 VPN，可能短暂断网；未运行时不会启动。</p>
+            <div class="rule-controls"><label>类型<select id="rule-type"><option>DOMAIN</option><option>DOMAIN-SUFFIX</option><option>IP-CIDR</option><option>GEOIP</option><option>RULE-SET</option></select></label>
+            <label>匹配值<input id="rule-value" required autocomplete="off" placeholder="example.com"><select id="rule-country" hidden aria-label="GEOIP 国家代码"><option value="CN">CN</option></select><select id="rule-set" hidden aria-label="已审计规则集"></select></label>
+            <label>目标<select id="rule-target" required></select></label>
+            <label>插入位置<select id="rule-position"><option value="before_match">最终 MATCH 前（默认）</option><option value="first">最前面（最高优先）</option><option value="index">指定规则前</option></select></label>
+            <label id="rule-index-label" hidden>现有规则序号（从 1 开始）<input id="rule-index" type="number" min="1" value="1"></label></div>
+            <label><input id="rule-no-resolve" type="checkbox" disabled> no-resolve（仅 GEOIP / RULE-SET）</label>
+            <p class="note">GEOIP 目前仅支持 CN。目标仅列出当前有效的节点与策略组；不会修改节点证书设置。</p>
+            <output id="rule-preview" class="rule-preview"></output><div class="actions"><button id="save-rule" type="submit">校验并保存</button><button id="cancel-rule" type="button">取消</button></div>
+          </fieldset></form><p id="rule-feedback" role="status" aria-live="polite"></p><ol id="rules-list" class="rules-list"></ol></div>
         <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开或导出后包含节点密码，仅限本机登录用户。导出当前磁盘配置，不包含未保存草稿；复制编辑区包含未保存草稿。</span></div><div class="action-bar"><button id="copy-editor" type="button" disabled>复制编辑区</button><button id="export-current" type="button">导出当前配置</button><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
       </section>
       <section id="view-update" class="view" hidden>
