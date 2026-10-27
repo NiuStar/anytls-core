@@ -1,5 +1,13 @@
 # Changelog
 
+## v2026-10-27-01
+
+- WebUI 新增单条规则入口：类型／目标／位置、GEOIP 的 CN 和现有有效 RULE-SET 使用下拉；DOMAIN／DOMAIN-SUFFIX／IP-CIDR 保留文本输入，no-resolve 为复选框。
+- 默认在最终 MATCH 前插入，也可放在最前或现有第 N 条前；不新增／移动 MATCH，不重排旧规则。If-Match 拒绝陈旧配置，重复规则不写入、不重连；局部插入保留其他 YAML 原字节，不支持的布局安全拒绝。
+- RULE-SET 不仅校验 SHA，还须通过实际内嵌核心 decode/New/Close；保存前复查新增及已有启用规则集，不启动监听或下载远程 provider。沿用保存／应用分离，运行中尝试受控 reload，停止时仅保存。
+- 精确实现的 Linux 完整回归460项顶层／1360项子测试 PASS、6项 SKIP，vet通过；实际 Chromium 桌面／手机测试使用合成 API，不是 Mac 助手或 TUN 验收。已知 TestDiskRecordsStickyAncestorLifecycle 间歇失败在候选与未改基线均复现，失败证据保留，本版未修复。
+- 最终 Mac 原生测试／构建／打包、公开 CI 与公开附件验收待完成；发布不安装、不改正式配置／规则、不更新助手或重启 WebUI／VPN／TUN。保留 GEOIP/CN、可信 sticky 祖先兼容和单次 decode/New。详见 [版本说明](docs/releases/v2026-10-27-01.md)。
+
 ## v2026-10-26-03
 
 - 新增原生 `GEOIP,CN,target[,no-resolve]`，支持导入／保存／导出／快照与真实 GEOIP/CN 记录；仅精确 CN，不支持其他国家或自动规范 gcn。
