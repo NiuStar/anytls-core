@@ -8,6 +8,29 @@ import (
 	"testing"
 )
 
+func TestRecoveryCleanupSafety(t *testing.T) {
+	for _, mode := range []string{"stop_unsafe_mode", "start_held_identity"} {
+		t.Run(mode, func(t *testing.T) {
+			d, b, c, k, loaded, _ := lifecycleFixture(t)
+			if err := d.start(b, c, k, true); err != nil { t.Fatal(err) }
+			if mode == "stop_unsafe_mode" {
+				if err := os.Chmod(d.root, 0777); err != nil { t.Fatal(err) }
+				if err := d.stop(); err == nil { t.Fatal("unsafe restored snapshot deleted") }
+				if *loaded { t.Fatal("unsafe snapshot prevented unload") }
+			} else {
+				*loaded = false
+				if err := os.Rename(d.root, d.root+".original"); err != nil { t.Fatal(err) }
+				if err := os.Mkdir(d.root, 0700); err != nil { t.Fatal(err) }
+				if err := d.start(b, c, k, true); err == nil { t.Fatal("held snapshot identity replaced") }
+				if *loaded { t.Fatal("replacement snapshot started job") }
+			}
+			if _, err := os.Lstat(d.root); err != nil { t.Fatal("unsafe evidence removed", err) }
+			paths, _ := filepath.Glob(filepath.Join(filepath.Dir(d.root), ".service-recovery-*", "snapshot"))
+			if len(paths) != 0 { t.Fatal("unsafe evidence archived", paths) }
+		})
+	}
+}
+
 func TestStopRecoveryFailClosed(t *testing.T) {
 	for _, mode := range []string{"bootout", "still_loaded", "post_unload_unknown", "identity", "symlink"} {
 		t.Run(mode, func(t *testing.T) {

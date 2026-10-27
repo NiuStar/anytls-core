@@ -315,7 +315,11 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 	d.traceEnd(span, nil)
 	if existErr == nil {
 		old := newDiagnostic("STOP")
-		d.owned, err = snapshotRootAt(d.root)
+		if d.owned == nil || d.owned.info == nil {
+			d.owned, err = snapshotRootAt(d.root)
+		} else {
+			err = d.owned.check()
+		}
 		if err == nil {
 			old.capture(d.root)
 			old.Stopped, old.Restoration = "VERIFIED", "NOT_VERIFIED"

@@ -141,8 +141,22 @@ func (r *snapshotRootIdentity) check() error {
 	}
 	return nil
 }
-func (r *snapshotRootIdentity) remove(remove func(string) error) error {
+func (r *snapshotRootIdentity) checkPrivate() error {
 	if err := r.check(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(r.path)
+	if err != nil {
+		return err
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(owner.Uid) != os.Geteuid() || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(r.info, info) {
+		return errors.New("unsafe snapshot ownership; retained")
+	}
+	return nil
+}
+func (r *snapshotRootIdentity) remove(remove func(string) error) error {
+	if err := r.checkPrivate(); err != nil {
 		return err
 	}
 	return remove(r.path)
@@ -151,20 +165,7 @@ func (r *snapshotRootIdentity) remove(remove func(string) error) error {
 // Preserve failed recovery evidence without occupying the next active snapshot.
 // Like remove, this pins the leaf identity; it is not hostile-parent protection.
 func (d serviceLifecycle) archiveSnapshot(r *serviceDiagnostic) error {
-	check := func() error {
-		if err := d.owned.check(); err != nil {
-			return err
-		}
-		info, err := os.Lstat(d.root)
-		if err != nil {
-			return err
-		}
-		owner, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || int(owner.Uid) != os.Geteuid() || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(d.owned.info, info) {
-			return errors.New("unsafe snapshot ownership; retained")
-		}
-		return nil
-	}
+	check := d.owned.checkPrivate
 	if err := check(); err != nil {
 		return err
 	}

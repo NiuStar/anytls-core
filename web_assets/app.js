@@ -175,7 +175,7 @@ for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>
 for(const button of document.querySelectorAll('[data-service]'))button.onclick=()=>{
  const action=button.dataset.service;
  if(action==='reload'&&!confirm('重载会停止并重新启动 VPN，期间可能短暂断网。继续？'))return;
- operation(button.textContent,async()=>{const data=await api('/service/'+action,{method:'POST',body:{confirm_insecure:action!=='stop'}});await status();const warning=serviceRecoveryWarning(data,action.toUpperCase());if(warning)notice(button.textContent+'已完成。\n'+warning,true);});
+ operation(button.textContent,async()=>{const session=sessionGeneration,owner=finishOperation;const data=await api('/service/'+action,{method:'POST',body:{confirm_insecure:action!=='stop'}});await status();if(session!==sessionGeneration||owner!==finishOperation)return;const warning=serviceRecoveryWarning(data,action.toUpperCase());if(warning)notice(button.textContent+'已完成。\n'+warning,true);});
 };
 function element(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
 let nodesLoaded=false;
