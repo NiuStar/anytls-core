@@ -10,8 +10,9 @@ import (
 // Only allowlisted stage codes cross the HTTP boundary. Never forward helper
 // messages or wrapped tool output, which may contain private configuration.
 type webControlError struct {
-	Code        string
-	Diagnostics *startDiagnostics
+	Code           string
+	Diagnostics    *startDiagnostics
+	StartupUnknown bool // mutation may have reached the helper; never resend
 }
 
 func (e *webControlError) Error() string { return e.Code }
@@ -56,6 +57,9 @@ func webControlAction(ctx context.Context, config, action string, allow bool, re
 	if err != nil {
 		return err
 	}
+	return webControlActionBound(ctx, config, action, allow, request, status)
+}
+func webControlActionBound(ctx context.Context, config, action string, allow bool, request webControlRequestFunc, status controlHelperResponse) error {
 	result, err := request(ctx, action, allow)
 	if result.ConfigIdentity != "" && result.ConfigIdentity != status.ConfigIdentity {
 		return &webControlError{Code: "HELPER_CONFIG_MISMATCH"}

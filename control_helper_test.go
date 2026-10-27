@@ -123,6 +123,11 @@ func TestControlHelperUNITAuthRejects(t *testing.T) {
 			s := unitControlServer()
 			s.peer = func(net.Conn) (uint32, error) { return uid, nil }
 			c, _ := unitControlPair(t, s)
+			if uid == 0 {
+				// Root's sole allowed request now uses separate EOF framing.
+				_, _ = io.WriteString(c, `{"action":"status","allow_insecure":false}`)
+				_ = c.CloseWrite()
+			}
 			var r controlHelperResponse
 			if err := json.NewDecoder(c).Decode(&r); err != nil || r.Code != "FORBIDDEN" {
 				t.Fatalf("%+v %v", r, err)

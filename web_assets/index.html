@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>AnyTLS · 本机控制台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>AnyTLS · 本机控制台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script><script src="/startup.js" defer></script></head>
 <body>
 <section id="login-view" class="login-shell">
   <div class="login-card">
@@ -34,6 +34,10 @@
       <section id="view-overview" class="view">
         <div class="page-heading"><h1>连接概览</h1><p class="muted">管理本机 VPN 服务与配置。</p></div>
         <div class="connection-panel" data-state="unknown"><div class="connection-main"><div class="connection-symbol" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 5v11M10 8a11 11 0 1 0 12 0"/></svg></div><div class="connection-copy"><span class="eyebrow">本机服务</span><h2 id="connection-state">正在读取状态</h2><p id="connection-detail" class="muted">状态来自本机服务管理器，不等同于网络健康检查。</p></div><span id="pending" class="pill amber" hidden>配置尚未生效</span></div><div class="connection-bottom"><span class="hint">运行中保存会自动应用，期间短暂重连；未启动时仅保存。</span><div class="action-bar"><button class="primary" data-service="start" hidden disabled>启动 VPN</button><button data-service="stop" hidden disabled>停止 VPN</button><button data-service="reload" hidden disabled>重试应用配置</button></div></div></div>
+        <section id="startup-panel" class="panel startup-panel" aria-labelledby="startup-heading">
+          <div class="panel-toolbar"><h2 id="startup-heading">最近操作日志</h2><div class="action-bar"><button id="startup-refresh" type="button">刷新日志</button><button id="startup-copy" type="button" disabled>复制完整日志</button></div></div>
+          <div class="startup-body"><p id="startup-status" role="status" aria-live="polite">尚未观察服务操作。</p><p id="startup-context" class="hint">仅记录服务启动、停止、重载及实际保存自动应用；不是所有保存的审计。</p><p id="startup-summary" class="mono"></p><p id="startup-warning" class="hint">观察限制：GAP 表示存在缺口，NOT_OBSERVED 表示未观察，STALE 表示仅为陈旧缓存。完整复制仅指当前保留的快照，不保证观察完整。辅助日志不是就绪、恢复或根因的权威依据；receipt 失败不单独证明启动失败。跨进程时钟不可相减，UTC 墙钟可能回退。</p><details id="startup-details"><summary>完整有界时间轴 · 按进程时钟分组</summary><label for="startup-text">可复制的完整快照</label><textarea id="startup-text" readonly spellcheck="false" wrap="off"></textarea></details><p id="startup-copy-status" role="status" aria-live="polite"></p></div>
+        </section>
         <div class="info-grid">
           <article><h3>版本</h3><dl><dt>控制台运行入口</dt><dd id="version" class="mono">—</dd></dl><p>升级不自动重启服务，运行快照可能仍为旧版。</p></article>
           <article><h3>配置</h3><dl><dt>生效方式</dt><dd>保存后自动应用</dd></dl><p id="pending-detail">跨控制台启动前的更改无法自动确认；不会伪造已同步状态。</p></article>

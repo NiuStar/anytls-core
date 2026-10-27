@@ -353,5 +353,5 @@ func (w *webConsole) importAppendCommit(rw http.ResponseWriter, r *http.Request,
 		}
 	}
 	w.importPending = nil
-	w.finishConfigSave(rw, r, changed, `"`+shaHex(p.data)+`"`, consent)
+	w.finishConfigSave(rw, r.WithContext(context.WithValue(r.Context(), webStartupSourceKey{}, "IMPORT_APPEND")), changed, `"`+shaHex(p.data)+`"`, consent)
 }

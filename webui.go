@@ -24,6 +24,7 @@ import (
 	"time"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,12 +55,18 @@ type webConsole struct {
 	importFetch              func(context.Context, string) ([]byte, error)
 	nodeProbe                func(context.Context, node, string) (float64, error)
 	recordsRequest           func(context.Context, cr.PageRequest) (cr.PageResponse, error)
+	startupMu                sync.Mutex
+	startupLatest            *webStartupOperation
+	startupReadRequest       webStartupReadFunc
+	startupControlRequest    webStartupControlFunc
+	startupLegacyRequest     webControlRequestFunc
+	startupRandom            io.Reader
 	probeSlotsOnce           sync.Once
 	probeSlots               chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
 }
 
 func newWebConsole(config, password string, port int) *webConsole {
-	w := &webConsole{configPath: config, passwordPath: password, port: port, sessions: make(map[string]webSession), now: time.Now, state: serviceState, serviceAction: webServiceAction, updateAction: webUpdateAction, importFetch: webImportSecureFetch}
+	w := &webConsole{configPath: config, passwordPath: password, port: port, sessions: make(map[string]webSession), now: time.Now, state: serviceState, updateAction: webUpdateAction, importFetch: webImportSecureFetch}
 	w.baseline = w.fingerprint()
 	return w
 }
@@ -165,6 +172,10 @@ func webJSON(rw http.ResponseWriter, status int, data any) {
 	_ = json.NewEncoder(rw).Encode(data)
 }
 func webError(rw http.ResponseWriter, status int, code string) {
+	if _, ok := rw.(webStartupResponseWriter); ok {
+		webJSON(rw, status, map[string]any{"error": code, "startup_operation": nil})
+		return
+	}
 	webJSON(rw, status, map[string]string{"error": code})
 }
 func webDecode(rw http.ResponseWriter, r *http.Request, dst any) error {
@@ -298,7 +309,7 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 405, "METHOD_NOT_ALLOWED")
 			return
 		}
-		names := map[string]string{"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}
+		names := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/style.css": "style.css"}
 		name, ok := names[r.URL.Path]
 		if !ok {
 			http.NotFound(rw, r)
@@ -309,7 +320,7 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 500, "ASSET_UNAVAILABLE")
 			return
 		}
-		mime := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
+		mime := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "startup.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
 		if name == "index.html" {
 			b = bytes.Replace(b, []byte(`<div class="note">更新仅替换`), []byte(`<div class="note">安装开始后，关闭网页、断开连接或十分钟请求超时均不会停止安装；其他修改会保持忙碌，直到安装退出并完成版本核验。请勿强制退出控制台或更新进程；进程崩溃不保证安装生命周期安全。更新仅替换`), 1)
 		}
@@ -320,6 +331,14 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	session, ok := w.authenticated(r)
 	if !ok {
 		webError(rw, 401, "AUTH_REQUIRED")
+		return
+	}
+	if r.URL.Path == "/api/v1/startup-trace" {
+		if r.Method != "GET" {
+			webError(rw, 405, "METHOD_NOT_ALLOWED")
+			return
+		}
+		w.getStartupTrace(rw, r)
 		return
 	}
 	if r.URL.Path == "/api/v1/connections" {
@@ -353,6 +372,9 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A long native authorization or build does not monopolize auth/status GETs.
+	if webStartupMutationPath(r) {
+		rw = webStartupResponseWriter{rw}
+	}
 	if !w.actionMu.TryLock() {
 		webError(rw, 409, "ACTION_BUSY")
 		return
@@ -468,6 +490,8 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 	status, applied := "NO_CHANGE", false
 	applyError := ""
 	var diagnostics *startDiagnostics
+	var startup *webStartupOperation
+	var startupErr error
 	if changed {
 		w.saved()
 		loaded, running, err := w.state()
@@ -484,14 +508,22 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 				// Own and synchronously join the helper despite HTTP disconnects.
 				// No detached worker or supervisor; the action lock remains held.
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-				err = w.serviceAction(ctx, "reload", consent)
+				startup = w.beginStartup("reload", webStartupSource(r))
+				err = w.startupAction(ctx, "reload", consent, startup)
+				startupErr = err
 				cancel()
 				if err != nil {
 					applyError = webControlFailureCode(err)
 					diagnostics = webControlDiagnostics(err)
 				}
 				if err == nil {
+					verify := startup.recorder.Begin("FINALIZE", "WEB_VERIFY_STATE", st.Fields{})
 					loaded, running, err = w.state()
+					code := "OK"
+					if err != nil || !loaded || !running {
+						code = "FAILED"
+					}
+					startup.recorder.End(verify, code, st.Fields{})
 					after := w.fingerprint()
 					if err == nil && loaded && running && after == before {
 						w.metaMu.Lock()
@@ -505,6 +537,18 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 	}
 	pending, known := w.pendingState()
 	result := map[string]any{"ok": true, "saved": true, "changed": changed, "applied": applied, "apply_status": status, "pendingReload": pending, "pendingKnown": known}
+	result["startup_operation"] = nil
+	if startup != nil {
+		var finishErr error
+		if !applied {
+			finishErr = startupErr
+			if finishErr == nil {
+				finishErr = errors.New("apply not confirmed")
+			}
+		}
+		w.finishStartup(startup, finishErr)
+		result["startup_operation"] = w.startupReference(startup)
+	}
 	if applyError != "" {
 		result["apply_error"] = applyError
 	}
@@ -726,14 +770,25 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		before := w.fingerprint()
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
-		if err := w.serviceAction(ctx, action, in.ConfirmInsecure); err != nil {
-			webJSON(rw, 503, webControlErrorBody(err))
+		startup := w.beginStartup(action, "MANUAL_"+strings.ToUpper(action))
+		if err := w.startupAction(ctx, action, in.ConfirmInsecure, startup); err != nil {
+			w.finishStartup(startup, err)
+			body := webControlErrorBody(err)
+			body["startup_operation"] = w.startupReference(startup)
+			webJSON(rw, 503, body)
 			return
 		}
 		// Read actual launchd state. Do not infer ready/TUN health from the child exit.
+		verify := startup.recorder.Begin("FINALIZE", "WEB_VERIFY_STATE", st.Fields{})
 		loaded, running, err := w.state()
+		code := "OK"
 		if err != nil || (action == "stop" && (loaded || running)) || (action != "stop" && !running) {
-			webError(rw, 503, "SERVICE_STATE_NOT_CONFIRMED")
+			code = "FAILED"
+		}
+		startup.recorder.End(verify, code, st.Fields{})
+		if err != nil || (action == "stop" && (loaded || running)) || (action != "stop" && !running) {
+			w.finishStartup(startup, errors.New("state not confirmed"))
+			webJSON(rw, 503, map[string]any{"error": "SERVICE_STATE_NOT_CONFIRMED", "startup_operation": w.startupReference(startup)})
 			return
 		}
 		if action != "stop" {
@@ -744,7 +799,8 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			w.metaMu.Unlock()
 		}
 		pending, _ := w.pendingState()
-		webJSON(rw, 200, map[string]any{"ok": true, "loaded": loaded, "running": running, "pendingReload": pending, "readiness": "NOT_OBSERVED"})
+		w.finishStartup(startup, nil)
+		webJSON(rw, 200, map[string]any{"ok": true, "loaded": loaded, "running": running, "pendingReload": pending, "readiness": "NOT_OBSERVED", "startup_operation": w.startupReference(startup)})
 	case r.URL.Path == "/api/v1/update" && r.Method == "POST":
 		var in struct {
 			Confirm bool `json:"confirm"`

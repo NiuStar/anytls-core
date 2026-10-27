@@ -17,7 +17,7 @@
 
 ## API v1
 
-统一前缀 `/api/v1`。静态 GET `/`、`/app.js`、`/style.css` 不需登录，不包含凭据。
+统一前缀 `/api/v1`。静态 GET `/`、`/app.js`、`/startup.js`、`/style.css` 不需登录，不包含凭据。
 
 | 方法/路径 | 请求/响应 |
 | --- | --- |
@@ -135,4 +135,18 @@ not constitute passing Go tests.
 
 ## 验证
 
-`web_auth_test.go` 包含 httptest 与真实 TempDir 文件测试。遵守父任务约束，本子流未运行 Linux Go、Mac SSH、真实服务/真实配置或 Web server。Go/gofmt/Node 本地不可用；仅 tree-sitter Go/JS 语法解析，不等同编译或运行测试。父任务需 native gofmt、`go test -run '^TestWeb'`、完整 tests/vet，以及隔离真实浏览器桌面/窄屏验收。
+### ST1 页面启动日志（独立候选）
+
+`GET /api/v1/startup-trace[?operation_id=<32 lowercase hex>]` 只读当前 WebUI 最近服务操作。无 query 仅用于发现，有 ID 时绝不跳到另一操作；未知／重复 query、空或非规范 ID 返回 400，替换返回 409。与 connections 完全相同的 Host、Cookie、精确 `X-AnyTLS-Origin`、可选 Origin 及 Fetch Metadata 政策；非回环 HTTP 才允许 Metadata 缺失。响应 no-store/no CORS；不拿 actionMu、不读取 serviceState、records、安装或日志文件。返回前重新验证会话、配置绑定和操作所有者。响应是共享 `startuptimeline.ReadResponse`，严格固定 DTO，最多 768 KiB；不返回自由错误或原始配置。
+
+手动 service 动作及八种实际保存自动 reload 使用服务端 crypto/rand ID，客户端不生成 ID、不另发 reload。所有保存共用 finishConfigSave；IMPORT_APPEND 使用受控 context source 区分同一个 import/commit 路由。成功、失败（包括 saved=true/applied=false）附 `startup_operation: {timeline_schema:1,operation_id:string|null,availability:AVAILABLE|UNSUPPORTED|UNAVAILABLE}`。同值、未运行、状态不可用或保存校验拒绝不建立新日志，明确 `startup_operation:null`；此前最近服务操作不因此改成保存审计。
+
+新 helper 能力发现先于 mutation；仅精确 legacy INVALID_REQUEST（由 backend `startupUnsupported` 识别）或未发送 mutation 的能力超时可执行一次 legacy。坏帧、未知 schema 或其他错误绝不降级。mutation 已发送后丢失回复绝不重发，Web 返回 UNKNOWN 并仅按 ID 查询。原 error-only `webControlAction` 和注入 `serviceAction` seam 保留；注入旧 seam 不暗连真实 helper。生产依赖 backend owner 的精确函数 `startupRead` / `startupControl` / `startupUnsupported`，本候选没有伪生产实现。
+
+概览日志每 2 秒最多一个 GET，操作／会话 owner 绑定，页面隐藏、切页、logout、替换时 abort；迟到 401、GET 或旧 POST finally 不能改写新会话。UTC 开始时间、helper elapsed、最后收到 core 阶段／缓存年龄、STALE/GAP、lifecycle/helper/web/receipt 分开显示。完整导出按 process clock 分组，保留全部有界 events、轮次、rollback、receipt、provenance 和固定 DTO，不用 notice 文本作为复制数据。FINISHED 是历史快照，不授权 ready；运行中可复制 partial。
+
+浏览器和 HTTP 均严格验证 DTO。复制仅点击后调用 Clipboard；不安全 HTTP、无 Clipboard API 或拒绝均展开 readonly textarea、选中完整文本，明确“未复制，请手动复制”，不谎报成功。日志仅内存，不写 localStorage。
+
+`web_startup_browser_test.mjs` 在真实 Chromium 1280/390 使用显式 synthetic API，不是 backend/Mac/helper/TUN 验收；缓存字体通过 test-only FONTCONFIG_FILE 提供。覆盖完整复制精确相等、fallback、注入 Clipboard 成功/拒绝、严格负例、所有 source 标签、真实 service 按钮失败引用、2s 单在途、迟到 GET/401、新旧会话和旧 finally、隐藏 abort、终态停 poll。`web_startup_test.go` 的认证 HTTP／真实保存关联 Go tests 已写，等待父 integration 合入 backend 后在授权环境执行；本地仅 gofmt parser，不声称编译或 Go 测试已通过。
+
+早期 `web_auth_test.go` 包含 httptest 与真实 TempDir 文件测试，其当时本地工具限制不代表本次 ST1 验收。ST1 本地已使用缓存 Node/Chromium 和 gofmt parser；没有运行 Linux Go 编译／Go tests、Mac SSH、真实服务／正式配置或正式 Web server。父任务仍需合并 backend 后执行 `go test -run '^TestWeb'`、完整 tests/vet 与 native 集成验收。

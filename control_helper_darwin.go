@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/NiuStar/anytls-core/internal/engine"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,7 +22,8 @@ func controlHelperEnginePreflight(ctx context.Context, cfg map[string]any) error
 	if err != nil {
 		return err
 	}
-	return engine.Check(ctx, raw)
+	// The helper preflight is not a core Run stream.
+	return engine.Check(st.WithRecorder(ctx, nil), raw)
 }
 func controlHelperSupported() bool { return true }
 func controlHelperRootOwned(info os.FileInfo) bool {

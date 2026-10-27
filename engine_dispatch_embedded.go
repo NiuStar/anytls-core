@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 
 	"github.com/NiuStar/anytls-core/internal/engine"
 )
@@ -46,8 +47,13 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 		fmt.Println("embedded configuration valid")
 		return nil
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	parent := compiled.startupContext
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	dispatchSpan := st.FromContext(ctx).Begin("START", "CORE_DISPATCH", st.Fields{})
 	var input *engine.RecordsInput
 	if recordService && command == "run" {
 		var writer *cr.Writer
@@ -66,12 +72,15 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 		}}
 		defer func() {
 			if writer != nil {
+				span := st.FromContext(ctx).Begin("FINALIZE", "CORE_RECORDS_SHUTDOWN", st.Fields{})
 				writer.StopAdmission()
 				cleanup, cancel := context.WithTimeout(context.Background(), cr.TelemetryTimeout)
 				defer cancel()
 				writer.Shutdown(cleanup)
+				st.FromContext(ctx).End(span, "UNKNOWN", st.Fields{})
 			}
 		}()
 	}
+	st.FromContext(ctx).End(dispatchSpan, "OK", st.Fields{})
 	return engine.RunWithRecords(ctx, b, input)
 }

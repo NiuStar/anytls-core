@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"io"
 	"os"
 	"path/filepath"
@@ -49,30 +50,34 @@ type diagnosticServer struct {
 	Restoration string `json:"restoration"`
 }
 type serviceDiagnostic struct {
-	Schema        int                `json:"schema_version"`
-	Trust         string             `json:"trust"`
-	Engine        string             `json:"engine_mode"`
-	Network       string             `json:"network"`
-	Operation     string             `json:"operation"`
-	Outcome       string             `json:"outcome"`
-	Code          string             `json:"error_code"`
-	Readiness     string             `json:"readiness"`
-	HTTPS         string             `json:"https"`
-	Rollback      string             `json:"rollback"`
-	Stopped       string             `json:"stopped"`
-	Restoration   string             `json:"restoration"`
-	Snapshot      string             `json:"snapshot"`
-	Identity      diagnosticIdentity `json:"identity"`
-	Baseline      diagnosticEvidence `json:"baseline"`
-	BeforeHTTPS   diagnosticEvidence `json:"before_https"`
-	AfterHTTPS    diagnosticEvidence `json:"after_https"`
-	Restore       diagnosticEvidence `json:"restore"`
-	Servers       []diagnosticServer `json:"servers"`
-	ServerCount   int                `json:"server_count"`
-	ServerDetails string             `json:"server_details"`
-	active        *diagnosticEvidence
-	diagnostic    *startDiagnostics
-	phase         string
+	Schema            int                `json:"schema_version"`
+	Trust             string             `json:"trust"`
+	Engine            string             `json:"engine_mode"`
+	Network           string             `json:"network"`
+	Operation         string             `json:"operation"`
+	Outcome           string             `json:"outcome"`
+	Code              string             `json:"error_code"`
+	Readiness         string             `json:"readiness"`
+	HTTPS             string             `json:"https"`
+	Rollback          string             `json:"rollback"`
+	Stopped           string             `json:"stopped"`
+	Restoration       string             `json:"restoration"`
+	Snapshot          string             `json:"snapshot"`
+	Identity          diagnosticIdentity `json:"identity"`
+	Baseline          diagnosticEvidence `json:"baseline"`
+	BeforeHTTPS       diagnosticEvidence `json:"before_https"`
+	AfterHTTPS        diagnosticEvidence `json:"after_https"`
+	Restore           diagnosticEvidence `json:"restore"`
+	Servers           []diagnosticServer `json:"servers"`
+	ServerCount       int                `json:"server_count"`
+	ServerDetails     string             `json:"server_details"`
+	active            *diagnosticEvidence
+	diagnostic        *startDiagnostics
+	phase             string
+	startupCtx        context.Context
+	startupSegment    string
+	startupAppInfo    os.FileInfo
+	startupConfigInfo os.FileInfo
 }
 
 func diagnosticUnknown() diagnosticEvidence {
@@ -140,17 +145,25 @@ func diagnosticOpen(path string, limit int64) (*os.File, int64, error) {
 	return f, st.Size(), nil
 }
 func diagnosticHash(path string, limit int64) string {
+	sum, _ := diagnosticHashInfo(path, limit)
+	return sum
+}
+func diagnosticHashInfo(path string, limit int64) (string, os.FileInfo) {
 	f, _, err := diagnosticOpen(path, limit)
 	if err != nil {
-		return "UNAVAILABLE"
+		return "UNAVAILABLE", nil
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "UNAVAILABLE", nil
+	}
 	h := sha256.New()
 	n, err := io.Copy(h, io.LimitReader(f, limit+1))
 	if err != nil || n > limit {
-		return "UNAVAILABLE"
+		return "UNAVAILABLE", nil
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), info
 }
 func diagnosticHashes(dir string) []string {
 	// Reject visible non-directories (including symlinks and no-writer FIFOs)
@@ -190,8 +203,8 @@ func diagnosticHashes(dir string) []string {
 	return result
 }
 func (r *serviceDiagnostic) capture(root string) {
-	r.Identity.App = diagnosticHash(filepath.Join(root, "anytls-macos"), 128<<20)
-	r.Identity.Config = diagnosticHash(filepath.Join(root, "config.yaml"), 1<<20)
+	r.Identity.App, r.startupAppInfo = diagnosticHashInfo(filepath.Join(root, "anytls-macos"), 128<<20)
+	r.Identity.Config, r.startupConfigInfo = diagnosticHashInfo(filepath.Join(root, "config.yaml"), 1<<20)
 	r.Identity.Selected = diagnosticHash(filepath.Join(root, "config.yaml.selected"), 64<<10)
 	r.Identity.Rules = diagnosticHashes(filepath.Join(root, "rules"))
 	r.Identity.CA = diagnosticHashes(filepath.Join(root, "certs"))
@@ -300,7 +313,19 @@ func (r *serviceDiagnostic) finish(root string, result *error) {
 			r.Code = "CANCELLED"
 		}
 	}
-	if err := r.write(root); err != nil {
+	segment := r.startupSegment
+	if segment == "" {
+		segment = "FINALIZE"
+	}
+	ctx := r.startupCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recorder := st.FromContext(ctx)
+	span := recorder.Begin(segment, "RECEIPT_WRITE", st.Fields{})
+	writeErr := r.write(root)
+	recorder.End(span, startupCode(writeErr), st.Fields{})
+	if err := writeErr; err != nil {
 		outcome := "lifecycle failed; diagnostic receipt write failed"
 		if *result == nil {
 			outcome = "lifecycle succeeded; diagnostic receipt write failed"
