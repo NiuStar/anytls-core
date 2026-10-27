@@ -138,11 +138,12 @@ func TestLifecycleUnloadedMissingBaseline(t *testing.T) {
 	if err := os.Mkdir(d.root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.stop(); err == nil {
-		t.Fatal("unloaded private snapshot without baseline reported stopped")
+	if err := d.stop(); err != nil {
+		t.Fatal("unloaded snapshot must not block stop", err)
 	}
-	if _, err := os.Stat(d.root); err != nil {
-		t.Fatal("diagnostic evidence removed")
+	archives, _ := filepath.Glob(filepath.Join(filepath.Dir(d.root), ".service-recovery-*", "snapshot"))
+	if len(archives) != 1 {
+		t.Fatal("diagnostic evidence not archived")
 	}
 }
 func TestLifecycleRollbackErrors(t *testing.T) {
@@ -174,8 +175,12 @@ func TestLifecycleStopProbeErrors(t *testing.T) {
 	}
 	sentinel := errors.New("DNS sentinel")
 	d.dns = func() ([]string, error) { return nil, sentinel }
-	if err := d.stop(); !errors.Is(err, sentinel) {
-		t.Fatalf("DNS error lost: %v", err)
+	if err := d.stop(); err != nil {
+		t.Fatalf("DNS probe warning blocked confirmed stop: %v", err)
+	}
+	v, _ := readDiagnostic(t, d.root)
+	if v["restoration"] == "VERIFIED" || v["snapshot"] != "ARCHIVED" {
+		t.Fatal("DNS uncertainty lost", v)
 	}
 }
 func TestLifecycleCorruptBaseline(t *testing.T) {
@@ -191,7 +196,11 @@ func TestLifecycleCorruptBaseline(t *testing.T) {
 			}
 			d.route = func(string) (string, error) { return "", nil }
 			d.dns = func() ([]string, error) { return nil, nil }
-			if err := d.stop(); err == nil {
+			if err := d.stop(); err != nil {
+				t.Fatal("corrupt baseline blocked unload", err)
+			}
+			v, _ := readDiagnostic(t, d.root)
+			if v["restoration"] == "VERIFIED" {
 				t.Fatal("empty/corrupt evidence falsely proved restoration")
 			}
 			if *loaded {
@@ -240,7 +249,7 @@ func TestLifecycleStopTransitions(t *testing.T) {
 			}
 			*calls = nil
 			sentinel := errors.New("transition sentinel")
-			wantErr := true
+			wantErr := false
 			switch mode {
 			case "unloaded_restored":
 				*loaded = false
@@ -259,15 +268,18 @@ func TestLifecycleStopTransitions(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "bootout_and_baseline_errors":
+				wantErr = true
 				if err := os.Remove(filepath.Join(d.root, serviceBaselineName)); err != nil {
 					t.Fatal(err)
 				}
 				d.tool = func(context.Context, string, ...string) (string, error) { return "SECRET", sentinel }
 			case "state_error":
+				wantErr = true
 				d.state = func() (bool, bool, error) { return false, false, sentinel }
 			case "route_error":
 				d.route = func(string) (string, error) { return "", sentinel }
 			case "cleanup_error":
+				wantErr = true
 				d.remove = func(string) error { return sentinel }
 			case "legacy_single", "legacy_multi":
 				p := filepath.Join(d.root, serviceBaselineName)
@@ -288,13 +300,13 @@ func TestLifecycleStopTransitions(t *testing.T) {
 				if err := os.WriteFile(p, raw, 0600); err != nil {
 					t.Fatal(err)
 				}
-				wantErr = mode == "legacy_multi"
+				wantErr = false
 			}
 			err := d.stop()
 			if (err != nil) != wantErr {
 				t.Fatalf("stop error=%v wantErr=%v", err, wantErr)
 			}
-			if strings.HasSuffix(mode, "error") || mode == "bootout_and_baseline_errors" {
+			if wantErr && (strings.HasSuffix(mode, "error") || mode == "bootout_and_baseline_errors") {
 				if !errors.Is(err, sentinel) {
 					t.Fatalf("error identity lost: %v", err)
 				}
@@ -487,7 +499,7 @@ func TestLifecycleHTTPSExactUTUN(t *testing.T) {
 			}
 			_, statErr := os.Stat(d.root)
 			if mode == "changed_restoration_error" {
-				if !errors.Is(err, sentinel) || statErr != nil || strings.Contains(output, "restoration verified") {
+				if !errors.Is(err, sentinel) || !errors.Is(statErr, os.ErrNotExist) || strings.Contains(output, "restoration verified") {
 					t.Fatalf("rollback error/evidence lost: output=%q err=%v stat=%v", output, err, statErr)
 				}
 			} else if !errors.Is(statErr, os.ErrNotExist) || !strings.Contains(output, "all server/public routes and DNS restoration verified") {
@@ -573,14 +585,18 @@ func TestLifecycleDNSBaselineAddresses(t *testing.T) {
 				t.Fatal("owned job remained loaded after stop")
 			}
 			if mode == "scoped_changed_zone" {
-				if err == nil || !strings.Contains(err.Error(), "restoration_failed") {
-					t.Fatalf("changed DNS zone accepted: %v", err)
+				if err != nil {
+					t.Fatalf("changed DNS zone blocked stop: %v", err)
 				}
 				status, err := d.status()
-				if err == nil || !strings.Contains(status, "restoration_failed") {
-					t.Fatalf("changed-zone stopped status accepted: %q %v", status, err)
+				if err != nil || !strings.Contains(status, "stopped") {
+					t.Fatalf("changed-zone job not stopped: %q %v", status, err)
 				}
-				raw, err := os.ReadFile(p)
+				paths, _ := filepath.Glob(filepath.Join(filepath.Dir(d.root), ".service-recovery-*", "snapshot", serviceBaselineName))
+				if len(paths) != 1 {
+					t.Fatal("missing original DNS evidence", paths)
+				}
+				raw, err := os.ReadFile(paths[0])
 				if err != nil {
 					t.Fatal(err)
 				}

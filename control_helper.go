@@ -250,6 +250,9 @@ func (s *controlHelperServer) executeStartup(q controlHelperWireRequest, id, ide
 	return r, o
 }
 func (s *controlHelperServer) executeContext(ctx context.Context, q controlHelperWireRequest) controlHelperResponse {
+	var diagnostic *startDiagnostics
+	ctx = context.WithValue(ctx, lifecycleDiagnosticsKey{}, &diagnostic)
+	var recovery string
 	if !controlHelperValidRequest(q) {
 		return controlHelperFailure("INVALID_REQUEST")
 	}
@@ -289,6 +292,9 @@ func (s *controlHelperServer) executeContext(ctx context.Context, q controlHelpe
 				return reply
 			}
 		}
+		if diagnostic != nil {
+			recovery = diagnostic.Restoration
+		}
 		if q.Action == "start" || q.Action == "reload" {
 			if err := s.start(ctx, q.AllowInsecure); err != nil {
 				reply := controlHelperFailure("START_FAILED")
@@ -303,7 +309,13 @@ func (s *controlHelperServer) executeContext(ctx context.Context, q controlHelpe
 	if err != nil {
 		return controlHelperFailure("STATE_FAILED")
 	}
-	return controlHelperResponse{OK: true, Loaded: loaded, Running: running, Message: "Control request completed."}
+	if diagnostic != nil {
+		diagnostic.Operation = strings.ToUpper(q.Action)
+		if recovery == "FAILED" || recovery == "UNKNOWN" {
+			diagnostic.Restoration = recovery
+		}
+	}
+	return controlHelperResponse{OK: true, Loaded: loaded, Running: running, Message: "Control request completed.", Diagnostics: diagnostic}
 }
 
 // Reject symlinks at every component, including the leaf. Fixed protected

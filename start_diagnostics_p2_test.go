@@ -82,6 +82,16 @@ func TestDiagnosticsP2Recovery(t *testing.T) {
 				cleanup = "FAILED"
 			}
 			err := d.stop()
+			if mode != "initial_state" && mode != "remove" {
+				if err != nil {
+					t.Fatal("network warning blocked stop", err)
+				}
+				v, _ := readDiagnostic(t, d.root)
+				if v["restoration"] != want || v["snapshot"] != "ARCHIVED" || v["outcome"] != "SUCCEEDED" {
+					t.Fatal("recovery warning lost", v)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatal("expected stop failure")
 			}

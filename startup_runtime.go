@@ -119,6 +119,8 @@ func (d serviceLifecycle) traceRemove() error {
 	d.traceEnd(span, e)
 	return e
 }
+type lifecycleDiagnosticsKey struct{}
+
 func (d serviceLifecycle) finishReceipt(r *serviceDiagnostic, result *error) {
 	span := d.traceBegin("RECEIPT_FINISH")
 	r.startupCtx = d.startupCtx
@@ -127,6 +129,10 @@ func (d serviceLifecycle) finishReceipt(r *serviceDiagnostic, result *error) {
 	}
 	r.startupSegment = d.startupSegment
 	r.finish(d.root, result)
+	if dst, ok := r.startupCtx.Value(lifecycleDiagnosticsKey{}).(**startDiagnostics); ok && r.diagnostic != nil {
+		copy := *r.diagnostic
+		*dst = &copy
+	}
 	d.traceEnd(span, *result)
 	if d.startupServer != nil && r.diagnostic != nil {
 		o := startupFrom(d.startupCtx)

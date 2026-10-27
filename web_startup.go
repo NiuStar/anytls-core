@@ -28,6 +28,7 @@ type webStartupOperation struct {
 	helperObserved                  bool
 	configIdentity                  string
 	helperResult                    *st.MutationResponse
+	diagnostics                     *startDiagnostics
 }
 type webStartupReadFunc func(context.Context, *string) (st.ReadResponse, error)
 type webStartupControlFunc func(context.Context, string, bool, string) (st.MutationResponse, error)
@@ -141,10 +142,20 @@ func (w *webConsole) startupReference(op *webStartupOperation) *st.OperationRefe
 type webControlActionResultValue struct {
 	Reference st.OperationReference
 	Helper    *st.MutationResponse
+	Diagnostics *startDiagnostics
 }
 
 func webControlActionResult(ctx context.Context, config, action string, allow bool, id string, legacy webControlRequestFunc, read webStartupReadFunc, mutate webStartupControlFunc, unsupported func(error) bool) (webControlActionResultValue, error) {
 	var helper *st.MutationResponse
+	var diagnostic *startDiagnostics
+	legacyRequest := func(ctx context.Context, verb string, allow bool) (controlHelperResponse, error) {
+		r, err := legacy(ctx, verb, allow)
+		if verb == action && err == nil && r.OK && r.Diagnostics != nil && r.Diagnostics.valid(true) {
+			copy := *r.Diagnostics
+			diagnostic = &copy
+		}
+		return r, err
+	}
 	request := func(ctx context.Context, action string, allow bool, id string) (st.MutationResponse, error) {
 		result, err := mutate(ctx, action, allow, id)
 		if err == nil && st.Validate(result) == nil {
@@ -153,8 +164,12 @@ func webControlActionResult(ctx context.Context, config, action string, allow bo
 		}
 		return result, err
 	}
-	ref, err := webControlActionReference(ctx, config, action, allow, id, legacy, read, request, unsupported)
-	return webControlActionResultValue{Reference: ref, Helper: helper}, err
+	ref, err := webControlActionReference(ctx, config, action, allow, id, legacyRequest, read, request, unsupported)
+	if err == nil && helper != nil && helper.Diagnostics != nil {
+		d := helper.Diagnostics
+		diagnostic = &startDiagnostics{Schema: d.Schema, Operation: d.Operation, Outcome: d.Outcome, Stage: d.Stage, Reason: d.Reason, Rollback: d.Rollback, Restoration: d.Restoration, Cleanup: d.Cleanup, Receipt: d.Receipt, Job: d.Job, Tun: d.Tun}
+	}
+	return webControlActionResultValue{Reference: ref, Helper: helper, Diagnostics: diagnostic}, err
 }
 func webControlActionReference(ctx context.Context, config, action string, allow bool, id string, legacy webControlRequestFunc, read webStartupReadFunc, mutate webStartupControlFunc, unsupported func(error) bool) (st.OperationReference, error) {
 	ref := st.OperationReference{TimelineSchema: 1, Availability: "UNAVAILABLE"}
@@ -263,6 +278,7 @@ func (w *webConsole) startupAction(ctx context.Context, action string, allow boo
 	w.startupMu.Lock()
 	op.reference = result.Reference
 	op.helperResult = result.Helper
+	op.diagnostics = result.Diagnostics
 	w.startupMu.Unlock()
 	return err
 }

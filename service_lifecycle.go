@@ -212,6 +212,10 @@ func (d serviceLifecycle) serverRoutes(b networkBaseline, servers []string) (res
 	}
 	return nil
 }
+type restorationJobError struct{ error }
+
+func (e *restorationJobError) Unwrap() error { return e.error }
+
 func (d serviceLifecycle) restored(b networkBaseline, servers []string) error {
 	var diagnostic *startDiagnostics
 	if d.receipt != nil {
@@ -232,13 +236,13 @@ func (d serviceLifecycle) restored(b networkBaseline, servers []string) error {
 		d.receipt.Restore.Job = "FAILED"
 	}
 	if err != nil {
-		return lifecycleFailure("job state probe failed", err)
+		return &restorationJobError{lifecycleFailure("job state probe failed", err)}
 	}
 	if loaded || running {
 		if diagnostic != nil {
 			diagnostic.Restoration = "FAILED"
 		}
-		return errors.New("job still loaded")
+		return &restorationJobError{errors.New("job still loaded")}
 	}
 	if d.receipt != nil {
 		d.receipt.Restore.Job = "UNLOADED"
@@ -305,16 +309,26 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 		}
 		return d.failure("JOB", "JOB_ALREADY_LOADED", errors.New("AnyTLS job already loaded; run 'anytls stop' before starting"))
 	}
-	// Do not claim an existing directory or delete its diagnostic evidence.
+	// A confirmed-unloaded legacy snapshot is evidence, not an active job.
 	span := d.traceBegin("SNAPSHOT_EXISTENCE")
 	_, existErr := os.Lstat(d.root)
 	d.traceEnd(span, nil)
-	if err := existErr; !errors.Is(err, os.ErrNotExist) {
-		reason := "SNAPSHOT_UNAVAILABLE"
+	if existErr == nil {
+		old := newDiagnostic("STOP")
+		d.owned, err = snapshotRootAt(d.root)
 		if err == nil {
-			reason = "SNAPSHOT_EXISTS"
+			old.capture(d.root)
+			old.Stopped, old.Restoration = "VERIFIED", "NOT_VERIFIED"
+			err = d.archiveSnapshot(old)
 		}
-		return d.failure("SNAPSHOT", reason, lifecycleFailure("private snapshot already exists or is unavailable", err))
+		if err != nil {
+			return d.failure("SNAPSHOT", "SNAPSHOT_IDENTITY_FAILED", lifecycleFailure("legacy snapshot archival failed; retained", err))
+		}
+		d.owned = nil
+		d.diagnostic.Restoration = "UNKNOWN"
+		fmt.Println("Warning: previous snapshot archived; previous network restoration is not verified")
+	} else if !errors.Is(existErr, os.ErrNotExist) {
+		return d.failure("SNAPSHOT", "SNAPSHOT_UNAVAILABLE", lifecycleFailure("private snapshot unavailable", existErr))
 	}
 	r.phase = "STAGING_FAILED"
 	attempted := false
@@ -789,6 +803,7 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 			r.Snapshot = "ABSENT"
 			if r.diagnostic != nil {
 				r.diagnostic.Cleanup = "VERIFIED"
+				r.diagnostic.Job = "UNLOADED"
 			}
 			r.Restoration = "UNAVAILABLE_NO_BASELINE"
 			fmt.Println("AnyTLS TUN stopped")
@@ -798,7 +813,12 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 		}
 	}
 	span := d.traceBegin("STOP_BASELINE")
-	baseline, servers, readErr := d.baseline()
+	var baseline networkBaseline
+	var servers []string
+	readErr := d.owned.check()
+	if readErr == nil {
+		baseline, servers, readErr = d.baseline()
+	}
 	d.traceEnd(span, readErr)
 	if r.Operation == "STOP" && readErr == nil {
 		r.serverScope(len(servers), "STORED_NOT_OBSERVED")
@@ -827,13 +847,22 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 			}
 			if !loaded && !running {
 				r.Restore.Job = "UNLOADED"
+				r.Stopped = "VERIFIED"
+				if r.diagnostic != nil && r.Operation == "STOP" {
+					r.diagnostic.Job = "UNLOADED"
+				}
 				if readErr != nil {
-					return true, lifecycleFailure("job unloaded; restoration not verified; snapshot retained", readErr)
+					return true, d.stopRecoveryWarning(r, readErr)
 				}
 				last = d.restored(baseline, servers)
+				var jobErr *restorationJobError
+				if errors.As(last, &jobErr) {
+					r.Stopped = "UNKNOWN"
+					return true, last
+				}
 				var probeErr *lifecycleError
 				if errors.As(last, &probeErr) {
-					return true, lifecycleFailure("restoration_failed; snapshot retained", last)
+					return true, d.stopRecoveryWarning(r, last)
 				}
 				if last == nil {
 					r.Restoration = "VERIFIED"
@@ -867,7 +896,31 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 			d.tracePause()
 		}
 	}
-	return errors.Join(readErr, lifecycleFailure("restoration_failed; snapshot retained", last))
+	if r.Stopped == "VERIFIED" {
+		return d.stopRecoveryWarning(r, errors.Join(readErr, last))
+	}
+	return errors.Join(readErr, lifecycleFailure("job remains loaded; snapshot retained", last))
+}
+
+func (d serviceLifecycle) stopRecoveryWarning(r *serviceDiagnostic, cause error) error {
+	if r.diagnostic != nil {
+		r.Restoration = r.diagnostic.Restoration
+	}
+	if err := d.archiveSnapshot(r); err != nil {
+		if r.diagnostic != nil {
+			r.diagnostic.Cleanup = "FAILED"
+		}
+		return errors.Join(cause, lifecycleFailure("recovery snapshot archival failed", err))
+	}
+	if r.diagnostic != nil {
+		r.diagnostic.Cleanup = "VERIFIED"
+	}
+	fmt.Println("AnyTLS TUN stopped; warning: network restoration not verified; diagnostic snapshot archived")
+	// Independent STOP succeeds after unload; failed START retains both causes.
+	if r.Operation != "STOP" {
+		return lifecycleFailure("rollback network restoration not verified; snapshot archived", cause)
+	}
+	return nil
 }
 
 // Read-only status, deliberately no network exit request or sudo.
@@ -887,6 +940,10 @@ func (d serviceLifecycle) status() (string, error) {
 	if err != nil {
 		if !loaded && !running {
 			if _, e := os.Lstat(d.root); errors.Is(e, os.ErrNotExist) {
+				archives, _ := filepath.Glob(filepath.Join(filepath.Dir(d.root), ".service-recovery-*"))
+				if len(archives) > 0 {
+					return "AnyTLS TUN stopped; previous recovery diagnostics archived; network restoration not_verified", nil
+				}
 				return "AnyTLS TUN stopped", nil
 			}
 		}
@@ -894,7 +951,7 @@ func (d serviceLifecycle) status() (string, error) {
 	}
 	if !loaded && !running {
 		if err := d.restored(baseline, servers); err != nil {
-			return "AnyTLS TUN restoration_failed; snapshot retained", err
+			return "AnyTLS TUN stopped; restoration_failed; snapshot retained (will be archived on next start)", err
 		}
 		return "AnyTLS TUN stopped; restoration verified; snapshot retained", nil
 	}

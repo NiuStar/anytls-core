@@ -517,6 +517,7 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 					diagnostics = webControlDiagnostics(err)
 				}
 				if err == nil {
+					diagnostics = startup.diagnostics
 					verify := startup.recorder.Begin("FINALIZE", "WEB_VERIFY_STATE", st.Fields{})
 					loaded, running, err = w.state()
 					code := "OK"
@@ -800,7 +801,11 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 		}
 		pending, _ := w.pendingState()
 		w.finishStartup(startup, nil)
-		webJSON(rw, 200, map[string]any{"ok": true, "loaded": loaded, "running": running, "pendingReload": pending, "readiness": "NOT_OBSERVED", "startup_operation": w.startupReference(startup)})
+		body := map[string]any{"ok": true, "loaded": loaded, "running": running, "pendingReload": pending, "readiness": "NOT_OBSERVED", "startup_operation": w.startupReference(startup)}
+		if startup.diagnostics != nil {
+			body["diagnostics"] = startup.diagnostics
+		}
+		webJSON(rw, 200, body)
 	case r.URL.Path == "/api/v1/update" && r.Method == "POST":
 		var in struct {
 			Confirm bool `json:"confirm"`

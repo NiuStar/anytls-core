@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -145,6 +146,77 @@ func (r *snapshotRootIdentity) remove(remove func(string) error) error {
 		return err
 	}
 	return remove(r.path)
+}
+
+// Preserve failed recovery evidence without occupying the next active snapshot.
+// Like remove, this pins the leaf identity; it is not hostile-parent protection.
+func (d serviceLifecycle) archiveSnapshot(r *serviceDiagnostic) error {
+	check := func() error {
+		if err := d.owned.check(); err != nil {
+			return err
+		}
+		info, err := os.Lstat(d.root)
+		if err != nil {
+			return err
+		}
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(owner.Uid) != os.Geteuid() || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(d.owned.info, info) {
+			return errors.New("unsafe snapshot ownership; retained")
+		}
+		return nil
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	loaded, running, err := d.traceState("JOB_INITIAL")
+	if err != nil {
+		return lifecycleFailure("archive job state unavailable; retained", err)
+	}
+	if loaded || running {
+		return errors.New("archive job may be loaded; retained")
+	}
+	archive, err := os.MkdirTemp(filepath.Dir(d.root), ".service-recovery-*")
+	if err != nil {
+		return err
+	}
+	// Never delete evidence after the move, even if publishing its receipt fails.
+	moved := false
+	defer func() {
+		if !moved {
+			_ = os.Remove(filepath.Join(archive, "previous-service-diagnostic.json"))
+			_ = os.Remove(archive)
+		}
+	}()
+	previous := filepath.Join(filepath.Dir(d.root), "service-diagnostic.json")
+	if _, err := os.Lstat(previous); err == nil {
+		raw, err := readSnapshotSource(previous, diagnosticLimit, false)
+		if err != nil {
+			return err
+		}
+		if err := writeSnapshotLeaf(filepath.Join(archive, "previous-service-diagnostic.json"), raw, 0600); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	destination := filepath.Join(archive, "snapshot")
+	if err := os.Rename(d.root, destination); err != nil {
+		return err
+	}
+	moved = true
+	r.Snapshot = "ARCHIVED"
+	copy := *r
+	copy.Outcome = "SUCCEEDED"
+	if r.Operation != "STOP" {
+		copy.Outcome = "FAILED"
+	}
+	if err := copy.write(destination); err != nil {
+		return lifecycleFailure("snapshot archived; recovery receipt write failed", err)
+	}
+	return nil
 }
 
 // Ownership survives staging errors so lifecycle cleanup cannot adopt a foreign

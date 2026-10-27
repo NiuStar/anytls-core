@@ -49,6 +49,12 @@
 
 ## 配置与运行边界
 
+### 停止完成与网络恢复警告
+
+STOP 以新鲜的服务作业已卸载为停止证据；路由／DNS 与旧基线不同、基线缺失／损坏或网络探针失败，不再单独阻止停止或下一次启动。恢复未证实仍为 `restoration=FAILED/UNKNOWN`，绝不提升为 VERIFIED。失败恢复快照原子移动到同父随机0700 `.service-recovery-*` 目录的 `snapshot`，同时保留先前诊断原字节与本次恢复摘要；不自动删除归档。START 对已确认卸载的遗留快照自动执行同样归档后继续，拒绝未知／仍加载作业、快照符号链接、身份替换及不安全所有权／权限。
+
+成功的 helper、时间轴 mutation 和 HTTP 手动操作／保存自动应用响应可以带既有11字段严格 `diagnostics`，其 `outcome=SUCCEEDED,stage=NONE,reason=NONE` 与 `restoration=FAILED/UNKNOWN` 合法共存。页面对该组合显示明确恢复警告，而不是只报成功；RELOAD 保留 STOP 的恢复警告并继续 START。真实 bootout、作业读取、归档／清理或诊断收尾失败仍失败关闭；失败 START 的主错误与 rollback 恢复错误继续保留。只读 CLI status 区分 stopped 与先前恢复未验证，不把归档或历史回执当作网络恢复成功证据。现有 DNS／路由／TLS 策略及就绪预算不变。
+
 候选同一字节做单 YAML document/mapping、loadNodesBytes、真实 applyRoutingBytes（内部 resolveGroup、loadRuleSet、规则语法编译）校验。规则引用保持原配置目录相对路径，CA 沿原 buildNode 语义；绝不 chdir。校验允许配置显式 skip-cert-verify 以支持编辑既有配置，不构成运行授权，Start 仍要求独立 confirm_insecure。不启动核心、不写原文件直到通过校验；完整 YAML 按用户原字节保存，不 typed roundtrip。TUN 固定IP及实际选中节点的运行要求仍由现有服务预检负责，配置编辑允许合法但未完成的非活动节点。
 
 启动前的磁盘配置与运行 root 快照不作虚假相等推断：pendingKnown=false；控制台成功 start/reload 后确认本次配置基线，后续配置/selection 指纹变化显示 pendingReload。root 快照从不由配置页面改写。

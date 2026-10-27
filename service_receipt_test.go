@@ -286,7 +286,7 @@ func TestReceiptStopBranches(t *testing.T) {
 			if mode == "absent" && err != nil {
 				t.Fatal(err)
 			}
-			if mode != "absent" && err == nil {
+			if (mode == "cleanup_failed" || mode == "receipt_failed") && err == nil {
 				t.Fatal("failure branch accepted")
 			}
 			if mode == "cleanup_failed" && !errors.Is(err, sentinel) {
