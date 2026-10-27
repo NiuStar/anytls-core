@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-27-02
+
+- 同输入字节取得路由规则数量提示并限制初始容量，减少大规则 slice增长／复制；仍委托原SDK严格解码，不新增规则配额、不合并／重排规则。完整转发Comments／SetComments，保留注释元数据与原错误合同，不添加阶段诊断代码。
+- 已审实现585dc666的Linux完整465顶层／1416子测试PASS、6 SKIP；Mac ARM64隔离469顶层／1416子测试PASS、5 SKIP及vet／clean build通过。原生收尾原FAIL保留，精确自身.info新增及直接父元数据另获有边界补证；不是最终发行身份验收。
+- ARM64三组合成decoder elapsed中位数 -7.647%、累计分配 -38.075%，malloc次数 +0.338%；不是RSS、峰值或完整启动，不外推Intel故障／原配置或宣称TUN问题已修复。
+- 本文与版本说明是发布前快照；最终Mac原生full／vet／build／package、分支／main／标签CI与双架构公开附件审计待执行。CI／Binary Release不变，Source Release按旧配方排除新标签，不调整Linux发行。先发布Mac再测试Intel故障机；不安装、不改配置／助手、不重启WebUI／VPN／TUN。详见 [版本说明](docs/releases/v2026-10-27-02.md)。
+
 ## v2026-10-27-01
 
 - WebUI 新增单条规则入口：类型／目标／位置、GEOIP 的 CN 和现有有效 RULE-SET 使用下拉；DOMAIN／DOMAIN-SUFFIX／IP-CIDR 保留文本输入，no-resolve 为复选框。

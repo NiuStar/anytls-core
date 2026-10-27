@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前版本 **v2026-10-27-01** 新增 WebUI 单条分流规则入口，支持下拉选择类型／目标／位置、GEOIP 的 CN 与现有有效 RULE-SET，保留域名／CIDR 文本输入；默认在最终 MATCH 前插入，不移动 MATCH 或重排旧规则。局部插入保留其他 YAML 原字节，陈旧版本、无效规则集和不支持的布局明确拒绝。见下方“单条分流规则”及 [本版说明与待验收项](docs/releases/v2026-10-27-01.md)；最终 Mac 原生测试／构建／打包、公开 CI 和附件验收尚待完成，可安装版本以 [公开 Release](https://github.com/NiuStar/anytls-core/releases) 为准，源码版本不等于已发布。保留原生 GEOIP/CN 完整快照、可信 sticky 祖先守卫兼容、记录归属隔离与单次 decode/New、独立 `check`、严格 TLS 和既有分流合同。发行目标仍为 Intel（amd64）和 Apple Silicon（arm64）；固定 Go1.27.3／sing-box v1.14.3，SDK、补丁、构建 wrapper、打包器不变，默认只下载程序包与校验和。发布不安装程序、不改正式配置／规则、不更新助手、不切换 WebUI、不重启 VPN 或 TUN。既有正式 root 记录遥测不代表本版单条规则或 GEOIP 已在正式 TUN 验收；不宣称物理出口、DIRECT／IP白名单、Intel START_FAILED、IPv6／DNS或长期掉线已修复。保留公网 IP 私有订阅、严格整叶／SPKI 认证、仅添加节点、配置方案、并发测速与32MiB配置能力。ROUTED 不等于连接成功，普通更新不自动更新助手或重启 VPN。
+Go 编写的 macOS AnyTLS VPN 客户端。当前源码候选 **v2026-10-27-02** 为大规则输入预分配解码容量，并保留 SDK 严格验证与完整注释元数据；不新增规则配额、不合并或重排规则、不添加阶段诊断代码。既有 WebUI 单条规则、GEOIP/CN、记录归属与单次 decode/New、独立 check、严格 TLS 保持。见 [发布前证据快照与待验收项](docs/releases/v2026-10-27-02.md)；最终版本 Mac 原生 full／vet／build／package、公开 CI 和附件审计尚待执行，源码版本不等于已发布。ARM64 合成 decoder elapsed中位数 -7.647%、累计分配 -38.075%，不是 RSS／峰值或完整启动耗时，不外推 Intel故障机，不宣称 START_FAILED／TUN_NOT_READY根因或修复。发行仍仅 macOS arm64／amd64；CI、Binary Release、固定 Go1.27.3／sing-box v1.14.3、依赖、补丁、wrapper、打包器、安装器不变，Linux版本暂不调整。按用户安排先完成Mac发行再测试Intel故障机；发布不安装程序、不改正式配置／规则、不更新助手、不切换WebUI或重启VPN／TUN。ROUTED不等于连接成功，普通更新不自动更新助手或重启VPN。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
