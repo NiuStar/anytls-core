@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 const diagnosticLimit = 64 << 10
@@ -202,9 +204,31 @@ func diagnosticHashes(dir string) []string {
 	slices.Sort(result)
 	return result
 }
+
+// startupConfigIdentity captures metadata only: legal config size is independent
+// of the optional receipt hash budget. Never read or hash the large file here.
+func startupConfigIdentity(path string) os.FileInfo {
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > snapshotConfigLimit {
+		return nil
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil
+	}
+	f := os.NewFile(uintptr(fd), "startup config identity")
+	info, statErr := f.Stat()
+	closeErr := f.Close()
+	if statErr != nil || closeErr != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) || before.Mode() != info.Mode() || before.Size() != info.Size() || !before.ModTime().Equal(info.ModTime()) {
+		return nil
+	}
+	return info
+}
+
 func (r *serviceDiagnostic) capture(root string) {
 	r.Identity.App, r.startupAppInfo = diagnosticHashInfo(filepath.Join(root, "anytls-macos"), 128<<20)
-	r.Identity.Config, r.startupConfigInfo = diagnosticHashInfo(filepath.Join(root, "config.yaml"), 1<<20)
+	r.Identity.Config = diagnosticHash(filepath.Join(root, "config.yaml"), 1<<20)
+	r.startupConfigInfo = startupConfigIdentity(filepath.Join(root, "config.yaml"))
 	r.Identity.Selected = diagnosticHash(filepath.Join(root, "config.yaml.selected"), 64<<10)
 	r.Identity.Rules = diagnosticHashes(filepath.Join(root, "rules"))
 	r.Identity.CA = diagnosticHashes(filepath.Join(root, "certs"))
