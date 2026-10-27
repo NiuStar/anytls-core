@@ -1,17 +1,20 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 )
 
 type compiledRuntime struct {
-	JSON     []byte
-	Manifest *cr.Manifest
+	JSON           []byte
+	Manifest       *cr.Manifest
+	startupContext context.Context
 }
 
 // The map compiler and encoder are shared with legacy callers. Provenance is a
@@ -21,6 +24,12 @@ func prepareRuntime(o *runtimeOptions) (map[string]any, error) {
 }
 
 func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
+	return prepareRuntimeWithRecordsContext(context.Background(), o)
+}
+func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (compiled compiledRuntime, err error) {
+	r := st.FromContext(ctx)
+	span := r.Begin("START", "CORE_COMPILE", st.Fields{})
+	defer func() { r.End(span, startupCode(err), st.Fields{}) }()
 	m := &cr.Manifest{SchemaVersion: cr.SchemaVersion, Rules: []cr.RuleOrigin{}, Outbounds: []cr.OutboundOrigin{}}
 	var ids [32]byte
 	if _, err := rand.Read(ids[:]); err != nil {
@@ -30,11 +39,15 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 		m.Generation = hex.EncodeToString(ids[16:])
 		m.SelectionGeneration = m.Generation
 	}
+	mapSpan := r.Begin("START", "CORE_COMPILE_MAP", st.Fields{})
 	cfg, err := prepareRuntimeMap(o, m)
+	r.End(mapSpan, startupCode(err), st.Fields{})
 	if err != nil || cfg == nil {
 		return compiledRuntime{}, err
 	}
+	jsonSpan := r.Begin("START", "CORE_JSON_ENCODE", st.Fields{})
 	b, err := json.MarshalIndent(cfg, "", "  ")
+	r.End(jsonSpan, startupCode(err), st.Fields{})
 	if err != nil {
 		return compiledRuntime{}, err
 	}
@@ -46,6 +59,7 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 		} else {
 			// CA bytes are pinned again into decoded SDK options before New, compared
 			// to these captures. Runtime JSON remains exactly certificate_path based.
+			caSpan := r.Begin("START", "CORE_MANIFEST_CA", st.Fields{})
 			caOrdinal := 0
 			for _, raw := range cfg["outbounds"].([]any) {
 				out := raw.(map[string]any)
@@ -62,8 +76,11 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 				addCapturedSource(m, cr.SourceCA, caOrdinal, ca, true)
 				caOrdinal++
 			}
+			r.End(caSpan, map[bool]string{true: "OK", false: "UNAVAILABLE"}[m != nil], st.Fields{})
 			if m != nil {
+				digestSpan := r.Begin("START", "CORE_MANIFEST_DIGEST", st.Fields{})
 				digest, digestErr := cr.ManifestDigest(*m, cr.ManifestBudget(m))
+				r.End(digestSpan, map[bool]string{true: "OK", false: "UNAVAILABLE"}[digestErr == nil], st.Fields{})
 				if digestErr != nil {
 					m = nil
 				} else {
@@ -72,7 +89,7 @@ func prepareRuntimeWithRecords(o *runtimeOptions) (compiledRuntime, error) {
 			}
 		}
 	}
-	return compiledRuntime{JSON: b, Manifest: m}, nil
+	return compiledRuntime{JSON: b, Manifest: m, startupContext: ctx}, nil
 }
 
 func addCapturedSource(m *cr.Manifest, kind cr.SourceKind, ordinal int, b []byte, present bool) {

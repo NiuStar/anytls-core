@@ -17,6 +17,7 @@ import (
 	"time"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 )
 
 const (
@@ -141,6 +142,12 @@ type controlHelperServer struct {
 	recordsSlot         sync.Mutex
 	recordsRead         func(context.Context, cr.Scope, cr.PageRequest) (cr.PageResponse, error)
 	recordsRegistration func() (controlHelperRegistration, error)
+	startupOnce         sync.Once
+	startup             startupCache
+	startupIdentity     string
+	startupPushSlot     sync.Mutex
+	startupRegistration func() (controlHelperRegistration, error)
+	startupAuthenticate func(net.Conn, *startupBinding) bool
 }
 
 func (s *controlHelperServer) handle(c net.Conn) {
@@ -156,13 +163,26 @@ func (s *controlHelperServer) handle(c net.Conn) {
 		_ = json.NewEncoder(c).Encode(r)
 	}
 	uid, err := s.peer(c)
-	if err != nil || uid == 0 || s.registration.UID == 0 || uid != s.registration.UID {
+	if err != nil || s.registration.UID == 0 || (uid != 0 && uid != s.registration.UID) {
 		reply(controlHelperFailure("FORBIDDEN"))
+		return
+	}
+	if uid == 0 {
+		s.startupRootHandle(c)
 		return
 	}
 	// Bound before dispatch; legacy decoding still has its unchanged 4096-byte
 	// budget. Dispatch must allow reordered/whitespace-padded 8KiB records frames.
-	raw, readErr := io.ReadAll(io.LimitReader(c, cr.MaxRequestBytes+1))
+	raw, readErr := io.ReadAll(io.LimitReader(c, st.PushBytes+1))
+	timeline, frameErr := startupFrame(raw)
+	if timeline {
+		s.startupHandle(c, uid, raw, readErr, frameErr)
+		return
+	}
+	if uid == 0 {
+		reply(controlHelperFailure("FORBIDDEN"))
+		return
+	}
 	if controlHelperRecordsFrame(raw) {
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
@@ -196,18 +216,41 @@ func (s *controlHelperServer) handle(c net.Conn) {
 	reply(s.execute(q))
 }
 func (s *controlHelperServer) execute(q controlHelperWireRequest) controlHelperResponse {
+	if q.Action == "status" {
+		return s.executeContext(context.Background(), q)
+	}
+	id, _ := st.NewID()
+	identity, _ := controlHelperConfigIdentity(s.registration.Config)
+	r, _ := s.executeStartup(q, id, identity, "LEGACY_CONTROL")
+	return r
+}
+func (s *controlHelperServer) executeStartup(q controlHelperWireRequest, id, identity, source string) (r controlHelperResponse, o *startupOperation) {
+	if !controlHelperValidRequest(q) || q.Action == "status" {
+		return controlHelperFailure("INVALID_REQUEST"), nil
+	}
+	if !s.mutation.TryLock() {
+		return controlHelperFailure("BUSY"), nil
+	}
+	defer s.mutation.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if id != "" && identity != "" {
+		o = s.startupBegin(id, q.Action, identity, source)
+	}
+	if o==nil {s.startup.mu.Lock();s.startup.latest=nil;s.startup.mu.Unlock()}
+	if o != nil {
+		ctx = context.WithValue(st.WithRecorder(ctx, o.recorder), startupOperationKey{}, o)
+	}
+	r = s.executeContext(ctx, q)
+	s.startupFinish(o, r)
+	return r, o
+}
+func (s *controlHelperServer) executeContext(ctx context.Context, q controlHelperWireRequest) controlHelperResponse {
 	if !controlHelperValidRequest(q) {
 		return controlHelperFailure("INVALID_REQUEST")
 	}
 	if q.Action != "status" {
-		if !s.mutation.TryLock() {
-			return controlHelperFailure("BUSY")
-		}
-		defer s.mutation.Unlock()
-		// Owned by the server, never by the client connection. Cancellation cannot
-		// release the lock while a lifecycle operation is still cleaning up.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
+
 		if q.Action == "start" || q.Action == "reload" {
 			if err := s.preflight(ctx, q.AllowInsecure); err != nil {
 				reply := controlHelperFailure("PREFLIGHT_FAILED")
@@ -216,7 +259,9 @@ func (s *controlHelperServer) execute(q controlHelperWireRequest) controlHelperR
 			}
 		}
 		if q.Action == "reload" {
+			span := st.FromContext(ctx).Begin("PREFLIGHT", "HELPER_RELOAD_JOB", st.Fields{})
 			loaded, _, err := s.state()
+			st.FromContext(ctx).End(span, startupCode(err), st.Fields{})
 			if err != nil {
 				reply := controlHelperFailure("STATE_FAILED")
 				reply.Diagnostics = diagnosticFromError(err, "RELOAD", "JOB", "JOB_STATE_UNAVAILABLE")
@@ -248,7 +293,9 @@ func (s *controlHelperServer) execute(q controlHelperWireRequest) controlHelperR
 			}
 		}
 	}
+	span := st.FromContext(ctx).Begin("FINALIZE", "HELPER_FINAL_STATE", st.Fields{})
 	loaded, running, err := s.state()
+	st.FromContext(ctx).End(span, startupCode(err), st.Fields{})
 	if err != nil {
 		return controlHelperFailure("STATE_FAILED")
 	}
@@ -330,28 +377,38 @@ func controlHelperConfigIdentity(path string) (string, error) {
 }
 
 func controlHelperConfigPreflight(ctx context.Context, captured serviceConfigBytes, allow bool) error {
+	span := st.FromContext(ctx).Begin("PREFLIGHT", "HELPER_PREFLIGHT_COMPILE", st.Fields{})
 	cfg, err := captured.compile(allow)
+	st.FromContext(ctx).End(span, startupCode(err), st.Fields{})
 	if err != nil {
 		return err
 	}
 	// Check every effective outbound, not merely the selected node: a secure
 	// selection does not revoke explicit consent for routed insecure groups.
-	for _, entry := range cfg["outbounds"].([]any) {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		out := entry.(map[string]any)
-		if out["type"] != "anytls" {
-			continue
-		}
-		tls := out["tls"].(map[string]any)
-		if path, ok := tls["certificate_path"].(string); ok {
-			if _, err := readSnapshotCA(path); err != nil {
+	span = st.FromContext(ctx).Begin("PREFLIGHT", "HELPER_PREFLIGHT_CA", st.Fields{})
+	caErr := func() error {
+		for _, entry := range cfg["outbounds"].([]any) {
+			if err := ctx.Err(); err != nil {
 				return err
 			}
+			out := entry.(map[string]any)
+			if out["type"] != "anytls" {
+				continue
+			}
+			tls := out["tls"].(map[string]any)
+			if path, ok := tls["certificate_path"].(string); ok {
+				if _, err := readSnapshotCA(path); err != nil {
+					return err
+				}
+			}
 		}
+		return nil
+	}()
+	st.FromContext(ctx).End(span, startupCode(caErr), st.Fields{})
+	if caErr != nil {
+		return caErr
 	}
-	return controlHelperEnginePreflight(ctx, cfg)
+	return startupSpan(ctx, "PREFLIGHT", "HELPER_PREFLIGHT_ENGINE_CHECK", func() error { return controlHelperEnginePreflight(ctx, cfg) })
 }
 
 func controlHelperServe() error {
@@ -401,7 +458,7 @@ func controlHelperServe() error {
 	// Tool contexts retain each existing short timeout, also bounded by the
 	// independent server action context passed into each lifecycle invocation.
 	withContext := func(ctx context.Context) serviceLifecycle {
-		d := lifecycle
+		d := newServiceLifecycleContext(lifecycle.root, ctx)
 		d.tool = func(toolCtx context.Context, name string, args ...string) (string, error) {
 			linked, cancel := context.WithCancel(toolCtx)
 			defer cancel()
@@ -411,22 +468,27 @@ func controlHelperServe() error {
 		}
 		return d
 	}
-	s := &controlHelperServer{registration: reg, peer: controlHelperPeerUID, state: lifecycle.state, version: currentVersion(), sha: hex.EncodeToString(h.Sum(nil)),
+	var s *controlHelperServer
+	s = &controlHelperServer{registration: reg, peer: controlHelperPeerUID, state: lifecycle.state, version: currentVersion(), sha: hex.EncodeToString(h.Sum(nil)),
 		preflight: func(ctx context.Context, allow bool) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			span := st.FromContext(ctx).Begin("PREFLIGHT", "HELPER_PREFLIGHT_CAPTURE", st.Fields{})
 			captured, err := captureServiceConfig(reg.Config)
+			st.FromContext(ctx).End(span, startupCode(err), st.Fields{})
 			if err != nil {
 				return err
 			}
 			return controlHelperConfigPreflight(ctx, captured, allow)
 		},
 		start: func(ctx context.Context, allow bool) error {
-			return withContext(ctx).start(self, reg.Config, "", allow)
+			return withContext(ctx).withStartup(ctx, s).start(self, reg.Config, "", allow)
 		},
-		stop: func(ctx context.Context) error { return withContext(ctx).stop() },
+		stop: func(ctx context.Context) error { return withContext(ctx).withStartup(ctx, s).stop() },
 	}
+	s.startupIdentity, _ = controlHelperConfigIdentity(reg.Config)
+	s.startupInit()
 	for {
 		c, err := listener.AcceptUnix()
 		if err != nil {

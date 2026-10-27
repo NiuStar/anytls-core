@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"golang.org/x/term"
 	"os"
 	"os/exec"
@@ -60,16 +61,9 @@ func dnsServers() ([]string, error) {
 }
 
 func servicePlist(binary, config, core, log string, insecure bool) (string, error) {
-	paths := []string{binary, config}
-	if externalCoreRequired() {
-		paths = append(paths, core)
-	}
-	paths = append(paths, log)
-	for _, s := range paths {
-		if !filepath.IsAbs(s) || strings.ContainsAny(s, "<>\"'&\n\r\x00") {
-			return "", errors.New("service paths must be absolute without XML control characters")
-		}
-	}
+	return servicePlistStartup(binary, config, core, log, insecure, "", "")
+}
+func serviceArgs(binary, config, core string, insecure bool, operation, epoch string) []string {
 	args := []string{binary, "-config", config}
 	if externalCoreRequired() {
 		args = append(args, "-core", core)
@@ -81,7 +75,26 @@ func servicePlist(binary, config, core, log string, insecure bool) (string, erro
 	if insecure {
 		args = append(args, "-allow-insecure")
 	}
-	args = append(args, "run")
+	if operation != "" && epoch != "" && !externalCoreRequired() {
+		args = append(args, "-startup-operation", operation, "-startup-epoch", epoch)
+	}
+	return append(args, "run")
+}
+func servicePlistStartup(binary, config, core, log string, insecure bool, operation, epoch string) (string, error) {
+	if operation!=""||epoch!="" {
+		if externalCoreRequired()||st.Validate(st.PushAck{TimelineSchema:1,Code:"OK",OperationID:operation})!=nil||st.Validate(st.PushAck{TimelineSchema:1,Code:"OK",OperationID:epoch})!=nil{return "",errors.New("invalid startup correlation")}
+	}
+	paths := []string{binary, config}
+	if externalCoreRequired() {
+		paths = append(paths, core)
+	}
+	paths = append(paths, log)
+	for _, s := range paths {
+		if !filepath.IsAbs(s) || strings.ContainsAny(s, "<>\"'&\n\r\x00") {
+			return "", errors.New("service paths must be absolute without XML control characters")
+		}
+	}
+	args := serviceArgs(binary, config, core, insecure, operation, epoch)
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>" + serviceLabel + "</string>\n<key>ProgramArguments</key><array>\n")
 	for _, v := range args {
@@ -258,6 +271,9 @@ func stagePrivateRun(binary, config, core, root string) error {
 	return stagePrivateRunOwned(binary, config, core, root, &snapshotRootIdentity{})
 }
 func stagePrivateRunOwned(binary, config, core, root string, owned *snapshotRootIdentity) (result error) {
+	return stagePrivateRunOwnedContext(context.Background(), binary, config, core, root, owned)
+}
+func stagePrivateRunOwnedContext(ctx context.Context, binary, config, core, root string, owned *snapshotRootIdentity) (result error) {
 	if err := os.Mkdir(root, 0700); err != nil {
 		return lifecycleFailure("snapshot root cannot be created", err)
 	}
@@ -272,6 +288,13 @@ func stagePrivateRunOwned(binary, config, core, root string, owned *snapshotRoot
 		}
 		if result != nil {
 			result = &snapshotStageError{cause: result, owned: owned}
+		}
+	}()
+	r := st.FromContext(ctx)
+	span := r.Begin("START", "SNAPSHOT_APP_CONFIG_SELECTED", st.Fields{})
+	defer func() {
+		if span != 0 {
+			r.End(span, startupCode(result), st.Fields{})
 		}
 	}()
 	for _, f := range []struct {
@@ -296,10 +319,12 @@ func stagePrivateRunOwned(binary, config, core, root string, owned *snapshotRoot
 			return err
 		}
 	}
-	if err := stageRuleSets(config, root); err != nil {
+	r.End(span, "OK", st.Fields{})
+	span = 0
+	if err := startupSpan(ctx, "START", "SNAPSHOT_RULES", func() error { return stageRuleSets(config, root) }); err != nil {
 		return err
 	}
-	return stageCAs(root)
+	return startupSpan(ctx, "START", "SNAPSHOT_CA", func() error { return stageCAs(root) })
 }
 
 func confirmInsecure(in *os.File) error {

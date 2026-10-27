@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type options struct{ Server, SNI, Password, CA string }
@@ -188,6 +192,8 @@ func execute(args []string) error {
 	localPort := fs.Int("local-port", 11080, "loopback SOCKS/HTTP listen port")
 	allowInsecure := fs.Bool("allow-insecure", false, "explicitly allow skip-cert-verify (MITM risk)")
 	recordService := fs.Bool("record-service", false, "internal authorized service recording marker")
+	startupOperation := fs.String("startup-operation", "", "internal auxiliary startup correlation")
+	startupEpoch := fs.String("startup-epoch", "", "internal auxiliary helper epoch")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -198,14 +204,40 @@ func execute(args []string) error {
 		return err
 	}
 	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalPort: *localPort, AllowInsecure: *allowInsecure, RecordService: *recordService}
-	compiled, err := prepareRuntimeWithRecords(&o)
+	ctx := context.Background()
+	if o.Command == "run" {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+	}
+	var reporter *startupReporter
+	if *startupOperation != "" || *startupEpoch != "" {
+		if !startupCoreFlags(*startupOperation, *startupEpoch, o) {
+			return errors.New("invalid startup correlation flags")
+		}
+		r, e := st.NewRecorder("CORE", startupProvenance(""))
+		if e == nil {
+			ctx = st.WithRecorder(ctx, r)
+			reporter = &startupReporter{ctx: ctx, recorder: r, operation: *startupOperation, epoch: *startupEpoch, done: make(chan struct{})}
+			r.Observe("START", "CORE_ENTER", "OK", st.Fields{})
+			startupLaunchReporter(reporter)
+		}
+	}
+	compiled, err := prepareRuntimeWithRecordsContext(ctx, &o)
 	if err != nil || compiled.JSON == nil {
+		reporter.finish("FAILED")
 		return err
 	}
 	if fs.Arg(0) == "run" && runtime.GOOS != "darwin" {
 		return errors.New("run is only supported on macOS; use check on other systems")
 	}
-	return dispatchCompiledEngine(o.Command, compiled, o.Config, *core, o.RecordService)
+	err = dispatchCompiledEngine(o.Command, compiled, o.Config, *core, o.RecordService)
+	result := "SUCCEEDED"
+	if err != nil {
+		result = "FAILED"
+	}
+	reporter.finish(result)
+	return err
 }
 
 func main() {

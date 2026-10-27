@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
@@ -77,15 +79,27 @@ func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInp
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	recorder := st.FromContext(ctx)
+	span := recorder.Begin("START", "CORE_DECODE", st.Fields{})
 	ctx, options, err := decodeOptions(ctx, runtimeJSON)
+	fields := st.Fields{}
+	if err == nil && options.Route != nil {
+		count := strconv.Itoa(len(options.Route.Rules))
+		fields.RuleCount = &count
+	}
+	recorder.End(span, timelineCode(err), fields)
 	if err != nil {
 		return err
 	}
 	caVerified := false
 	if records != nil && (records.Sink != nil || records.OpenSink != nil) {
+		span = recorder.Begin("START", "CORE_PIN_CA", st.Fields{})
 		caVerified = pinRecordsCA(&options, records.Manifest)
+		recorder.End(span, map[bool]string{true: "OK", false: "UNAVAILABLE"}[caVerified], st.Fields{})
 	}
+	span = recorder.Begin("START", "CORE_BOX_NEW", st.Fields{})
 	instance, err := box.New(box.Options{Options: options, Context: ctx})
+	recorder.End(span, timelineCode(err), st.Fields{})
 	if err != nil {
 		return lifecycleError("construct", err)
 	}
@@ -93,14 +107,18 @@ func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInp
 		// Keep the caller's input immutable and open durable recording only once
 		// runtime validation has succeeded. No second decode or Box is needed.
 		input := *records
+		span = recorder.Begin("START", "CORE_OPEN_SINK", st.Fields{})
 		input.Sink = input.OpenSink()
+		recorder.End(span, map[bool]string{true: "OK", false: "UNAVAILABLE"}[input.Sink != nil], st.Fields{})
 		records = &input
 		if reporter, ok := records.Sink.(cr.ProvenanceReporter); ok {
 			reporter.SetProvenanceStatus(cr.ProvenanceUnknown)
 		}
 	}
 	if records != nil && records.Sink != nil {
+		span = recorder.Begin("START", "CORE_BIND_RECORDS", st.Fields{})
 		instance.Router().AppendTracker(bindRecords(instance, runtimeJSON, records, caVerified))
+		recorder.End(span, "OK", st.Fields{})
 		return executeRecords(ctx, instance, true, records.StopAdmission)
 	}
 	return execute(ctx, instance, true)
@@ -112,11 +130,15 @@ func execute(ctx context.Context, instance adapter.SimpleLifecycle, start bool) 
 }
 
 func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start bool, stopAdmission func()) (err error) {
+	recorder := st.FromContext(ctx)
 	defer func() {
 		if stopAdmission != nil {
 			stopAdmission()
 		}
-		err = errors.Join(err, lifecycleError("close", instance.Close()))
+		span := recorder.Begin("FINALIZE", "CORE_CLOSE", st.Fields{})
+		closeErr := instance.Close()
+		recorder.End(span, timelineCode(closeErr), st.Fields{})
+		err = errors.Join(err, lifecycleError("close", closeErr))
 	}()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -124,12 +146,26 @@ func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start
 	if !start {
 		return nil
 	}
-	if err := instance.Start(); err != nil {
+	span := recorder.Begin("START", "CORE_START", st.Fields{})
+	startErr := instance.Start()
+	recorder.End(span, timelineCode(startErr), st.Fields{})
+	if err := startErr; err != nil {
 		return errors.Join(ctx.Err(), lifecycleError("start", err))
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	recorder.Observe("START", "CORE_WAIT", "OK", st.Fields{})
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func timelineCode(err error) string {
+	if err == nil {
+		return "OK"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "CANCELLED"
+	}
+	return "FAILED"
 }
