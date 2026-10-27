@@ -140,8 +140,8 @@ func (w *webConsole) startupReference(op *webStartupOperation) *st.OperationRefe
 // Result-bearing variant preserves successful as well as failed helper DTOs.
 // A mutation is sent at most once: only capability discovery may fall back.
 type webControlActionResultValue struct {
-	Reference st.OperationReference
-	Helper    *st.MutationResponse
+	Reference   st.OperationReference
+	Helper      *st.MutationResponse
 	Diagnostics *startDiagnostics
 }
 

@@ -119,6 +119,7 @@ func (d serviceLifecycle) traceRemove() error {
 	d.traceEnd(span, e)
 	return e
 }
+
 type lifecycleDiagnosticsKey struct{}
 
 func (d serviceLifecycle) finishReceipt(r *serviceDiagnostic, result *error) {
