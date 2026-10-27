@@ -143,8 +143,40 @@ func TestStartupExchangeExactLegacyUnsupported(t *testing.T) {
 			var r st.ReadResponse
 			e = startupExchange(context.Background(), c, q, &r, time.Second, func(net.Conn) (uint32, error) { return 0, nil })
 			<-done
-			if startupUnsupported(e) != test.unsupported {
+			if e == nil || startupUnsupported(e) != test.unsupported {
 				t.Fatalf("unsupported=%v err=%v", startupUnsupported(e), e)
+			}
+			if !test.unsupported && !errors.Is(e, st.Invalid) {
+				t.Fatalf("malformed response must fail strict codec: %v", e)
+			}
+			// Exercise the caller too: rejecting the old codec is not alone a
+			// proof of zero fallback. Only the exact legacy refusal may resend.
+			w, _ := webFixture(t)
+			identity, err := controlHelperConfigIdentity(w.configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, fallback, mutations := 0, 0, 0
+			_, err = webControlActionResult(context.Background(), w.configPath, "start", true, strings.Repeat("c", 32),
+				func(_ context.Context, action string, _ bool) (controlHelperResponse, error) {
+					if action == "status" {
+						status++
+					} else {
+						fallback++
+					}
+					return controlHelperResponse{ConfigIdentity: identity}, nil
+				},
+				func(context.Context, *string) (st.ReadResponse, error) { return r, e },
+				func(context.Context, string, bool, string) (st.MutationResponse, error) {
+					mutations++
+					return st.MutationResponse{}, nil
+				}, startupUnsupported)
+			wantFallback := 0
+			if test.unsupported {
+				wantFallback = 1
+			}
+			if status != 1 || fallback != wantFallback || mutations != 0 || (err == nil) != test.unsupported {
+				t.Fatalf("status=%d fallback=%d mutations=%d err=%v", status, fallback, mutations, err)
 			}
 		})
 	}
