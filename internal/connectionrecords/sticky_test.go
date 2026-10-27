@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -120,6 +121,15 @@ func TestDiskRecordsStickyAncestorLifecycle(t *testing.T) {
 		t.Fatalf("sticky fixture mode: %v %v", info, e)
 	}
 	s.root = filepath.Join(ancestor, "records")
+	// A live state publication replaces its inode. Keep this ancestor-policy
+	// fixture's page read outside that legitimate rename window; the reader's
+	// fail-closed identity checks must not be weakened to stabilize a test.
+	var publication sync.Mutex
+	s.rename = func(from, to string) error {
+		publication.Lock()
+		defer publication.Unlock()
+		return os.Rename(from, to)
+	}
 	w, e := openWriter(s, scope, h)
 	if e != nil {
 		_, rootErr := os.Lstat(s.root)
@@ -138,7 +148,9 @@ func TestDiskRecordsStickyAncestorLifecycle(t *testing.T) {
 		t.Fatal("nonce observation rejected")
 	}
 	appendBatch(t, w, 1) // Wait for both tickets to become committed.
+	publication.Lock()
 	p, e := readPage(context.Background(), s, scope, diskQuery(h, 0, 2))
+	publication.Unlock()
 	if e != nil || len(p.Records) != 2 || p.HighWaterSeq != "2" || p.Records[0].Binding != h.Binding || p.Records[0].Destination.Host == nil || *p.Records[0].Destination.Host != host {
 		t.Fatalf("live sticky ancestor page: %v %+v", e, p)
 	}
