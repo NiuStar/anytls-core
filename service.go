@@ -81,8 +81,10 @@ func serviceArgs(binary, config, core string, insecure bool, operation, epoch st
 	return append(args, "run")
 }
 func servicePlistStartup(binary, config, core, log string, insecure bool, operation, epoch string) (string, error) {
-	if operation!=""||epoch!="" {
-		if externalCoreRequired()||st.Validate(st.PushAck{TimelineSchema:1,Code:"OK",OperationID:operation})!=nil||st.Validate(st.PushAck{TimelineSchema:1,Code:"OK",OperationID:epoch})!=nil{return "",errors.New("invalid startup correlation")}
+	if operation != "" || epoch != "" {
+		if externalCoreRequired() || st.Validate(st.PushAck{TimelineSchema: 1, Code: "OK", OperationID: operation}) != nil || st.Validate(st.PushAck{TimelineSchema: 1, Code: "OK", OperationID: epoch}) != nil {
+			return "", errors.New("invalid startup correlation")
+		}
 	}
 	paths := []string{binary, config}
 	if externalCoreRequired() {

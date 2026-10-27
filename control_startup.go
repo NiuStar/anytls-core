@@ -189,7 +189,7 @@ func (o *startupOperation) observation() st.CoreObservation {
 		age = 0
 	}
 	a := strconv.FormatInt(int64(age), 10)
-	receivedElapsed:=o.receiveElapsed
+	receivedElapsed := o.receiveElapsed
 	at := o.received.UTC().Format(time.RFC3339Nano)
 	clock := o.core.Stream.ClockID
 	availability := "OBSERVED"
@@ -275,8 +275,12 @@ func (s *controlHelperServer) startupHandle(c net.Conn, uid uint32, raw []byte, 
 			startupWrite(c, st.ReadResponse{TimelineSchema: 1, Code: "FORBIDDEN"})
 			return
 		}
-		response:=s.startupReadCache(q)
-		again,e:=registration();if e!=nil||again!=reg{startupWrite(c,st.ReadResponse{TimelineSchema:1,Code:"FORBIDDEN"});return}
+		response := s.startupReadCache(q)
+		again, e := registration()
+		if e != nil || again != reg {
+			startupWrite(c, st.ReadResponse{TimelineSchema: 1, Code: "FORBIDDEN"})
+			return
+		}
 		startupWrite(c, response)
 		return
 	}
@@ -372,7 +376,8 @@ func startupExchange(ctx context.Context, c net.Conn, q, dst any, bound time.Dur
 		return st.Unavailable
 	}
 	limit := int64(st.ReadBytes)
-	switch dst.(type){case *st.MutationResponse,*st.PushAck:
+	switch dst.(type) {
+	case *st.MutationResponse, *st.PushAck:
 		limit = st.LegacyBytes
 	}
 	raw, e := io.ReadAll(io.LimitReader(c, limit+1))

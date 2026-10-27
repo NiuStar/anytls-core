@@ -237,7 +237,11 @@ func (s *controlHelperServer) executeStartup(q controlHelperWireRequest, id, ide
 	if id != "" && identity != "" {
 		o = s.startupBegin(id, q.Action, identity, source)
 	}
-	if o==nil {s.startup.mu.Lock();s.startup.latest=nil;s.startup.mu.Unlock()}
+	if o == nil {
+		s.startup.mu.Lock()
+		s.startup.latest = nil
+		s.startup.mu.Unlock()
+	}
 	if o != nil {
 		ctx = context.WithValue(st.WithRecorder(ctx, o.recorder), startupOperationKey{}, o)
 	}

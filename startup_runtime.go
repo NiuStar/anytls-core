@@ -227,8 +227,11 @@ func (s *controlHelperServer) startupRootHandle(c net.Conn) {
 		reject()
 		return
 	}
-	identity,e:=controlHelperConfigIdentity(reg.Config)
-	if e!=nil||o.trace.ConfigIdentity==nil||identity!=*o.trace.ConfigIdentity{reject();return}
+	identity, e := controlHelperConfigIdentity(reg.Config)
+	if e != nil || o.trace.ConfigIdentity == nil || identity != *o.trace.ConfigIdentity {
+		reject()
+		return
+	}
 	authenticate := s.startupAuthenticate
 	if authenticate == nil {
 		authenticate = startupAuthenticatePush
@@ -258,8 +261,8 @@ func (s *controlHelperServer) startupRootHandle(c net.Conn) {
 	reg, e = registration()
 	if e != nil || reg != s.registration {
 		code = "IDENTITY_MISMATCH"
-	} else if current,e:=controlHelperConfigIdentity(reg.Config);e!=nil||current!=identity{
-		code="IDENTITY_MISMATCH"
+	} else if current, e := controlHelperConfigIdentity(reg.Config); e != nil || current != identity {
+		code = "IDENTITY_MISMATCH"
 	} else if !authenticate(c, binding) {
 		code = "IDENTITY_MISMATCH"
 	} else {
@@ -290,7 +293,7 @@ func (o *startupOperation) acceptCore(snapshot st.CoreSnapshot) string {
 		next := snapshot.Stream
 		a, _ := strconv.ParseUint(old.GeneratedEvents, 10, 64)
 		n, _ := strconv.ParseUint(next.GeneratedEvents, 10, 64)
-		if old.ClockID != next.ClockID || old.OriginAt!=next.OriginAt || n < a || o.core.Complete && (!snapshot.Complete||o.core.StartupResult!=snapshot.StartupResult) {
+		if old.ClockID != next.ClockID || old.OriginAt != next.OriginAt || n < a || o.core.Complete && (!snapshot.Complete || o.core.StartupResult != snapshot.StartupResult) {
 			return "IDENTITY_MISMATCH"
 		}
 		// Cumulative snapshots cannot rewrite their previously retained prefix.
