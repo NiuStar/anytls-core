@@ -86,7 +86,17 @@ func TestStartupStrictDispatchReadAndAuth(t *testing.T) {
 	}
 	s := unitControlServer()
 	s.peer = func(net.Conn) (uint32, error) { return 0, nil }
-	b := startupRawFixture(t, s, []byte(`{"timeline_schema":1,"action":"startup.read","operation_id":null}`))
+	// An unbound root peer is rejected before any request body is read. Do
+	// not race that rejection with a write: unread data can reset a Unix socket.
+	c, _ := unitControlPair(t, s)
+	defer c.Close()
+	if e := c.SetDeadline(time.Now().Add(time.Second)); e != nil {
+		t.Fatal(e)
+	}
+	b, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var r st.ReadResponse
 	var legacy controlHelperResponse
 	if e := controlHelperReadResponse(bytes.NewReader(b), &legacy); e != nil || legacy.Code != "FORBIDDEN" {
