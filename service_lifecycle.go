@@ -212,6 +212,7 @@ func (d serviceLifecycle) serverRoutes(b networkBaseline, servers []string) (res
 	}
 	return nil
 }
+
 type restorationJobError struct{ error }
 
 func (e *restorationJobError) Unwrap() error { return e.error }

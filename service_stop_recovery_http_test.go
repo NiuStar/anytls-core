@@ -19,8 +19,12 @@ func TestStopRecoveryHTTPWarning(t *testing.T) {
 	for _, action := range []string{"stop", "reload", "save"} {
 		t.Run(action, func(t *testing.T) {
 			d, b, c, k, _, _ := lifecycleFixture(t)
-			if err := d.start(b, c, k, true); err != nil { t.Fatal(err) }
-			if err := os.Remove(filepath.Join(d.root, serviceBaselineName)); err != nil { t.Fatal(err) }
+			if err := d.start(b, c, k, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(d.root, serviceBaselineName)); err != nil {
+				t.Fatal(err)
+			}
 			w, password := webFixture(t)
 			webNodeFile(t, w, webAutoConfig)
 			s := unitControlServer()
@@ -30,7 +34,9 @@ func TestStopRecoveryHTTPWarning(t *testing.T) {
 			s.start = func(ctx context.Context, allow bool) error { return d.withStartup(ctx, s).start(b, c, k, allow) }
 			w.serviceAction = nil
 			w.state = d.state
-			w.startupReadRequest = func(context.Context, *string) (st.ReadResponse, error) { return st.ReadResponse{}, startupUnsupportedError{} }
+			w.startupReadRequest = func(context.Context, *string) (st.ReadResponse, error) {
+				return st.ReadResponse{}, startupUnsupportedError{}
+			}
 			w.startupLegacyRequest = func(ctx context.Context, action string, allow bool) (controlHelperResponse, error) {
 				conn, done := unitControlPair(t, s)
 				defer conn.Close()
@@ -40,9 +46,13 @@ func TestStopRecoveryHTTPWarning(t *testing.T) {
 			}
 			cookie, csrf := webLogin(t, w, password)
 			verb := action
-			if verb == "save" { verb = "reload" }
+			if verb == "save" {
+				verb = "reload"
+			}
 			input := `{"confirm_insecure":true}`
-			if action == "stop" { input = `{}` }
+			if action == "stop" {
+				input = `{}`
+			}
 			var out *httptest.ResponseRecorder
 			if action == "save" {
 				out = httptest.NewRecorder()
@@ -51,11 +61,19 @@ func TestStopRecoveryHTTPWarning(t *testing.T) {
 				out = webRequest(w, "POST", "/api/v1/service/"+verb, input, cookie, csrf)
 			}
 			var body map[string]any
-			if err := json.Unmarshal(out.Body.Bytes(), &body); err != nil { t.Fatal(err) }
+			if err := json.Unmarshal(out.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
 			diag, ok := body["diagnostics"].(map[string]any)
-			if out.Code != 200 || !ok || diag["outcome"] != "SUCCEEDED" || diag["restoration"] != "UNKNOWN" || diag["operation"] != strings.ToUpper(verb) { t.Fatalf("HTTP warning lost: %d %s", out.Code, out.Body.String()) }
-			if action == "save" && (body["apply_status"] != "APPLIED" || body["saved"] != true) { t.Fatal("warning changed save semantics", body) }
-			if strings.Contains(out.Body.String(), d.root) { t.Fatal("private archive path leaked") }
+			if out.Code != 200 || !ok || diag["outcome"] != "SUCCEEDED" || diag["restoration"] != "UNKNOWN" || diag["operation"] != strings.ToUpper(verb) {
+				t.Fatalf("HTTP warning lost: %d %s", out.Code, out.Body.String())
+			}
+			if action == "save" && (body["apply_status"] != "APPLIED" || body["saved"] != true) {
+				t.Fatal("warning changed save semantics", body)
+			}
+			if strings.Contains(out.Body.String(), d.root) {
+				t.Fatal("private archive path leaked")
+			}
 		})
 	}
 }
