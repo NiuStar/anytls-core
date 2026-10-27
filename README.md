@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前源码候选 **v2026-10-27-03** 新增页面启动日志时间轴：操作编号、实际 UTC 时间／耗时、分阶段及逐轮观察、进行中读取与完整脱敏复制。助手仅在内存保留最近一次操作、不持久化；GAP／STALE／UNKNOWN 明确展示，finish 后拒绝迟到核心事件。**仅升级页面不能承诺完整核心日志：普通 update 不替换 root helper，用户必须在 Mac 本机通过正常系统授权更新配套助手；旧助手明确 UNSUPPORTED。** 正式核心版本切换仍需用户按维护安排显式重连，本次发布不执行安装、助手更新、WebUI 切换或 VPN 重启。已审实现 Mac 隔离 full／vet／build 通过，但 root／launchd／TUN 完整验收未实跑，原 Intel START_FAILED／TUN_NOT_READY 根因 UNKNOWN，不宣称修复；不延长 readiness／timeout、不改变 TLS 或路由规则。见 [冻结的发布前证据快照与待验收项](docs/releases/v2026-10-27-03.md)，隔离后继仅继承两个测试修正，新实现仍待父审；最终发行提交的原生／CI／附件门仍待执行，源码候选不等于已发布。发行仅 macOS arm64／amd64，不改 Linux 产品发行；既定 Ubuntu＋Mac ARM64／Intel CI、Binary Release、Go1.27.3／SDK／依赖／wrapper／打包器／安装器保持不变。ROUTED 不等于连接成功，日志不作为网络就绪或恢复授权依据。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-27-04** 修复异常后 `stop → start` 被恢复核验与遗留快照锁死：确认服务已卸载后，恢复异常保留警告并私有归档快照，不再因历史快照阻止下次启动；仍运行／状态未知、身份或权限异常和归档 I/O 失败继续拒绝覆盖。不把服务停止冒称网络恢复成功，不改 TLS、路由政策或启动等待预算。成功的 CLI／助手／HTTP／网页控制保留恢复警告。实现已通过 Mac ARM64 隔离完整519项顶层／1619项子测试、vet及clean build；系统控制和网络状态为注入夹具，正式助手／launchd／TUN恢复未验收，原 Intel TUN_NOT_READY 根因仍 UNKNOWN。**普通 update 不替换 root helper；网页控制需在 Mac 本机正常授权更新配套助手。** 发布不执行安装、助手更新、WebUI 切换或 VPN 重启。见 [冻结的发布前证据快照与更新说明](docs/releases/v2026-10-27-04.md)；最终发行提交原生／CI／公开附件结果另行记录，不能把候选证据当已发布。仅发 macOS arm64／amd64，既定 Ubuntu＋Mac双架构 CI、Binary Release、SDK／依赖／wrapper／打包器／安装器保持不变。保留页面启动时间轴；ROUTED 不等于连接成功，日志不作为网络就绪或恢复授权依据。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
