@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,11 @@ import (
 // decode/New/OpenSink/Start/Close, and authenticated HTTP ServeHTTP. The core is
 // loopback DIRECT only; no TUN, public network, production socket or root wrapper.
 func TestStartupIntegrationIPCAuthenticatedHTTP(t *testing.T) {
+	// This fixture deliberately uses the real helper engine preflight, whose
+	// non-Darwin implementation rejects service operations before core startup.
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires the Darwin control-helper engine preflight")
+	}
 	d, b, config, k, loaded, _ := lifecycleFixture(t)
 	s := unitControlServer()
 	s.registration.Config = config
