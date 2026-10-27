@@ -339,9 +339,9 @@ func startupControl(ctx context.Context, action string, allow bool, operationID 
 func startupControlWithRequest(ctx context.Context, action string, allow bool, operationID string, request func(context.Context, any, any, time.Duration) error) (st.MutationResponse, error) {
 	var r st.MutationResponse
 	e := request(ctx, st.MutationRequest{TimelineSchema: 1, Action: action, AllowInsecure: allow, OperationID: operationID}, &r, 6*time.Minute)
-	if e == nil && !r.OK {
-		e = errors.New(r.Code)
-	}
+	// A valid negative mutation response is a completed business result, not a
+	// transport error. The HTTP owner consumes its code and diagnostics; only
+	// exchange failures leave the mutation outcome unknown.
 	return r, e
 }
 func startupRequest(ctx context.Context, q, dst any, bound time.Duration) error {
