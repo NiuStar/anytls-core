@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-27-03
+
+- 页面启动日志记录实际 UTC 时间、同进程耗时、operation_id、阶段／逐轮观察与恢复／清理证据，支持进行中读取和完整脱敏复制；助手内存仅保留最近一次服务操作，不持久化，GAP／STALE／UNKNOWN 明确，finish 后拒绝迟到核心 push。
+- 旧助手明确 UNSUPPORTED；普通 update 不替换 root helper，不能只升级页面承诺完整核心日志。用户须在 Mac 本机通过现有正常系统授权更新配套助手，运行新版核心须另按维护安排显式重连；本次发布不安装／更新助手或重启 VPN／WebUI。
+- 已审实现 f12854b1 的 Mac ARM64 隔离 canonical 510 顶层／1582 子测试 PASS、5 SKIP、vet／clean build／格式检查通过。真实 strict IPC→认证 HTTP 与同次响应 Chromium 复制仅证明明确编排的测试链；root／composite／系统控制为 UNIT-SIMULATED，不是独立正式 root reporter 或完整 launchd／TUN 验收。
+- 可观察性增强不是 START_FAILED／TUN_NOT_READY 修复，用户 Intel 根因 UNKNOWN；不延长 readiness／timeout、不改变 TLS／路由。最终提交 native／分支／main／标签 CI 与公开六附件审计待执行，本文为冻结发布前快照。仅发 macOS 双架构，不改 Linux 产品发行，现有 CI／Binary Release／SDK／依赖／wrapper 不变，Source Release 仅显式排除新标签。详见 [版本说明](docs/releases/v2026-10-27-03.md)。
+
 ## v2026-10-27-02
 
 - 同输入字节取得路由规则数量提示并限制初始容量，减少大规则 slice增长／复制；仍委托原SDK严格解码，不新增规则配额、不合并／重排规则。完整转发Comments／SetComments，保留注释元数据与原错误合同，不添加阶段诊断代码。

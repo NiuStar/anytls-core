@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。当前源码候选 **v2026-10-27-02** 为大规则输入预分配解码容量，并保留 SDK 严格验证与完整注释元数据；不新增规则配额、不合并或重排规则、不添加阶段诊断代码。既有 WebUI 单条规则、GEOIP/CN、记录归属与单次 decode/New、独立 check、严格 TLS 保持。见 [发布前证据快照与待验收项](docs/releases/v2026-10-27-02.md)；最终版本 Mac 原生 full／vet／build／package、公开 CI 和附件审计尚待执行，源码版本不等于已发布。ARM64 合成 decoder elapsed中位数 -7.647%、累计分配 -38.075%，不是 RSS／峰值或完整启动耗时，不外推 Intel故障机，不宣称 START_FAILED／TUN_NOT_READY根因或修复。发行仍仅 macOS arm64／amd64；CI、Binary Release、固定 Go1.27.3／sing-box v1.14.3、依赖、补丁、wrapper、打包器、安装器不变，Linux版本暂不调整。按用户安排先完成Mac发行再测试Intel故障机；发布不安装程序、不改正式配置／规则、不更新助手、不切换WebUI或重启VPN／TUN。ROUTED不等于连接成功，普通更新不自动更新助手或重启VPN。
+Go 编写的 macOS AnyTLS VPN 客户端。当前源码候选 **v2026-10-27-03** 新增页面启动日志时间轴：操作编号、实际 UTC 时间／耗时、分阶段及逐轮观察、进行中读取与完整脱敏复制。助手仅在内存保留最近一次操作、不持久化；GAP／STALE／UNKNOWN 明确展示，finish 后拒绝迟到核心事件。**仅升级页面不能承诺完整核心日志：普通 update 不替换 root helper，用户必须在 Mac 本机通过正常系统授权更新配套助手；旧助手明确 UNSUPPORTED。** 正式核心版本切换仍需用户按维护安排显式重连，本次发布不执行安装、助手更新、WebUI 切换或 VPN 重启。已审实现 Mac 隔离 full／vet／build 通过，但 root／launchd／TUN 完整验收未实跑，原 Intel START_FAILED／TUN_NOT_READY 根因 UNKNOWN，不宣称修复；不延长 readiness／timeout、不改变 TLS 或路由规则。见 [冻结的发布前证据快照与待验收项](docs/releases/v2026-10-27-03.md)，最终发行提交的原生／CI／附件门仍待执行，源码候选不等于已发布。发行仅 macOS arm64／amd64，不改 Linux 产品发行；既定 Ubuntu＋Mac ARM64／Intel CI、Binary Release、Go1.27.3／SDK／依赖／wrapper／打包器／安装器保持不变。ROUTED 不等于连接成功，日志不作为网络就绪或恢复授权依据。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
