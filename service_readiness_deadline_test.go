@@ -13,17 +13,17 @@ import (
 // sixty real sleeps. Loaded-only and physical-public-route cases must never curl.
 func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 	for _, tc := range []struct {
-		name                                    string
-		readyAfter, preflight, stateCost         time.Duration
-		publicCost, serverCost, httpsCost        time.Duration
-		pauseStep                               time.Duration
-		notRunning, neverReady, routeError       bool
-		beginExpiry, failHTTPS, failCleanup      bool
-		wantSuccess                             bool
-		wantPauses, wantStates, wantPublic       int
-		wantServers, wantHTTPS                   int
-		wantElapsed                             time.Duration
-		wantReason                              string
+		name                                string
+		readyAfter, preflight, stateCost    time.Duration
+		publicCost, serverCost, httpsCost   time.Duration
+		pauseStep                           time.Duration
+		notRunning, neverReady, routeError  bool
+		beginExpiry, failHTTPS, failCleanup bool
+		wantSuccess                         bool
+		wantPauses, wantStates, wantPublic  int
+		wantServers, wantHTTPS              int
+		wantElapsed                         time.Duration
+		wantReason                          string
 	}{
 		{name: "immediate", wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 1},
 		{name: "ready_at_59s", readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 1, wantElapsed: 59 * time.Second},
