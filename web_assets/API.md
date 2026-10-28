@@ -37,6 +37,7 @@
 | POST /groups/selection | `{group,choice}`；新控制台携带读取时的 If-Match，冲突返回412 CONFIG_CONFLICT且不写入／不调用服务；省略header保留旧客户端兼容。复用真实 saveGroupChoice + readback → `{ok,changed,pendingReload}`；同值不写 |
 | GET /rules | `{rules:[原始规则字符串],etag,targets:[有效目标名称],rule_sets:[已审计标签],editable,edit_error}`；ETag 响应头与 etag 字段均为同次捕获配置的完整 SHA-256（含双引号）。旧 rules 字段不变，不返回 YAML、节点凭据或规则集路径 |
 | POST /rules | 添加单条规则；完整合同见下文，复用认证 / 同源 / CSRF / actionMu 与保存后自动应用 |
+| POST /rules/delete | `{index:0,rule:"原始规则字符串",confirm_insecure:true}` + 同次 `GET /rules` 的 If-Match；仅删除指定位置的一条规则，保留最终 MATCH；完整合同见下文 |
 | GET /config | 显式敏感编辑操作 → `{yaml,etag}`，同时 ETag header；etag 是双引号包裹的完整原文件 SHA256 |
 | PUT /config | `{yaml}` + `If-Match: "SHA256"`；无 header 428，冲突412，无效422；同目录0600原子写入并读回 → `{ok,changed,etag,pendingReload}` |
 | POST /service/start, /service/stop, /service/reload | `{confirm_insecure:false}`；只布尔同意，不接收命令；原生授权及 launchd 状态读回 → `{ok,loaded,running,pendingReload,readiness}` |
@@ -138,6 +139,26 @@ New native tests: `TestWebImportPinnedURLAndTLS`,
 config and a loopback TLS dial seam, not production or public deployment.
 Go runtime tests and Mac/browser acceptance are pending; local syntax checks do
 not constitute passing Go tests.
+
+## Single-rule delete contract
+
+`POST /api/v1/rules/delete` requires authenticated Cookie, exact Origin, CSRF, JSON and exactly one full `If-Match` captured from the same `GET /rules` snapshot. The GET schema remains unchanged. Body:
+
+```json
+{"index":0,"rule":"DOMAIN,example.com,DIRECT","confirm_insecure":true}
+```
+
+`index` is a required zero-based integer selecting exactly one existing row; `rule` is the required exact original decoded string at that position, including whitespace. Do not trim, canonicalize, match by value alone or delete every duplicate. The UI shows the corresponding one-based number. Optional boolean `confirm_insecure` follows existing save policy (UI sends true); it never changes any node's TLS settings.
+
+Missing If-Match is 428 `IF_MATCH_REQUIRED`; stale configuration is 412 `CONFIG_CONFLICT`; shared action lock contention is 409 `ACTION_BUSY`. Invalid index/string or a positional string mismatch is 422 `RULE_DELETE_INVALID`. Deleting the unique final MATCH is 422 `RULE_DELETE_PROTECTED`. A noneditable flow/alias/merge/anchored/multiline or ambiguous rules layout, or missing unique final MATCH, is 422 `RULE_EDIT_UNSUPPORTED`. Existing `CONFIG_*` validation/read/write errors remain controlled errors, not raw native diagnostics. Failed validation must not save or apply.
+
+Only a provable single physical block-sequence scalar line is deleted, including its own inline comment and line ending. Other bytes, standalone neighbouring comments, CRLF/LF style, unknown fields, unrelated anchors, selected-node file and saved subscription remain unchanged. Candidate validation includes remaining active RULE-SET native checks and a fresh source-byte recheck. This action uses the existing atomic save/readback chain, not bulk deletion, reorder, edit, import backup or an OS-wide lock.
+
+Success uses existing `finishConfigSave` fields plus `deleted:true`, original zero-based `index`, original `rule` and current `etag`/ETag header. APPLIED, SAVED_STOPPED, APPLY_FAILED and STATE_UNAVAILABLE remain distinct: a successful disk save with failed/unconfirmed apply is not a failed deletion. A stopped VPN is not started; a running VPN follows the existing controlled apply once. `/rules/delete` participates in existing startup observation using the SAVE_RULE source, not a new enum or a client-issued reload.
+
+The existing ordered list has one delete control per rule. MATCH is disabled with “保留唯一兜底”; all delete controls are disabled when `editable=false` or busy. Before sending any request, confirmation displays the one-based number, exact rule and running-apply/stopped-save implications; cancellation sends no API request. Each handler captures its original index, string, ETag, session and list generation, checks freshness before and after confirmation, and cannot submit from a reloaded list, switched profile or old session. Concurrent double submissions are guarded. Save/list/status responses and operation cleanup are owner-fenced so old work cannot overwrite a newer operation's feedback or enable its controls. Existing raw YAML drafts are preserved, but their stale save ETag is revoked after a changed save. Saved/deleted feedback remains authoritative when subsequent list/status refresh fails, with a separate refresh warning. All API rule strings use text nodes/textContent, never innerHTML.
+
+Local evidence: `/workspace/anytls-rule-delete-evidence/ui_vm_test.cjs` exercises the actual app functions in Node VM with a deliberately minimal DOM and synthetic transport. The first list-control/cancel test was observed RED on the baseline and GREEN on the candidate; added boundary checks are test-after. This is not browser, real HTTP, Mac/helper/VPN or production acceptance. The parent owns independent desktop/mobile browser verification; this UI change does not deploy, restart or publish anything.
 
 ## 验证
 

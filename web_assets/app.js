@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {
- RULE_INVALID_INPUT:'规则输入无效：类型、匹配值、目标不能为空，不支持逗号或换行；no-resolve 仅适用于 GEOIP / RULE-SET。', RULE_VALUE_INVALID:'匹配值或当前配置未通过原生校验；GEOIP 仅支持 CN，规则集必须已定义并通过摘要审计。', RULE_TARGET_INVALID:'目标已失效，请重新打开新增规则并选择有效目标。', RULE_POSITION_INVALID:'位置无效：请输入现有规则序号，不能放在最终 MATCH 后。', RULE_EDIT_UNSUPPORTED:'当前规则不是可安全插入的普通块列表，或缺少最终 MATCH。请使用原始配置编辑器调整为显式 rules 列表并保留最终 MATCH，再重新打开新增规则。别名、合并和流式规则列表不会自动改写。',
+ RULE_INVALID_INPUT:'规则输入无效：类型、匹配值、目标不能为空，不支持逗号或换行；no-resolve 仅适用于 GEOIP / RULE-SET。', RULE_VALUE_INVALID:'匹配值或当前配置未通过原生校验；GEOIP 仅支持 CN，规则集必须已定义并通过摘要审计。', RULE_TARGET_INVALID:'目标已失效，请重新打开新增规则并选择有效目标。', RULE_POSITION_INVALID:'位置无效：请输入现有规则序号，不能放在最终 MATCH 后。', RULE_DELETE_INVALID:'删除请求无效：规则序号或原始规则不匹配，请重新读取规则后重试。', RULE_DELETE_PROTECTED:'不能删除最终 MATCH：必须保留唯一兜底规则。', RULE_EDIT_UNSUPPORTED:'当前规则不是可安全增删的普通块列表，或缺少唯一最终 MATCH。请使用原始配置编辑器调整为显式 rules 列表并保留唯一最终 MATCH，再重新读取规则。别名、合并和流式规则列表不会自动改写。',
  UPDATE_CHECK_FAILED:'检查更新失败，未取得可信版本信息。请检查网络后重新检查。', UPDATE_PYTHON_REQUIRED:'无法安装更新：本机缺少 Python 3。无需 Go 或系统授权；请先安装 Python 3 后重新检查。', UPDATE_BINARY_UNAVAILABLE:'当前平台没有完整的官方预编译更新包，不能安装；不会改用源码编译。', UPDATE_DOWNLOAD_FAILED:'更新材料下载失败，尚未发布新程序。请检查网络后重新检查。', UPDATE_VALIDATION_FAILED:'更新材料或候选程序校验失败，未发布新程序。请重新检查更新。', UPDATE_PUBLISH_FAILED:'更新材料保留、程序备份或发布失败；程序文件状态需核对。请保留备份及材料，核对后再试。', UPDATE_VERIFY_FAILED:'替换后的程序版本核验失败，安装结果待核对。请保留备份及材料，由维护者核对磁盘版本、摘要及备份；不会自动回滚或重启 VPN。',
  PROFILE_INVALID:'方案名称或标识无效，请检查后重试。', PROFILE_NOT_FOUND:'方案已不存在，请刷新方案列表。', PROFILE_CONFLICT:'配置或方案已改变，请刷新后再切换。', PROFILE_STORE_UNAVAILABLE:'方案存储不可用，请检查本机目录权限。', PROFILE_SAVE_FAILED:'方案保存失败，请检查本机目录权限后刷新确认。', PROFILE_SWITCH_FAILED_ROLLED_BACK:'方案切换失败，已恢复旧配置；请检查配置后重试。', PROFILE_STATE_UNCERTAIN:'严重警告：方案切换恢复未能确认，配置与运行状态未知。请检查本机配置与备份，不要继续覆盖。',
  CONFIG_CONVERSION_TIMEOUT:'订阅已进入配置转换，但获取远程规则集或展开转换超过处理期限。不是订阅格式判定失败；原配置未改变，请检查规则集网络连接。', CONFIG_CONVERSION_CANCELED:'配置转换已取消，未生成预览，原配置未改变。', CONFIG_CONVERSION_TOO_LARGE:'转换后的配置超过 32 MiB，未生成预览或修改原配置；规则未被删除或去重。', CONFIG_CONVERSION_INVALID:'订阅或配置无法识别为 Clash / AnyTLS YAML。请确认使用 Clash/Mihomo 格式订阅，而不是网页、URI 或 Base64 列表；原配置未改变。', CONVERSION_CONFIRMATION_REQUIRED:'请确认转换差异和跳过清单后再导入。', SUBSCRIPTION_HTML_RESPONSE:'订阅服务返回了网页而非配置：可能是登录页、错误页或访问验证。请使用客户端直连订阅链接。原配置未改变。', SUBSCRIPTION_URI_RESPONSE:'订阅服务返回了 URI 节点列表而非 Clash YAML；已声明 Clash 客户端，请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。', SUBSCRIPTION_BASE64_RESPONSE:'订阅服务返回了 Base64 节点列表而非 Clash YAML；请在订阅服务选择 Clash/Mihomo 格式链接后重试。原配置未改变。',
@@ -66,7 +66,7 @@ function serviceFeedback(code,data,operation) {
 }
 async function api(path, options = {}) {
  const session=sessionGeneration;
- const startupMutation=Boolean(options.method&&options.method!=='GET'&&(/^\/service\/(start|stop|reload)$/.test(path)||['/config','/nodes','/groups/selection','/nodes/selection','/rules','/profiles/switch','/import/commit'].includes(path)));
+ const startupMutation=Boolean(options.method&&options.method!=='GET'&&(/^\/service\/(start|stop|reload)$/.test(path)||['/config','/nodes','/groups/selection','/nodes/selection','/rules','/rules/delete','/profiles/switch','/import/commit'].includes(path)));
  const trace=startupMutation&&typeof startupBegin==='function'?startupBegin(!path.startsWith('/service/')):null;if(trace)trace.mutation=true;
  const headers = new Headers(options.headers || {});
  if (options.body !== undefined) { headers.set('Content-Type','application/json'); options.body = JSON.stringify(options.body); }
@@ -139,15 +139,15 @@ async function operation(label, fn) {
  try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
  finally { finish(); }
 }
-function showLogin() {if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();polling=false;recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
+function showLogin() {if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();ruleCommitting=false;$('rule-fields').disabled=false;polling=false;recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
 async function enterConsole(data) {csrf=data.csrf;if(typeof startupResume==='function')startupResume();$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';try{await enterConsole(await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}}));}catch(e){$('password').value='';$('login-error').textContent=e.message;}finally{button.disabled=false;}});
 $('logout').addEventListener('click',()=>{cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
-async function status() {
- if (!csrf || polling) return;
+async function status(current=()=>true) {
+ if (!csrf || polling || !current()) return;
  const session=sessionGeneration,owner={};polling=owner;
  try {
-  const state=await api('/status');if(session!==sessionGeneration||!csrf)return;serviceState=state;renderServiceButtons();
+  const state=await api('/status');if(session!==sessionGeneration||!csrf||!current())return;serviceState=state;renderServiceButtons();
   const transport=state.transport==='network-http'?'网络 HTTP 无 TLS · 凭据与会话未经传输加密':state.transport==='loopback-http'?'回环 HTTP 无 TLS':'传输方式未知';
   $('transport-footer').textContent=transport;$('transport-badge').textContent=transport;
   const unavailable=state.availability!=='AVAILABLE';
@@ -155,9 +155,9 @@ async function status() {
   syncServiceUI(state,title);
   $('connection-detail').textContent=unavailable?'无法读取服务管理器。请在本机终端检查状态。':'状态来自本机服务管理器；尚未执行网络连通性验证。';
   $('pending').hidden=!state.pendingReload;$('version').textContent=state.version;
-  $('helper-detail').textContent='正在检查特权助手…';try{const helper=await api('/helper/status');if(session!==sessionGeneration||!csrf)return;$('helper-detail').textContent=helper.available?'已连接受限特权助手，系统操作无需反复授权。':helper.code==='HELPER_CONFIG_MISMATCH'?messages.HELPER_CONFIG_MISMATCH:'请在本机终端运行 anytls helper install，完成一次系统授权。';}catch{if(session!==sessionGeneration||!csrf)return;$('helper-detail').textContent='无法连接助手，请在终端检查 anytls helper status。';}
+  $('helper-detail').textContent='正在检查特权助手…';try{const helper=await api('/helper/status');if(session!==sessionGeneration||!csrf||!current())return;$('helper-detail').textContent=helper.available?'已连接受限特权助手，系统操作无需反复授权。':helper.code==='HELPER_CONFIG_MISMATCH'?messages.HELPER_CONFIG_MISMATCH:'请在本机终端运行 anytls helper install，完成一次系统授权。';}catch{if(session!==sessionGeneration||!csrf||!current())return;$('helper-detail').textContent='无法连接助手，请在终端检查 anytls helper status。';}
   $('pending-detail').textContent=state.pendingReload?'配置尚未确认生效。网页保存会自动尝试应用；失败后可重试，外部文件更改请手动重载。':state.pendingKnown?'本次控制台操作后未检测到配置更改。':'尚未确认当前快照与磁盘配置是否一致；必要时明确重载。';
- } catch(e){if(csrf&&session===sessionGeneration){serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('connection-detail').textContent='服务状态读取失败，请在本机检查；之前的状态不再作为当前依据。';$('pending').hidden=true;$('version').textContent='—';$('pending-detail').textContent='状态读取失败，无法确认配置是否生效。';$('helper-detail').textContent='状态未确认，请在本机检查特权助手。';notice(e.message,true);}}
+ } catch(e){if(csrf&&session===sessionGeneration&&current()){serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('connection-detail').textContent='服务状态读取失败，请在本机检查；之前的状态不再作为当前依据。';$('pending').hidden=true;$('version').textContent='—';$('pending-detail').textContent='状态读取失败，无法确认配置是否生效。';$('helper-detail').textContent='状态未确认，请在本机检查特权助手。';notice(e.message,true);}}
  finally{if(polling===owner)polling=false;}
 }
 setInterval(()=>{if(!document.hidden)status();},3000);
@@ -219,17 +219,65 @@ function invalidateRules(){rulesRequest++;rulesSnapshot=null;$('rule-form').hidd
 async function loadRules(open=false){
  invalidateRules();const request=rulesRequest,session=sessionGeneration;
  let data;try{data=await api('/rules');}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
- if(!Array.isArray(data.rules)||!Array.isArray(data.targets)||!Array.isArray(data.rule_sets)||typeof data.etag!=='string'||!data.etag)throw new Error('规则响应不完整，请重新读取。');
- rulesSnapshot={...data,request,session};$('rules-list').replaceChildren(...data.rules.map(rule=>element('li',rule)));
- if(!data.rules.length)$('rules-list').append(element('li','没有分流规则。'));
- if(open){if(!data.editable){$('rule-feedback').textContent=messages.RULE_EDIT_UNSUPPORTED;return;}
+ if(!Array.isArray(data.rules)||data.rules.some(rule=>typeof rule!=='string')||!Array.isArray(data.targets)||!Array.isArray(data.rule_sets)||typeof data.etag!=='string'||!data.etag)throw new Error('规则响应不完整，请重新读取。');
+ rulesSnapshot={...data,request,session};const snapshot=rulesSnapshot,target=$('rules-list'),rows=document.createDocumentFragment();
+ // Keep all existing rows, but avoid a second full-size array / variadic append.
+ for(let index=0;index<data.rules.length;index++){
+  const rule=data.rules[index],row=element('li'),content=element('div',undefined,'rule-row');
+  const protectedRule=rule.split(',')[0].trim()==='MATCH';
+  const remove=element('button',protectedRule?'保留唯一兜底':'删除','rule-delete');remove.type='button';remove.dataset.ruleDelete='';remove.ruleDeletable=data.editable===true&&!protectedRule;
+  remove.title=protectedRule?'最终 MATCH 必须保留为唯一兜底规则':data.editable!==true?messages.RULE_EDIT_UNSUPPORTED:'删除第 '+(index+1)+' 条规则';remove.setAttribute('aria-label',protectedRule?'第 '+(index+1)+' 条：保留唯一兜底 MATCH':'删除第 '+(index+1)+' 条规则');
+  remove.onclick=()=>deleteRule(snapshot,index,rule);
+  content.append(element('span',rule,'rule-text'),remove);row.append(content);rows.append(row);
+ }
+ target.replaceChildren(rows);renderRuleButtons();
+ if(!data.rules.length)target.append(element('li','没有分流规则。'));
+ if(!data.editable)$('rule-feedback').textContent=messages.RULE_EDIT_UNSUPPORTED;
+ if(open){if(!data.editable)return;
   for(const name of data.targets){const option=element('option',name);option.value=name;$('rule-target').append(option);}
   for(const name of data.rule_sets){const option=element('option',name);option.value=name;$('rule-set').append(option);}
   $('rule-index').max=String(data.rules.length);$('rule-form').hidden=false;rulePreview();$('rule-type').focus();
  }
 }
+function currentRules(snapshot){return Boolean(snapshot&&rulesSnapshot===snapshot&&snapshot.request===rulesRequest&&snapshot.session===sessionGeneration&&csrf);}
 function renderRuleButtons(){
- $('save-rule').disabled=busy||ruleCommitting||!csrf||!rulesSnapshot||rulesSnapshot.request!==rulesRequest||rulesSnapshot.session!==sessionGeneration||$('rule-type').value==='RULE-SET'&&!$('rule-set').value;
+ const unavailable=busy||ruleCommitting||!currentRules(rulesSnapshot)||rulesSnapshot.editable!==true;
+ $('save-rule').disabled=unavailable||$('rule-type').value==='RULE-SET'&&!$('rule-set').value;
+ for(const button of $('rules-list').querySelectorAll('[data-rule-delete]'))button.disabled=unavailable||!button.ruleDeletable;
+}
+async function finishRuleSave(data,snapshot,prefix,owner){
+ if(!currentRules(snapshot)||owner!==finishOperation)return;
+ if(data.changed&&etag){etag='';$('save-config').disabled=true;$('editor-info').textContent='单条规则已保存。原始配置草稿已保留但版本过期，请先复制草稿，再重新读取并合并；不能直接覆盖保存。';}
+ savedFeedback(data);const feedback=prefix+' '+$('notice').textContent,savedFailure=$('notice').classList.contains('failure');
+ $('rule-feedback').textContent=feedback;$('rule-form').hidden=true;
+ // Save result remains authoritative when a later read fails.
+ const refreshRequest=rulesRequest+1,refreshed=()=>refreshRequest===rulesRequest&&snapshot.session===sessionGeneration&&Boolean(csrf)&&owner===finishOperation;let warning='';
+ try{await loadRules(false);}catch{warning=' 规则列表刷新失败，请重新读取。';}
+ if(!refreshed())return;$('rule-feedback').textContent=feedback+warning;
+ await status(refreshed);if(!refreshed())return;
+ if(!serviceState)warning+=' 服务状态刷新失败，请稍后确认。';
+ $('rule-feedback').textContent=feedback+warning;notice(feedback+warning,savedFailure||Boolean(warning));
+}
+function ruleSaveError(error,snapshot){
+ if(!currentRules(snapshot))return;
+ $('rule-feedback').textContent=error.message;
+ if(['CONFIG_CONFLICT','IF_MATCH_REQUIRED','RULE_DELETE_INVALID','RULE_DELETE_PROTECTED','RULE_EDIT_UNSUPPORTED'].includes(error.code)){rulesRequest++;rulesSnapshot=null;renderRuleButtons();}
+}
+function deleteRule(snapshot,index,rule){
+ const current=()=>currentRules(snapshot)&&snapshot.editable===true;
+ if(busy||ruleCommitting||!current()||rule.split(',')[0].trim()==='MATCH')return;
+ if(!confirm('删除第 '+(index+1)+' 条分流规则？\n\n'+rule+'\n\n保存会自动应用到运行中的 VPN，可能短暂断网重连；VPN 未运行时仅保存，不会启动。'))return;
+ // Modal callbacks, list reads and session/config switches can invalidate a row.
+ if(busy||ruleCommitting||!current())return;
+ return operation('删除单条规则',async()=>{
+  if(!current())return;const owner=finishOperation;ruleCommitting=true;$('rule-fields').disabled=true;renderRuleButtons();
+  try{
+   const data=await api('/rules/delete',{method:'POST',headers:{'If-Match':snapshot.etag},body:saveBody({index,rule})});
+   if(!current()||owner!==finishOperation)return;
+   await finishRuleSave(data,snapshot,'已删除第 '+(index+1)+' 条规则。',owner);
+  }catch(error){if(current()&&owner===finishOperation){ruleSaveError(error,snapshot);throw error;}}
+  finally{if(owner===finishOperation){ruleCommitting=false;$('rule-fields').disabled=false;renderRuleButtons();}}
+ });
 }
 function ruleValue(){return $('rule-type').value==='RULE-SET'?$('rule-set').value:$('rule-type').value==='GEOIP'?$('rule-country').value:$('rule-value').value;}
 function rulePreview(){
@@ -247,26 +295,16 @@ $('add-rule').onclick=()=>operation('读取新增规则选项',()=>loadRules(tru
 $('cancel-rule').onclick=()=>{if(!ruleCommitting)invalidateRules();};
 $('rule-form').onsubmit=event=>{
  event.preventDefault();const snapshot=rulesSnapshot;
- const current=()=>snapshot&&snapshot.request===rulesRequest&&snapshot.session===sessionGeneration&&Boolean(csrf);
- if(busy||!current())return;
+ const current=()=>currentRules(snapshot);
+ if(busy||ruleCommitting||!current())return;
  const body=saveBody({type:$('rule-type').value,value:ruleValue(),target:$('rule-target').value,no_resolve:$('rule-no-resolve').checked,position:$('rule-position').value});if(body.position==='index')body.index=Number($('rule-index').value)-1;
  return operation('保存单条规则',async()=>{
-  if(!current())return;ruleCommitting=true;$('rule-fields').disabled=true;
+  if(!current())return;const owner=finishOperation;ruleCommitting=true;$('rule-fields').disabled=true;
   try{
-   const data=await api('/rules',{method:'POST',headers:{'If-Match':snapshot.etag},body});if(!current())return;
-   if(data.changed&&etag){etag='';$('save-config').disabled=true;$('editor-info').textContent='单条规则已保存。原始配置草稿已保留但版本过期，请先复制草稿，再重新读取并合并；不能直接覆盖保存。';}
-   savedFeedback(data);const feedback=(data.inserted?'已新增规则。':'相同规则已存在，未插入、未重新连接。')+' '+$('notice').textContent;
-   const savedFailure=$('notice').classList.contains('failure');
-   $('rule-feedback').textContent=feedback;$('rule-form').hidden=true;
-   // Save result remains visible even if later status/list refresh fails.
-   const refreshRequest=rulesRequest+1,refreshed=()=>refreshRequest===rulesRequest&&snapshot.session===sessionGeneration&&Boolean(csrf);let warning='';
-   try{await loadRules(false);}catch{warning=' 规则列表刷新失败，请重新读取。';}
-   if(!refreshed())return;$('rule-feedback').textContent=feedback+warning;
-   await status();if(!refreshed())return;
-   if(!serviceState)warning+=' 服务状态刷新失败，请稍后确认。';
-   $('rule-feedback').textContent=feedback+warning;notice(feedback+warning,savedFailure||Boolean(warning));
-  }catch(error){if(current()){$('rule-feedback').textContent=error.message;if(error.code==='CONFIG_CONFLICT'){rulesRequest++;rulesSnapshot=null;$('save-rule').disabled=true;}}throw error;
-  }finally{ruleCommitting=false;$('rule-fields').disabled=false;renderRuleButtons();}
+   const data=await api('/rules',{method:'POST',headers:{'If-Match':snapshot.etag},body});if(!current()||owner!==finishOperation)return;
+   await finishRuleSave(data,snapshot,data.inserted?'已新增规则。':'相同规则已存在，未插入、未重新连接。',owner);
+  }catch(error){if(current()&&owner===finishOperation){ruleSaveError(error,snapshot);throw error;}}
+  finally{if(owner===finishOperation){ruleCommitting=false;$('rule-fields').disabled=false;renderRuleButtons();}}
  });
 };
 $('load-config').onclick=()=>{if(etag&& !confirm('重新读取会丢弃编辑区尚未保存的修改。继续？'))return;operation('读取原始配置',async()=>{const data=await api('/config');$('yaml-editor').value=data.yaml;etag=data.etag;$('yaml-editor').disabled=false;$('save-config').disabled=false;$('editor-info').textContent='已读取配置（含节点密码）。保存后，运行中的 VPN 会自动重新连接以应用配置。';});};
