@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // UNIT-SIMULATED tools/network; real staging in TempDir, never root wrappers.
@@ -35,7 +36,10 @@ rules: ["DOMAIN,example.org,secondary", "DOMAIN,example.net,duplicate", "MATCH,p
 	d := newServiceLifecycle(filepath.Join(dir, "snapshot"))
 	d.state = func() (bool, bool, error) { return loaded, loaded, nil }
 	d.proxy = func() error { return nil }
-	d.pause = func() {}
+	// Closures share one clock across value-receiver lifecycle copies.
+	now := time.Unix(0, 0)
+	d.now = func() time.Time { return now }
+	d.pause = func() { now = now.Add(time.Second) }
 	d.route = func(ip string) (string, error) {
 		calls = append(calls, "route:"+ip)
 		if loaded && ip == "1.1.1.1" {

@@ -26,6 +26,7 @@ type serviceLifecycle struct {
 	stage          func(string, string, string, string) error
 	remove         func(string) error
 	pause          func()
+	now            func() time.Time
 	owned          *snapshotRootIdentity
 	receipt        *serviceDiagnostic
 	diagnostic     *startDiagnostics
@@ -44,7 +45,7 @@ func newServiceLifecycleContext(root string, ctx context.Context) serviceLifecyc
 	return serviceLifecycle{root: root, tool: runTool, state: serviceState, route: routeInterface, owned: owned,
 		dns: dnsServers, proxy: checkProxyInactive, stage: func(binary, config, core, root string) error {
 			return stagePrivateRunOwnedContext(ctx, binary, config, core, root, owned)
-		}, remove: os.RemoveAll, pause: func() { time.Sleep(time.Second) }}
+		}, remove: os.RemoveAll, pause: func() { time.Sleep(time.Second) }, now: time.Now}
 }
 
 // Do not print tool output, config values or upstream errors; preserve causes
@@ -520,12 +521,31 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 	if err != nil {
 		return d.failure("BOOTSTRAP", "LAUNCHD_BOOTSTRAP_FAILED", lifecycleFailure("launchd bootstrap failed", err))
 	}
+	// Only post-bootstrap observation counts. time.Now retains its monotonic
+	// clock; synchronous probes and scheduling consume this window too.
+	deadline := d.now().Add(60 * time.Second)
+	expired := func() bool { return !d.now().Before(deadline) }
+	timeout := func() error {
+		reason := "READINESS_UNKNOWN"
+		switch {
+		case d.diagnostic.Job == "NOT_RUNNING" && d.diagnostic.Tun == "NOT_TUN":
+			reason = "PROCESS_AND_TUN_NOT_READY"
+		case d.diagnostic.Job == "NOT_RUNNING":
+			reason = "PROCESS_NOT_RUNNING"
+		case d.diagnostic.Tun == "NOT_TUN":
+			reason = "TUN_NOT_READY"
+		}
+		return d.failure("READINESS", reason, errors.New("TUN did not become ready: 60s observation timed out"))
+	}
 	r.phase = "READINESS_FAILED"
 	r.active = &r.BeforeHTTPS
-	for i := 0; i < 16; i++ {
+	for i := 0; !expired(); i++ {
 		d.startupRound = i + 1
 		roundSpan := d.traceBegin("READINESS_ROUND")
 		roundDone, roundErr := func() (bool, error) {
+			if expired() {
+				return true, timeout()
+			}
 			r.BeforeHTTPS = diagnosticUnknown()
 			for j := range r.Servers {
 				r.Servers[j].Readiness = "NOT_EXECUTED"
@@ -542,11 +562,17 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 				r.BeforeHTTPS.Job = "RUNNING"
 				d.diagnostic.Job = "RUNNING"
 			}
+			if expired() {
+				return true, timeout()
+			}
 			r.BeforeHTTPS.Public = "FAILED"
 			d.diagnostic.Tun = "UNKNOWN"
 			target, err := d.traceRoute("READINESS_PUBLIC_ROUTE", "1.1.1.1")
 			if err != nil {
 				return true, d.failure("READINESS", "READINESS_ROUTE_UNAVAILABLE", lifecycleFailure("readiness public route probe failed", err))
+			}
+			if expired() {
+				return true, timeout()
 			}
 			r.BeforeHTTPS.Public = "NOT_TUN"
 			d.diagnostic.Tun = "NOT_TUN"
@@ -558,7 +584,12 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 			if err := d.serverRoutes(baseline, servers); err != nil {
 				return true, err
 			}
+			if expired() {
+				return true, timeout()
+			}
 			if loaded && running && strings.HasPrefix(target, "utun") {
+				// Once entered before expiry, HTTPS keeps its independent 40s
+				// retry budget and final identity checks, even past this window.
 				r.HTTPS = "FAILED"
 				if err := d.httpsExitProbe(context.Background(), target, baseline, servers); err != nil {
 					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -619,22 +650,15 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 		if roundDone {
 			return roundErr
 		}
-		if i < 15 {
+		// The one-second pause is not a hard deadline: recheck before the
+		// next round rather than accepting a late wakeup as another sample.
+		if !expired() {
 			d.tracePause()
 		}
 	}
 	d.startupRound = 0
 	d.traceCapture()
-	reason := "READINESS_UNKNOWN"
-	switch {
-	case d.diagnostic.Job == "NOT_RUNNING" && d.diagnostic.Tun == "NOT_TUN":
-		reason = "PROCESS_AND_TUN_NOT_READY"
-	case d.diagnostic.Job == "NOT_RUNNING":
-		reason = "PROCESS_NOT_RUNNING"
-	case d.diagnostic.Tun == "NOT_TUN":
-		reason = "TUN_NOT_READY"
-	}
-	return d.failure("READINESS", reason, errors.New("TUN did not become ready"))
+	return timeout()
 }
 
 // Retry only curl's transient transport failures, never TLS verification,
