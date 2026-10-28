@@ -570,6 +570,8 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/api/v1/rules/delete" && r.Method == "POST":
+		w.deleteRule(rw, r)
 	case r.URL.Path == "/api/v1/rules" && r.Method == "POST":
 		w.addRule(rw, r)
 	case r.URL.Path == "/api/v1/profiles" && r.Method == "POST":
