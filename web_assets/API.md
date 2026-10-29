@@ -160,6 +160,16 @@ The existing ordered list has one delete control per rule. MATCH is disabled wit
 
 Local evidence: `/workspace/anytls-rule-delete-evidence/ui_vm_test.cjs` exercises the actual app functions in Node VM with a deliberately minimal DOM and synthetic transport. The first list-control/cancel test was observed RED on the baseline and GREEN on the candidate; added boundary checks are test-after. This is not browser, real HTTP, Mac/helper/VPN or production acceptance. The parent owns independent desktop/mobile browser verification; this UI change does not deploy, restart or publish anything.
 
+## 已加载规则列表导航
+
+`GET /rules` 仍一次返回完整 `rules[]`，不增加分页参数或改变配置/导入配额。页面每页只创建最多 100 个规则行及其删除按钮；首页、上一页、下一页、末页仅切换当前快照视图。中文计数区分总数、匹配数和匹配结果中的当前显示范围；无匹配与配置无规则分别提示。
+
+搜索对整份已加载快照的原始规则字符串执行 `trim().toLowerCase()` 查询与 `toLowerCase().includes()` 字面子串匹配，不解释正则，不限当前页、不请求服务器、不去重或重排。列表 `li.value` 始终是原始一基序号，筛选后的第几条不是删除索引。原始序号跳转仅接受 1..已加载总数的规范正整数（无前导零、空格、小数或指数），清除搜索并明确提示后跳到该原始位置所在页。
+
+翻页/搜索不替换规则快照或请求代次。所有删除闭包仍捕获原始零基 index、精确原文、完整 ETag 和会话/列表代次；重复内容按所选原始位置分别删除。搜索/翻页/跳转及重绘后的删除按钮在 busy/提交期间禁用，处理器另有状态检查。重新读取、保存后刷新、配置切换及登出均清空搜索并重置第一页；冲突导致快照失效后导航和变更控件禁用。新增、最终 MATCH 保护、取消零请求和原始 YAML 草稿保护沿用原有合同。
+
+本次证据 `/workspace/anytls-rule-list-ux-evidence/ui_navigation_test.cjs` 使用真实 app.js 的 Node VM + 最小 DOM/合成传输。先在基线观察 91,983 行全部渲染（要求最多 100 行）的业务 RED，再观察候选仅创建 100 li / 100 删除按钮的 GREEN；导航和跳转另有观察到的业务 RED/GREEN，额外安全边界为 test-after。该计数不是浏览器性能计时、真实 HTTP 或 Mac/helper/VPN/生产验收；父任务负责真实浏览器验证。旧删除/新增 VM 回归单独运行。
+
 ## 验证
 
 ### ST1 页面启动日志（独立候选）

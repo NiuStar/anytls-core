@@ -111,7 +111,17 @@
             <label><input id="rule-no-resolve" type="checkbox" disabled> no-resolve（仅 GEOIP / RULE-SET）</label>
             <p class="note">GEOIP 目前仅支持 CN。目标仅列出当前有效的节点与策略组；不会修改节点证书设置。</p>
             <output id="rule-preview" class="rule-preview"></output><div class="actions"><button id="save-rule" type="submit">校验并保存</button><button id="cancel-rule" type="button">取消</button></div>
-          </fieldset></form><p id="rule-feedback" role="status" aria-live="polite"></p><ol id="rules-list" class="rules-list" aria-describedby="rules-help"></ol></div>
+          </fieldset></form><p id="rule-feedback" role="status" aria-live="polite"></p>
+          <div class="rules-navigation">
+            <div class="rules-search"><label for="rules-search">搜索整份已加载规则</label><div class="actions"><input id="rules-search" type="search" autocomplete="off" placeholder="原始规则文字（不区分大小写）" disabled><button id="rules-clear" type="button" disabled>清除搜索</button></div></div>
+            <p id="rules-count" role="status" aria-live="polite">尚未读取</p>
+            <div class="rules-pagination"><div class="actions" role="group" aria-label="规则列表分页"><button id="rules-first" type="button" disabled>首页</button><button id="rules-prev" type="button" disabled>上一页</button><button id="rules-next" type="button" disabled>下一页</button><button id="rules-last" type="button" disabled>末页</button></div>
+              <form id="rules-jump-form"><label for="rules-jump">原始序号</label><input id="rules-jump" type="text" inputmode="numeric" pattern="[1-9][0-9]*" autocomplete="off" aria-describedby="rules-navigation-help rules-navigation-feedback" disabled><button id="rules-jump-button" type="submit" disabled>跳转</button></form>
+            </div>
+            <p id="rules-navigation-help" class="hint">每页仅显示 100 条，不限制导入规则数。搜索仅针对本次已加载的完整列表，不请求服务器或修改配置；序号始终为原始位置，跳转会清除搜索。</p>
+            <p id="rules-navigation-feedback" role="status" aria-live="polite"></p>
+            <p id="rules-empty" class="empty-state" hidden></p>
+          </div><ol id="rules-list" class="rules-list" aria-describedby="rules-help rules-count"></ol></div>
         <div class="panel editor-panel"><div class="panel-toolbar"><div><h3>原始配置</h3><span class="hint">显式打开或导出后包含节点密码，仅限本机登录用户。导出当前磁盘配置，不包含未保存草稿；复制编辑区包含未保存草稿。</span></div><div class="action-bar"><button id="copy-editor" type="button" disabled>复制编辑区</button><button id="export-current" type="button">导出当前配置</button><button id="load-config">打开原始配置（含节点密码）</button><button id="save-config" class="primary" disabled>校验并保存</button></div></div><label for="yaml-editor" class="editor-label">原始 YAML</label><textarea id="yaml-editor" spellcheck="false" placeholder="打开原始配置后在此编辑" disabled></textarea><div id="editor-info" class="hint editor-info">保存使用文件内容版本比对。其他编辑器修改文件后，请重新读取并合并，避免覆盖。</div></div>
       </section>
       <section id="view-update" class="view" hidden>

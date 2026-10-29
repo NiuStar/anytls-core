@@ -214,24 +214,15 @@ async function loadGroups(){
   row.append(content,select,save);target.append(row);
  }
 }
-let rulesRequest=0, rulesSnapshot=null, ruleCommitting=false;
-function invalidateRules(){rulesRequest++;rulesSnapshot=null;$('rule-form').hidden=true;$('rule-form').reset();$('rule-target').replaceChildren();$('rule-set').replaceChildren();$('rule-preview').textContent='';$('rule-feedback').textContent='';$('rules-list').replaceChildren();renderRuleButtons();}
+let rulesRequest=0, rulesSnapshot=null, ruleCommitting=false, rulesPage=0, rulesQuery='', rulesMatches=null;
+const rulesPageSize=100;
+function resetRulesNavigation(){rulesPage=0;rulesQuery='';rulesMatches=null;$('rules-search').value='';$('rules-jump').value='';$('rules-navigation-feedback').textContent='';}
+function invalidateRules(){rulesRequest++;rulesSnapshot=null;resetRulesNavigation();$('rules-count').textContent='尚未读取';$('rules-empty').hidden=true;$('rule-form').hidden=true;$('rule-form').reset();$('rule-target').replaceChildren();$('rule-set').replaceChildren();$('rule-preview').textContent='';$('rule-feedback').textContent='';$('rules-list').replaceChildren();renderRuleButtons();}
 async function loadRules(open=false){
  invalidateRules();const request=rulesRequest,session=sessionGeneration;
  let data;try{data=await api('/rules');}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
  if(!Array.isArray(data.rules)||data.rules.some(rule=>typeof rule!=='string')||!Array.isArray(data.targets)||!Array.isArray(data.rule_sets)||typeof data.etag!=='string'||!data.etag)throw new Error('规则响应不完整，请重新读取。');
- rulesSnapshot={...data,request,session};const snapshot=rulesSnapshot,target=$('rules-list'),rows=document.createDocumentFragment();
- // Keep all existing rows, but avoid a second full-size array / variadic append.
- for(let index=0;index<data.rules.length;index++){
-  const rule=data.rules[index],row=element('li'),content=element('div',undefined,'rule-row');
-  const protectedRule=rule.split(',')[0].trim()==='MATCH';
-  const remove=element('button',protectedRule?'保留唯一兜底':'删除','rule-delete');remove.type='button';remove.dataset.ruleDelete='';remove.ruleDeletable=data.editable===true&&!protectedRule;
-  remove.title=protectedRule?'最终 MATCH 必须保留为唯一兜底规则':data.editable!==true?messages.RULE_EDIT_UNSUPPORTED:'删除第 '+(index+1)+' 条规则';remove.setAttribute('aria-label',protectedRule?'第 '+(index+1)+' 条：保留唯一兜底 MATCH':'删除第 '+(index+1)+' 条规则');
-  remove.onclick=()=>deleteRule(snapshot,index,rule);
-  content.append(element('span',rule,'rule-text'),remove);row.append(content);rows.append(row);
- }
- target.replaceChildren(rows);renderRuleButtons();
- if(!data.rules.length)target.append(element('li','没有分流规则。'));
+ rulesSnapshot={...data,request,session};renderRulesPage();
  if(!data.editable)$('rule-feedback').textContent=messages.RULE_EDIT_UNSUPPORTED;
  if(open){if(!data.editable)return;
   for(const name of data.targets){const option=element('option',name);option.value=name;$('rule-target').append(option);}
@@ -240,8 +231,53 @@ async function loadRules(open=false){
  }
 }
 function currentRules(snapshot){return Boolean(snapshot&&rulesSnapshot===snapshot&&snapshot.request===rulesRequest&&snapshot.session===sessionGeneration&&csrf);}
+function rulesVisibleCount(){return rulesMatches===null?rulesSnapshot.rules.length:rulesMatches.length;}
+function renderRulesPage(){
+ const snapshot=rulesSnapshot;if(!currentRules(snapshot))return;
+ const total=snapshot.rules.length,count=rulesVisibleCount(),pages=Math.ceil(count/rulesPageSize);
+ rulesPage=Math.max(0,Math.min(rulesPage,Math.max(0,pages-1)));
+ const start=rulesPage*rulesPageSize,end=Math.min(start+rulesPageSize,count),rows=document.createDocumentFragment();
+ for(let position=start;position<end;position++){
+  const index=rulesMatches===null?position:rulesMatches[position],rule=snapshot.rules[index],row=element('li'),content=element('div',undefined,'rule-row');row.value=index+1;
+  const protectedRule=rule.split(',')[0].trim()==='MATCH';
+  const remove=element('button',protectedRule?'保留唯一兜底':'删除','rule-delete');remove.type='button';remove.dataset.ruleDelete='';remove.ruleDeletable=snapshot.editable===true&&!protectedRule;
+  remove.title=protectedRule?'最终 MATCH 必须保留为唯一兜底规则':snapshot.editable!==true?messages.RULE_EDIT_UNSUPPORTED:'删除第 '+(index+1)+' 条规则';remove.setAttribute('aria-label',protectedRule?'第 '+(index+1)+' 条：保留唯一兜底 MATCH':'删除第 '+(index+1)+' 条规则');
+  remove.onclick=()=>deleteRule(snapshot,index,rule);
+  content.append(element('span',rule,'rule-text'),remove);row.append(content);rows.append(row);
+ }
+ $('rules-list').replaceChildren(rows);
+ $('rules-count').textContent='共 '+total+' 条 · 匹配 '+count+' 条 · 显示 '+(count?start+1:0)+'–'+end+' 条 · 第 '+(pages?rulesPage+1:0)+' / '+pages+' 页（每页 100 条）';
+ $('rules-empty').hidden=count>0;$('rules-empty').textContent=total?'没有匹配的规则，请清除或修改搜索；配置中的规则未改变。':'当前配置没有分流规则。';
+ $('rules-jump').max=String(total);renderRuleButtons();
+}
+function filterRules(){
+ if(busy||ruleCommitting||!currentRules(rulesSnapshot))return;
+ rulesQuery=$('rules-search').value.trim().toLowerCase();rulesPage=0;rulesMatches=null;
+ if(rulesQuery){rulesMatches=[];for(let index=0;index<rulesSnapshot.rules.length;index++)if(rulesSnapshot.rules[index].toLowerCase().includes(rulesQuery))rulesMatches.push(index);}
+ $('rules-navigation-feedback').textContent='';renderRulesPage();
+}
+$('rules-search').addEventListener('input',filterRules);
+$('rules-clear').onclick=()=>{if(busy||ruleCommitting||!currentRules(rulesSnapshot))return;$('rules-search').value='';filterRules();$('rules-search').focus();};
+for(const kind of ['first','prev','next','last'])$('rules-'+kind).onclick=()=>{
+ if(busy||ruleCommitting||!currentRules(rulesSnapshot))return;
+ rulesPage=kind==='first'?0:kind==='prev'?rulesPage-1:kind==='next'?rulesPage+1:Math.ceil(rulesVisibleCount()/rulesPageSize)-1;
+ $('rules-navigation-feedback').textContent='';renderRulesPage();
+};
+$('rules-jump-form').onsubmit=event=>{
+ event.preventDefault();if(busy||ruleCommitting||!currentRules(rulesSnapshot)||!rulesSnapshot.rules.length)return;
+ const value=$('rules-jump').value,index=Number(value),total=rulesSnapshot.rules.length;
+ if(!/^[1-9][0-9]*$/.test(value)||!Number.isSafeInteger(index)||index>total){$('rules-navigation-feedback').textContent='请输入 1–'+total+' 范围内的原始序号（不含前导零、空格或小数）。';return;}
+ const cleared=Boolean($('rules-search').value);rulesQuery='';rulesMatches=null;$('rules-search').value='';rulesPage=Math.floor((index-1)/rulesPageSize);renderRulesPage();
+ $('rules-navigation-feedback').textContent=(cleared?'已清除搜索；':'')+'已跳转到原始第 '+index+' 条所在页，列表序号为原始位置。';
+};
 function renderRuleButtons(){
- const unavailable=busy||ruleCommitting||!currentRules(rulesSnapshot)||rulesSnapshot.editable!==true;
+ const current=currentRules(rulesSnapshot),viewUnavailable=busy||ruleCommitting||!current,total=current?rulesSnapshot.rules.length:0,count=current?rulesVisibleCount():0;
+ $('rules-search').disabled=viewUnavailable||!total;
+ $('rules-clear').disabled=viewUnavailable||!$('rules-search').value;
+ for(const id of ['rules-jump','rules-jump-button'])$(id).disabled=viewUnavailable||!total;
+ $('rules-first').disabled=$('rules-prev').disabled=viewUnavailable||!count||rulesPage===0;
+ $('rules-next').disabled=$('rules-last').disabled=viewUnavailable||!count||(rulesPage+1)*rulesPageSize>=count;
+ const unavailable=viewUnavailable||rulesSnapshot.editable!==true;
  $('save-rule').disabled=unavailable||$('rule-type').value==='RULE-SET'&&!$('rule-set').value;
  for(const button of $('rules-list').querySelectorAll('[data-rule-delete]'))button.disabled=unavailable||!button.ruleDeletable;
 }
