@@ -445,6 +445,7 @@ func (w *Writer) run() {
 				}
 			}
 		case <-ticker.C:
+			revision := w.revision
 			if len(batch) > 0 {
 				w.commit(batch)
 				clear(batch)
@@ -452,6 +453,11 @@ func (w *Writer) run() {
 			}
 			if w.collection.Load() >= 3 {
 				return
+			}
+			// A successful commit already published this tick's state. Keep
+			// the heartbeat when idle or when every queued record was rejected.
+			if w.revision != revision {
+				continue
 			}
 			if e := w.publish(); e != nil {
 				return
