@@ -211,8 +211,8 @@ func systemWriterObservation(h Header, i int) Observation {
 	host := fmt.Sprintf("route-%d.example.com", i)
 	return Observation{
 		Hook: HookTCP, Network: NetworkTCP,
-		Destination: Destination{Host: ptr(host), IP: ptr("203.0.113.9"), Port: ptr(uint16(443)), HostSource: HostDestination},
-		OriginDestination: &Destination{IP: ptr("198.51.100.7"), Port: ptr(uint16(8443)), HostSource: HostUnknown},
+		Destination:              Destination{Host: ptr(host), IP: ptr("203.0.113.9"), Port: ptr(uint16(443)), HostSource: HostDestination},
+		OriginDestination:        &Destination{IP: ptr("198.51.100.7"), Port: ptr(uint16(8443)), HostSource: HostUnknown},
 		RouteOriginalDestination: &Destination{Host: ptr("original.example.com"), Port: ptr(uint16(9443)), HostSource: HostMetadata},
 		Route: RouteProjection{
 			Evidence: ProvenanceVerified, SourceID: ptr(h.Generation + ":rule:7"), SourceIndex: ptr(7),
@@ -281,7 +281,7 @@ func systemWriterReadback(t *testing.T, s recordStore, scope Scope, h Header, ob
 			t.Fatalf("invalid receipt timestamp %q: %v", rows[i].ObservedAt, err)
 		}
 		// Receipt time is writer-owned, not a business field to fabricate.
-		want := Record{SchemaVersion: 1, Binding: h.Binding, Seq: DecimalFromUint64(uint64(i+1)), ObservationID: DecimalFromUint64(tickets[i]), ObservedAt: rows[i].ObservedAt, Event: "ROUTED", Hook: o.Hook, Network: o.Network, Destination: o.Destination, OriginDestination: o.OriginDestination, RouteOriginalDestination: o.RouteOriginalDestination, Route: o.Route, State: "ROUTED"}
+		want := Record{SchemaVersion: 1, Binding: h.Binding, Seq: DecimalFromUint64(uint64(i + 1)), ObservationID: DecimalFromUint64(tickets[i]), ObservedAt: rows[i].ObservedAt, Event: "ROUTED", Hook: o.Hook, Network: o.Network, Destination: o.Destination, OriginDestination: o.OriginDestination, RouteOriginalDestination: o.RouteOriginalDestination, Route: o.Route, State: "ROUTED"}
 		if !reflect.DeepEqual(rows[i], want) {
 			t.Errorf("complete record %d differs:\ngot  %+v\nwant %+v", i, rows[i], want)
 		}
