@@ -602,11 +602,17 @@ func ManifestDigest(m Manifest, budget int) (string, error) {
 		FinalOrigin         RouteProjection  `json:"final_origin"`
 		Outbounds           []OutboundOrigin `json:"outbounds"`
 	}{m.SchemaVersion, m.InstanceID, m.Generation, m.SelectionGeneration, m.RuntimeSHA256, m.CapturedSources, m.Rules, m.FinalOrigin, m.Outbounds}
-	b, err := EncodeBounded(view, budget)
-	if err != nil {
+	// Every projected value was checked by Validate(m) above. Encode the fixed
+	// view with the same bounded encoder without validating those values twice.
+	// Keep the budget check after manifest validation to preserve error priority.
+	if budget < 1 {
+		return "", ErrTooLarge
+	}
+	e := boundedEncoder{limit: budget}
+	if err := e.value(reflect.ValueOf(view), 0); err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(b)
+	sum := sha256.Sum256(e.b)
 	return hex.EncodeToString(sum[:]), nil
 }
 
