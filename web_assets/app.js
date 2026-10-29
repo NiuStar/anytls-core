@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {
+ CONFIG_WRITE_FAILED:'配置写入失败，当前磁盘配置可能已改变，保存状态尚未确认。请重新读取配置并核对；不会自动重试。', CONFIG_READBACK_FAILED:'配置写入后的读回核验失败，配置可能已经保存，当前磁盘状态尚未确认。请重新读取配置并核对；不会自动重试。',
  RULE_INVALID_INPUT:'规则输入无效：类型、匹配值、目标不能为空，不支持逗号或换行；no-resolve 仅适用于 GEOIP / RULE-SET。', RULE_VALUE_INVALID:'匹配值或当前配置未通过原生校验；GEOIP 仅支持 CN，规则集必须已定义并通过摘要审计。', RULE_TARGET_INVALID:'目标已失效，请重新打开新增规则并选择有效目标。', RULE_POSITION_INVALID:'位置无效：请输入现有规则序号，不能放在最终 MATCH 后。', RULE_DELETE_INVALID:'删除请求无效：规则序号或原始规则不匹配，请重新读取规则后重试。', RULE_DELETE_PROTECTED:'不能删除最终 MATCH：必须保留唯一兜底规则。', RULE_EDIT_UNSUPPORTED:'当前规则不是可安全增删的普通块列表，或缺少唯一最终 MATCH。请使用原始配置编辑器调整为显式 rules 列表并保留唯一最终 MATCH，再重新读取规则。别名、合并和流式规则列表不会自动改写。',
  UPDATE_CHECK_FAILED:'检查更新失败，未取得可信版本信息。请检查网络后重新检查。', UPDATE_PYTHON_REQUIRED:'无法安装更新：本机缺少 Python 3。无需 Go 或系统授权；请先安装 Python 3 后重新检查。', UPDATE_BINARY_UNAVAILABLE:'当前平台没有完整的官方预编译更新包，不能安装；不会改用源码编译。', UPDATE_DOWNLOAD_FAILED:'更新材料下载失败，尚未发布新程序。请检查网络后重新检查。', UPDATE_VALIDATION_FAILED:'更新材料或候选程序校验失败，未发布新程序。请重新检查更新。', UPDATE_PUBLISH_FAILED:'更新材料保留、程序备份或发布失败；程序文件状态需核对。请保留备份及材料，核对后再试。', UPDATE_VERIFY_FAILED:'替换后的程序版本核验失败，安装结果待核对。请保留备份及材料，由维护者核对磁盘版本、摘要及备份；不会自动回滚或重启 VPN。',
  PROFILE_INVALID:'方案名称或标识无效，请检查后重试。', PROFILE_NOT_FOUND:'方案已不存在，请刷新方案列表。', PROFILE_CONFLICT:'配置或方案已改变，请刷新后再切换。', PROFILE_STORE_UNAVAILABLE:'方案存储不可用，请检查本机目录权限。', PROFILE_SAVE_FAILED:'方案保存失败，请检查本机目录权限后刷新确认。', PROFILE_SWITCH_FAILED_ROLLED_BACK:'方案切换失败，已恢复旧配置；请检查配置后重试。', PROFILE_STATE_UNCERTAIN:'严重警告：方案切换恢复未能确认，配置与运行状态未知。请检查本机配置与备份，不要继续覆盖。',
@@ -220,9 +221,10 @@ function resetRulesNavigation(){rulesPage=0;rulesQuery='';rulesMatches=null;$('r
 function invalidateRules(){rulesRequest++;rulesSnapshot=null;resetRulesNavigation();$('rules-count').textContent='尚未读取';$('rules-empty').hidden=true;$('rule-form').hidden=true;$('rule-form').reset();$('rule-target').replaceChildren();$('rule-set').replaceChildren();$('rule-preview').textContent='';$('rule-feedback').textContent='';$('rules-list').replaceChildren();renderRuleButtons();}
 async function loadRules(open=false){
  invalidateRules();const request=rulesRequest,session=sessionGeneration;
- let data;try{data=await api('/rules');}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
- if(!Array.isArray(data.rules)||data.rules.some(rule=>typeof rule!=='string')||!Array.isArray(data.targets)||!Array.isArray(data.rule_sets)||typeof data.etag!=='string'||!data.etag)throw new Error('规则响应不完整，请重新读取。');
- rulesSnapshot={...data,request,session};renderRulesPage();
+ let data;try{data=await api(open?'/rules':'/rules?view=list');}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
+ const optionsLoaded=open&&Array.isArray(data.targets)&&Array.isArray(data.rule_sets)&&data.options_loaded!==false;
+ if(!Array.isArray(data.rules)||data.rules.some(rule=>typeof rule!=='string')||typeof data.etag!=='string'||!data.etag||(open?!optionsLoaded:data.view!=='list'||data.options_loaded!==false||own(data,'targets')||own(data,'rule_sets')))throw new Error('规则响应不完整，请重新读取。');
+ rulesSnapshot={...data,options_loaded:optionsLoaded,request,session};renderRulesPage();
  if(!data.editable)$('rule-feedback').textContent=messages.RULE_EDIT_UNSUPPORTED;
  if(open){if(!data.editable)return;
   for(const name of data.targets){const option=element('option',name);option.value=name;$('rule-target').append(option);}
@@ -278,7 +280,7 @@ function renderRuleButtons(){
  $('rules-first').disabled=$('rules-prev').disabled=viewUnavailable||!count||rulesPage===0;
  $('rules-next').disabled=$('rules-last').disabled=viewUnavailable||!count||(rulesPage+1)*rulesPageSize>=count;
  const unavailable=viewUnavailable||rulesSnapshot.editable!==true;
- $('save-rule').disabled=unavailable||$('rule-type').value==='RULE-SET'&&!$('rule-set').value;
+ $('save-rule').disabled=unavailable||rulesSnapshot.options_loaded!==true||$('rule-type').value==='RULE-SET'&&!$('rule-set').value;
  for(const button of $('rules-list').querySelectorAll('[data-rule-delete]'))button.disabled=unavailable||!button.ruleDeletable;
 }
 async function finishRuleSave(data,snapshot,prefix,owner){
@@ -331,7 +333,7 @@ $('add-rule').onclick=()=>operation('读取新增规则选项',()=>loadRules(tru
 $('cancel-rule').onclick=()=>{if(!ruleCommitting)invalidateRules();};
 $('rule-form').onsubmit=event=>{
  event.preventDefault();const snapshot=rulesSnapshot;
- const current=()=>currentRules(snapshot);
+ const current=()=>currentRules(snapshot)&&snapshot.options_loaded===true&&snapshot.editable===true;
  if(busy||ruleCommitting||!current())return;
  const body=saveBody({type:$('rule-type').value,value:ruleValue(),target:$('rule-target').value,no_resolve:$('rule-no-resolve').checked,position:$('rule-position').value});if(body.position==='index')body.index=Number($('rule-index').value)-1;
  return operation('保存单条规则',async()=>{

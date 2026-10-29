@@ -70,6 +70,31 @@ func TestWebRulesListOnlyProjection(t *testing.T) {
 	}
 }
 
+// Count the actual projection collaborator, not external-file availability.
+// getRules supplies all set reads/SDK checks and target construction inside it.
+func TestWebRulesListOnlyOptionWork(t *testing.T) {
+	raw := []byte(singleRuleConfig)
+	calls := 0
+	supply := func(doc webRuleDoc) ([]string, []string) {
+		calls++
+		if len(doc.Rules) != 2 || doc.Rules[0] != "DOMAIN,old.example,DIRECT" {
+			t.Fatalf("options did not receive the captured config: %+v", doc)
+		}
+		return []string{"DIRECT", "REJECT"}, []string{"audited"}
+	}
+	list, err := webRulesProjection(raw, true, supply)
+	if err != nil || calls != 0 || list["options_loaded"] != false {
+		t.Fatalf("list invoked option work: calls=%d projection=%v err=%v", calls, list, err)
+	}
+	full, err := webRulesProjection(raw, false, supply)
+	if err != nil || calls != 1 || !reflect.DeepEqual(full["targets"], []string{"DIRECT", "REJECT"}) || !reflect.DeepEqual(full["rule_sets"], []string{"audited"}) || full["etag"] != list["etag"] {
+		t.Fatalf("full must perform and return option work once: calls=%d projection=%v err=%v", calls, full, err)
+	}
+	if _, err := webRulesProjection([]byte("rules: ["), false, supply); err == nil || calls != 1 {
+		t.Fatalf("invalid config reached options: calls=%d err=%v", calls, err)
+	}
+}
+
 func TestWebRulesListOnlyRejectsInvalidQuery(t *testing.T) {
 	w, password := webFixture(t)
 	cookie, _ := webLogin(t, w, password)

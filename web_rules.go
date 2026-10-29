@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -80,37 +81,60 @@ func webCheckRuleSet(ctx context.Context, path, label string, spec fileRuleSet) 
 	return engine.Check(ctx, raw)
 }
 func (w *webConsole) getRules(rw http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(query) != 0 && (len(query) != 1 || len(query["view"]) != 1 || query["view"][0] != "list") {
+		webError(rw, 400, "INVALID_INPUT")
+		return
+	}
 	b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
 	if err != nil {
 		webError(rw, 500, "CONFIG_UNAVAILABLE")
 		return
 	}
-	var doc webRuleDoc
-	if yaml.Unmarshal(b, &doc) != nil {
+	projection, err := webRulesProjection(b, len(query) != 0, func(doc webRuleDoc) ([]string, []string) {
+		sets := []string{}
+		for label, spec := range doc.Sets {
+			if webRuleToken(label) {
+				if e := webCheckRuleSet(r.Context(), w.configPath, label, spec); e == nil {
+					sets = append(sets, label)
+				}
+			}
+		}
+		sort.Strings(sets)
+		return webRuleTargets(b, doc), sets
+	})
+	if err != nil {
 		webError(rw, 422, "CONFIG_INVALID")
 		return
+	}
+	rw.Header().Set("ETag", projection["etag"].(string))
+	webJSON(rw, 200, projection)
+}
+
+// The full-options collaborator is request-local and never invoked for a list.
+// Keep the raw snapshot/layout projection shared; only editor choices are lazy.
+func webRulesProjection(b []byte, listOnly bool, supplyOptions func(webRuleDoc) ([]string, []string)) (map[string]any, error) {
+	var doc webRuleDoc
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil, err
 	}
 	if doc.Rules == nil {
 		doc.Rules = []string{}
 	}
-	sets := []string{}
-	for label, spec := range doc.Sets {
-		if webRuleToken(label) {
-			if e := webCheckRuleSet(r.Context(), w.configPath, label, spec); e == nil {
-				sets = append(sets, label)
-			}
-		}
-	}
-	sort.Strings(sets)
 	_, editErr := webRuleLayout(b)
 	etag := `"` + shaHex(b) + `"`
-	rw.Header().Set("ETag", etag)
-	webJSON(rw, 200, map[string]any{"rules": doc.Rules, "etag": etag, "targets": webRuleTargets(b, doc), "rule_sets": sets, "editable": editErr == nil, "edit_error": func() string {
+	projection := map[string]any{"rules": doc.Rules, "etag": etag, "editable": editErr == nil, "edit_error": func() string {
 		if editErr != nil {
 			return "RULE_EDIT_UNSUPPORTED"
 		}
 		return ""
-	}()})
+	}()}
+	if listOnly {
+		projection["view"], projection["options_loaded"] = "list", false
+		return projection, nil
+	}
+	projection["targets"], projection["rule_sets"] = supplyOptions(doc)
+	return projection, nil
 }
 
 var webRuleLine = regexp.MustCompile(`^( *)-[ \t]+`)

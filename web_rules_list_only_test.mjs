@@ -49,6 +49,15 @@ test('browse requests list-only, renders/deletes, cannot synthetically submit ad
  assert.equal(h.get('rules-list').querySelectorAll('[data-rule-delete]')[0].disabled,false);
  await h.get('rule-form').onsubmit({preventDefault(){}});
  assert.equal(h.requests.length,1,'unloaded options must never submit an add');
+ // Test-after regression: the displayed list ETag/raw index owns delete, and
+ // the successful save refresh remains list-only (no implicit editor load).
+ h.respond({changed:false,deleted:true,apply_status:'NO_CHANGE'});h.respond(list('"v3"'));
+ h.respond({availability:'AVAILABLE',running:false,loaded:false});h.respond({available:false});
+ await h.get('rules-list').querySelectorAll('[data-rule-delete]')[0].onclick();
+ const post=h.requests[1];assert.equal(post.path,'/api/v1/rules/delete');assert.equal(post.method,'POST');assert.equal(post.headers.get('If-Match'),'"v1"');
+ assert.deepEqual(JSON.parse(post.body),{index:0,rule:'DOMAIN,old.test,DIRECT',confirm_insecure:true});
+ assert.equal(h.requests[2].path,'/api/v1/rules?view=list');assert.equal(h.get('rule-form').hidden,true);assert.equal(h.get('save-rule').disabled,true);
+ assert.equal(h.run('busy'),false);assert.equal(h.run('rulesSnapshot.etag'),'"v3"');
 });
 
 test('add uses legacy full options with its own ETag and original save API', async()=>{

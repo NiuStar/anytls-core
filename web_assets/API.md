@@ -36,6 +36,7 @@
 | GET /groups | `{groups:[{name,type,choices,selected,resolved,valid}],etag}`；etag 来自解析策略组的同一份配置字节 |
 | POST /groups/selection | `{group,choice}`；新控制台携带读取时的 If-Match，冲突返回412 CONFIG_CONFLICT且不写入／不调用服务；省略header保留旧客户端兼容。复用真实 saveGroupChoice + readback → `{ok,changed,pendingReload}`；同值不写 |
 | GET /rules | `{rules:[原始规则字符串],etag,targets:[有效目标名称],rule_sets:[已审计标签],editable,edit_error}`；ETag 响应头与 etag 字段均为同次捕获配置的完整 SHA-256（含双引号）。旧 rules 字段不变，不返回 YAML、节点凭据或规则集路径 |
+| GET /rules?view=list | 只读列表投影 `{rules,etag,editable,edit_error,view:"list",options_loaded:false}`；省略 targets / rule_sets，不读取外部规则集、不做 SDK 规则集检查或节点目标构建。与完整 GET 共用原始配置快照、顺序、重复项、layout 检查和 ETag；不是服务端分页 |
 | POST /rules | 添加单条规则；完整合同见下文，复用认证 / 同源 / CSRF / actionMu 与保存后自动应用 |
 | POST /rules/delete | `{index:0,rule:"原始规则字符串",confirm_insecure:true}` + 同次 `GET /rules` 的 If-Match；仅删除指定位置的一条规则，保留最终 MATCH；完整合同见下文 |
 | GET /config | 显式敏感编辑操作 → `{yaml,etag}`，同时 ETag header；etag 是双引号包裹的完整原文件 SHA256 |
@@ -142,7 +143,7 @@ not constitute passing Go tests.
 
 ## Single-rule delete contract
 
-`POST /api/v1/rules/delete` requires authenticated Cookie, exact Origin, CSRF, JSON and exactly one full `If-Match` captured from the same `GET /rules` snapshot. The GET schema remains unchanged. Body:
+`POST /api/v1/rules/delete` requires authenticated Cookie, exact Origin, CSRF, JSON and exactly one full `If-Match` captured from the same `GET /rules` or `GET /rules?view=list` snapshot. The default GET schema remains unchanged. Body:
 
 ```json
 {"index":0,"rule":"DOMAIN,example.com,DIRECT","confirm_insecure":true}
@@ -162,7 +163,11 @@ Local evidence: `/workspace/anytls-rule-delete-evidence/ui_vm_test.cjs` exercise
 
 ## 已加载规则列表导航
 
-`GET /rules` 仍一次返回完整 `rules[]`，不增加分页参数或改变配置/导入配额。页面每页只创建最多 100 个规则行及其删除按钮；首页、上一页、下一页、末页仅切换当前快照视图。中文计数区分总数、匹配数和匹配结果中的当前显示范围；无匹配与配置无规则分别提示。
+浏览和保存后的列表刷新使用 `GET /rules?view=list`，仍一次返回完整 `rules[]`，不增加分页参数或改变配置/导入配额。仅显式打开新增表单读取旧 `GET /rules` 完整选项；默认 GET 仍执行完整目标构建、规则集摘要与原生校验，且不新增模式元数据。非空 query 只支持单个 `view=list`；未知键/值、空值、重复 view、非法转义及分号语法返回 400 `INVALID_INPUT`，不带 ETag；空 query 等同旧 GET。
+
+列表快照可删除但不能新增：保存按钮和表单处理器都检查选项已加载；完整新增快照使用自身 ETag。请求、会话与配置代次拒绝两种模式互相迟到覆盖。`CONFIG_WRITE_FAILED` 与 `CONFIG_READBACK_FAILED` 分别显示中文不确定性警告：磁盘配置可能已改变/保存，必须重新读取并核对，不自动重试；不宣称原文件一定未变。保存 API、原生 mutation 校验及原始 YAML 草稿规则不变。
+
+页面每页只创建最多 100 个规则行及其删除按钮；首页、上一页、下一页、末页仅切换当前快照视图。中文计数区分总数、匹配数和匹配结果中的当前显示范围；无匹配与配置无规则分别提示。
 
 搜索对整份已加载快照的原始规则字符串执行 `trim().toLowerCase()` 查询与 `toLowerCase().includes()` 字面子串匹配，不解释正则，不限当前页、不请求服务器、不去重或重排。列表 `li.value` 始终是原始一基序号，筛选后的第几条不是删除索引。原始序号跳转仅接受 1..已加载总数的规范正整数（无前导零、空格、小数或指数），清除搜索并明确提示后跳到该原始位置所在页。
 

@@ -1,6 +1,6 @@
-# P3 list-only contract (test-first checkpoint)
+# P3 list-only contract
 
-This checkpoint adds tests only; no implementation, deployment, build or service action is included. Parent must run the new native tests against this exact pre-implementation source before authorizing the implementation continuation.
+The parent obtained the native business RED on the pre-implementation source before this authorized implementation. This candidate implements the contract below; it does not deploy, build or operate any service. Native GREEN and real-browser acceptance remain parent-owned and NOT_RUN by this child.
 
 ## HTTP contract
 
@@ -35,4 +35,12 @@ Frontend, no installation required:
 WEB_ROOT=/absolute/export/web_assets /home/hermeswebui/.hermes/node/bin/node --test web_rules_list_only_test.mjs
 ```
 
-The VM executes actual app.js with only the automatic session bootstrap excluded. DOM and HTTP are synthetic and are not a real browser, authenticated network HTTP or native persistence acceptance. The external-file deletion test proves functional independence only: default GET excludes a now-missing set while list output stays constant. It does **not** count reads/SDK constructors or prove zero I/O, because full GET also tolerates missing sets. Parent must retain a separate real workload witness before claiming reduced work/performance; source branch review alone is not an I/O count. Do not introduce production globals solely to count tests. Original delete layout/parser work remains unchanged and unoptimized in this contract.
+The VM executes actual app.js with only the automatic session bootstrap excluded. DOM and HTTP are synthetic and are not a real browser, authenticated network HTTP or native persistence acceptance. The external-file deletion test proves functional independence only: default GET excludes a now-missing set while list output stays constant. It does **not** count reads/SDK constructors or prove zero I/O, because full GET also tolerates missing sets.
+
+`getRules` now passes a request-local `supplyOptions` closure to `webRulesProjection`. Every external-set read/native check and node-target construction remains inside that closure; list mode returns before invoking it. `TestWebRulesListOnlyOptionWork` counts this real projection collaborator (list zero, full once, malformed config zero) without production global hooks. This added test is test-after and NOT_RUN here; it is not a direct filesystem/SDK constructor counter or a measured speedup. Existing full-GET native tests still own the real semantic-validation regression. Parent must run the count test and retain a separate real workload/timing witness before claiming measured reduced work/performance. Original delete layout/parser work remains unchanged and unoptimized.
+
+## Implementation checkpoint
+
+- Frontend VM: observed pre-implementation RED (4 pass / 5 business failures), then candidate GREEN (9 pass / 0 fail); Node syntax and `git diff --check` pass. The additional actual delete/raw-index/ETag and list-only save-refresh assertions in the first case are test-after regressions.
+- No Go tools, native execution, SSH, network calls, browser, build, publication or restart were run by this child. Parent runs the native list suite plus existing full projection/SDK rule-set/add/delete regressions and browser gates against the committed candidate.
+- Full and list snapshots reuse the original raw ETag and layout work. Default GET has no new mode fields; full-option validation, mutation code and save chain remain unchanged.
