@@ -63,6 +63,10 @@ type webConsole struct {
 	startupRandom            io.Reader
 	probeSlotsOnce           sync.Once
 	probeSlots               chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
+	// Restart authority is installed only by the verified managed CLI path.
+	restartCheck   func() error
+	restartRequest func()
+	restartPending bool // guarded by actionMu
 }
 
 func newWebConsole(config, password string, port int) *webConsole {
@@ -71,7 +75,11 @@ func newWebConsole(config, password string, port int) *webConsole {
 	return w
 }
 func webuiCommand(args []string) error {
+	if len(args) > 0 && (args[0] == "install-agent" || args[0] == "agent-status") {
+		return webAgentCommand(args[0], args[1:])
+	}
 	fs := flag.NewFlagSet("webui", flag.ContinueOnError)
+	managed := fs.String("managed-agent", "", "internal LaunchAgent identity (not authorization)")
 	port := fs.Int("port", 18089, "HTTP port (1024-65535)")
 	listen := fs.String("listen", "127.0.0.1", "literal local IPv4 address or 0.0.0.0 for all IPv4 interfaces (HTTP has no TLS)")
 	if err := fs.Parse(args); err != nil {
@@ -110,9 +118,31 @@ func webuiCommand(args []string) error {
 	defer listener.Close()
 	w := newWebConsole(config, passwordPath, *port)
 	w.listenHost = *listen
+	if *managed != "" {
+		spec, err := webAgentCurrent(*listen, *port)
+		if err != nil {
+			return err
+		}
+		if *managed != spec.label() {
+			return errors.New("managed agent label mismatch")
+		}
+		// At process startup launchd may still be publishing its PID field.
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			err = spec.verify(os.Getpid())
+			if err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if err != nil {
+			return fmt.Errorf("managed agent identity rejected: %w", err)
+		}
+		w.restartCheck = func() error { return spec.verify(os.Getpid()) }
+	}
 	fmt.Printf("WebUI listening on %s:%d\nTransport: %s (HTTP, no TLS). Network access transmits credentials and session data without encryption; use a reachable host/IP, not 0.0.0.0, in your browser.\nAccount: admin; recover password with 'anytls password'.\n", *listen, *port, w.transport())
 	server := &http.Server{Handler: w, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
-	return server.Serve(listener)
+	return webAgentServe(server, listener, w, *managed != "")
 }
 func (w *webConsole) allowedHost(host string) bool {
 	p := strconv.Itoa(w.port)
@@ -380,6 +410,10 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer w.actionMu.Unlock()
+	if w.restartPending {
+		webError(rw, 409, "RESTART_PENDING")
+		return
+	}
 	w.mutate(rw, r)
 }
 func (w *webConsole) fingerprint() string {
@@ -477,7 +511,14 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 			webError(rw, 503, webUpdateErrorName(err))
 			return
 		}
-		webJSON(rw, 200, result)
+		var body map[string]any
+		if json.Unmarshal(result, &body) != nil || body == nil {
+			webError(rw, 503, "UPDATE_RESPONSE_INVALID")
+			return
+		}
+		body["restartManaged"] = w.restartCheck != nil && w.restartRequest != nil && w.restartCheck() == nil
+		body["restartScheduled"] = false
+		webJSON(rw, 200, body)
 	default:
 		webError(rw, 404, "NOT_FOUND")
 	}
@@ -823,7 +864,37 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 503, webUpdateErrorName(err))
 			return
 		}
-		webJSON(rw, 200, result)
+		var body map[string]any
+		if json.Unmarshal(result, &body) != nil || body == nil {
+			webError(rw, 503, "UPDATE_RESPONSE_INVALID")
+			return
+		}
+		body["restartScheduled"] = false
+		installed, _ := body["installed"].(string)
+		latest, _ := body["latest"].(string)
+		eligible := body["updated"] == true && body["status"] == "UPDATED" && body["restartRequired"] == true && installed == latest && validateUpdateVersion(installed) == nil
+		if eligible && w.restartCheck != nil && w.restartRequest != nil {
+			if w.restartCheck() != nil {
+				body["restartError"] = "RESTART_MANAGED_UNAVAILABLE"
+			} else {
+				w.restartPending = true
+				body["restartScheduled"] = true
+			}
+		}
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if err := json.NewEncoder(rw).Encode(body); err != nil {
+			w.restartPending = false
+			return
+		}
+		if w.restartPending {
+			if err := http.NewResponseController(rw).Flush(); err != nil {
+				w.restartPending = false
+				return
+			}
+			// This signals the server owner, never waits for Shutdown in-handler.
+			// Flush proves only a local write, not delivery to the browser.
+			w.restartRequest()
+		}
 	default:
 		webError(rw, 405, "METHOD_OR_PATH_NOT_ALLOWED")
 	}
@@ -976,6 +1047,7 @@ func webUpdateWithCommands(ctx context.Context, check bool, binary string, comma
 		response["updated"] = true
 		response["restartRequired"] = true
 	}
+	response["restartScheduled"] = false
 	return json.Marshal(response)
 }
 
