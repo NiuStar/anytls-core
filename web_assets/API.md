@@ -44,10 +44,18 @@
 | POST /service/start, /service/stop, /service/reload | `{confirm_insecure:false}`；只布尔同意，不接收命令；原生授权及 launchd 状态读回 → `{ok,loaded,running,pendingReload,readiness}` |
 | GET /connections | 连接记录只读页，必须 Cookie + 精确 `X-AnyTLS-Origin: http://Host` + `Sec-Fetch-Site: same-origin`；仅非回环网络 HTTP（含通配）允许 Fetch Metadata 完全缺失，仍强制精确自定义 Origin。空值／重复／cross-site／same-site 拒绝；可选 Origin 存在时同样精确验证。query 仅 after（canonical uint64 十进制字符串，默认0）、limit（1..500，默认100）、完整 instance_id/generation/manifest_id；拒绝未知/重复/部分绑定。无绑定仅发现无行；有绑定不回退最新。严格共享 PageResponse，≤1MiB，无 LIVE/connected 声明；失败400 INVALID_REQUEST、403 FORBIDDEN、409 BUSY/STALE_GENERATION、503 TELEMETRY_UNAVAILABLE/STORE_INVALID/UNSUPPORTED。认证先于 helper，no-store；不持 action 锁，不安装/更新/reload，不读当前 YAML 回填历史。 |
 | GET /version | `{version}` 是当前控制台进程版本，不假冒活动快照版本 |
-| GET /update-check | 固定自身 `update --check` 有界子进程；保持 sibling 五字段 CLI contract，只输出 `{status,current,installed,latest,available,sourceOnly,updated,restartRequired}`。current 永远是本 WebUI 内存版本，installed 是磁盘 sibling 报告；不相同时 restartRequired=true，status=RESTART_REQUIRED（可安装更新时优先 UPDATE_AVAILABLE）。响应丢失后重查仍保留重启提示。 |
-| POST /update | `{confirm:true}`；先固定自身 check，再 `update --version CHECKED_VERSION` 用户级子进程；丢弃输出，执行替换后自身 `version`（独立20秒期限）读回匹配才报告 UPDATED，installed=目标版本、restartRequired=true；不重启WebUI/VPN。失败503，只投影固定错误码 UPDATE_CHECK_FAILED(40)、UPDATE_PYTHON_REQUIRED(41)、UPDATE_BINARY_UNAVAILABLE(42)、UPDATE_DOWNLOAD_FAILED(43)、UPDATE_VALIDATION_FAILED(44)、UPDATE_PUBLISH_FAILED(45)、UPDATE_VERIFY_FAILED(46)、UPDATE_UNAVAILABLE(47/未知)。核验失败或超时不保证旧文件未变，不自动回滚，需独立核对磁盘版本、摘要和备份。 |
+| GET /update-check | 固定自身 `update --check` 有界子进程；保持 sibling 五字段 CLI contract，只输出 `{status,current,installed,latest,available,sourceOnly,updated,restartRequired,restartManaged,restartScheduled:false}`。restartManaged 为本次检查确认的用户级 Web 控制台托管能力（不授权 VPN 操作）；旧服务可省略，前端按需手动重启处理。current 永远是本 WebUI 内存版本，installed 是磁盘 sibling 报告；不相同时 restartRequired=true，status=RESTART_REQUIRED（可安装更新时优先 UPDATE_AVAILABLE）。响应丢失后重查仍保留重启提示。 |
+| POST /update | `{confirm:true}`；先固定自身 check，再 `update --version CHECKED_VERSION` 用户级子进程；丢弃输出，执行替换后自身 `version`（独立20秒期限）读回匹配才报告 UPDATED，installed=目标版本、restartRequired=true；成功响应始终增加 `restartScheduled` 布尔值，仅真实托管身份复核和安排成功才为 true；可附固定码 `restartError`（页面不透传其原始字符串）。先回复并 flush，再退出旧 Web server，由已验证的用户级 LaunchAgent 重启；不会重载 VPN、调用特权助手或系统授权。非托管、安排失败或旧服务省略该字段时，前端保留手动重启提示。失败503，只投影固定错误码 UPDATE_CHECK_FAILED(40)、UPDATE_PYTHON_REQUIRED(41)、UPDATE_BINARY_UNAVAILABLE(42)、UPDATE_DOWNLOAD_FAILED(43)、UPDATE_VALIDATION_FAILED(44)、UPDATE_PUBLISH_FAILED(45)、UPDATE_VERIFY_FAILED(46)、UPDATE_UNAVAILABLE(47/未知)。核验失败或超时不保证旧文件未变，不自动回滚，需独立核对磁盘版本、摘要和备份。 |
 
 服务动作原生授权最长3分钟，检查升级30秒，安装接纳前请求期限10分钟；接纳后独立于HTTP取消同步等待CLI及版本读回，CLI以35分钟context kill并Wait唯一Python publisher。认证与状态读取不持有 action 锁；修改、服务动作、升级共用 TryLock，忙返回409 ACTION_BUSY，避免排队请求超时后意外执行。更新检查是只读，可与状态并行。
+
+### 更新后的浏览器恢复与版本核验
+
+浏览器只有在安装响应为 `UPDATED,updated=true,restartRequired=true,restartScheduled=true` 且 `installed===latest`、目标符合稳定版本格式时启动恢复等待。磁盘安装成功和已安排重启不等于新进程已经运行。仅 GET 同源固定 `/api/v1/version`（Cookie、no-store、拒绝重定向），每次最多 3 秒、最多 30 次、总计最多 90 秒，串行读取间隔 1 秒；网络中断、旧版/畸形/错误响应不得判定成功，也不会重发安装请求。等待超时保留“磁盘程序已安装”与“运行版本尚未确认”，提供手动刷新/登录核对指引。页面不盲目 reload。
+
+`/version` 仍必须登录，未增加公开健康端点或放宽认证。401 仅表示控制台有响应且需要登录，可能仍为旧进程，不证明重启或目标版本；显示登录页及“尚未确认运行版本”。页面只在 sessionStorage 保存 `{tag:"WEBUI_UPDATE_TARGET",target,createdAt}`，15 分钟过期，校验格式和时间，绝不保存密码/CSRF/Cookie/URL。重新加载页面后仅在真实 session/login 成功时继续核验，且只有认证 200 的 `version===target` 才显示运行版本成功并清除记录；不依赖 `/status`、磁盘或登录页作成功证据。过期/无效记录与显式退出登录清除记录。退出、新登录、会话切换取消在途请求及定时器；代次/owner 检查拒绝迟到版本、401 和旧 finally 覆盖新会话。等待过程中保留退出登录入口。
+
+`node --test scripts/web_update_restart_test.mjs web_rules_list_only_test.mjs` 实际执行 app.js（Node builtin VM/assert/test），最小合成 DOM、HTTP、时钟与 sessionStorage，不是浏览器、真实 HTTP 或 macOS/LaunchAgent/VPN 验收。核心等待、401 后重登录、托管确认文案、退出取消和登录 supersede 切片均观察到业务 RED 后实现 GREEN；其余负例为补充回归。真实浏览器和 native 集成由父任务独立验收。
 
 ## 配置与运行边界
 

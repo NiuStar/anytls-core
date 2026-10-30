@@ -39,7 +39,7 @@
           <div class="startup-body"><p id="startup-status" role="status" aria-live="polite">尚未观察服务操作。</p><p id="startup-context" class="hint">仅记录服务启动、停止、重载及实际保存自动应用；不是所有保存的审计。</p><p id="startup-summary" class="mono"></p><p id="startup-warning" class="hint">观察限制：GAP 表示存在缺口，NOT_OBSERVED 表示未观察，STALE 表示仅为陈旧缓存。完整复制仅指当前保留的快照，不保证观察完整。辅助日志不是就绪、恢复或根因的权威依据；receipt 失败不单独证明启动失败。跨进程时钟不可相减，UTC 墙钟可能回退。</p><details id="startup-details"><summary>完整有界时间轴 · 按进程时钟分组</summary><label for="startup-text">可复制的完整快照</label><textarea id="startup-text" readonly spellcheck="false" wrap="off"></textarea></details><p id="startup-copy-status" role="status" aria-live="polite"></p></div>
         </section>
         <div class="info-grid">
-          <article><h3>版本</h3><dl><dt>控制台运行入口</dt><dd id="version" class="mono">—</dd></dl><p>升级不自动重启服务，运行快照可能仍为旧版。</p></article>
+          <article><h3>版本</h3><dl><dt>控制台运行入口</dt><dd id="version" class="mono">—</dd></dl><p>升级可自动重启已托管的 Web 控制台，不重载 VPN；VPN 运行快照可能仍为旧版。</p></article>
           <article><h3>配置</h3><dl><dt>生效方式</dt><dd>保存后自动应用</dd></dl><p id="pending-detail">跨控制台启动前的更改无法自动确认；不会伪造已同步状态。</p></article>
           <article><h3>特权助手</h3><dl><dt>系统授权</dt><dd>一次授权 · 受限控制</dd></dl><p id="helper-detail">请在本机终端运行 anytls helper install，安装受限特权助手。网页不接收系统密码。</p></article>
         </div><p class="footnote">服务运行不代表 VPN 连通性已验证。此处不展示未测量的流量、延迟或出口数据。</p>
@@ -126,7 +126,7 @@
       </section>
       <section id="view-update" class="view" hidden>
         <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>
-        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">官方预编译 · 无需 Go 或系统授权 · 保留配置及程序备份</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result" role="status" aria-live="polite">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">更新仅替换磁盘程序，不自动重启控制台或 VPN，不调用特权助手。若提示需重启控制台，当前页面仍运行内存中的旧版；请在确认后另行重启控制台。VPN 未重载，不代表已运行新版。</div></div>
+        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">官方预编译 · 无需 Go 或系统授权 · 保留配置及程序备份</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result" role="status" aria-live="polite">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">更新保留配置及程序备份，不调用特权助手或系统授权，不重载 VPN。仅当确认由本机服务管理器托管并安排重启时，浏览器自动等待 Web 控制台恢复并核验真实运行版本；未托管或旧版控制台仍需手动重启。重启后可能需要重新登录；登录页出现不代表新版已运行，重新登录后会继续核验。等待超时请手动刷新并核对，不会自动重复安装。控制台新版不代表 VPN 运行快照已更新。</div></div>
       </section>
     </div><footer>AnyTLS 本机控制台 <span id="transport-footer">正在读取传输方式 · HTTP 无 TLS</span></footer>
   </main>

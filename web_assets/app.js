@@ -2,7 +2,7 @@
 // No HTML strings are populated from API data. Credentials remain in memory only.
 const $ = id => document.getElementById(id);
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
-let sessionGeneration=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
+let sessionGeneration=0, loginRequest=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {
  CONFIG_WRITE_FAILED:'配置写入失败，当前磁盘配置可能已改变，保存状态尚未确认。请重新读取配置并核对；不会自动重试。', CONFIG_READBACK_FAILED:'配置写入后的读回核验失败，配置可能已经保存，当前磁盘状态尚未确认。请重新读取配置并核对；不会自动重试。',
  RULE_INVALID_INPUT:'规则输入无效：类型、匹配值、目标不能为空，不支持逗号或换行；no-resolve 仅适用于 GEOIP / RULE-SET。', RULE_VALUE_INVALID:'匹配值或当前配置未通过原生校验；GEOIP 仅支持 CN，规则集必须已定义并通过摘要审计。', RULE_TARGET_INVALID:'目标已失效，请重新打开新增规则并选择有效目标。', RULE_POSITION_INVALID:'位置无效：请输入现有规则序号，不能放在最终 MATCH 后。', RULE_DELETE_INVALID:'删除请求无效：规则序号或原始规则不匹配，请重新读取规则后重试。', RULE_DELETE_PROTECTED:'不能删除最终 MATCH：必须保留唯一兜底规则。', RULE_EDIT_UNSUPPORTED:'当前规则不是可安全增删的普通块列表，或缺少唯一最终 MATCH。请使用原始配置编辑器调整为显式 rules 列表并保留唯一最终 MATCH，再重新读取规则。别名、合并和流式规则列表不会自动改写。',
@@ -140,12 +140,18 @@ async function operation(label, fn) {
  try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
  finally { finish(); }
 }
-function showLogin() {if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();ruleCommitting=false;$('rule-fields').disabled=false;polling=false;recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();}
-async function enterConsole(data) {csrf=data.csrf;if(typeof startupResume==='function')startupResume();$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();}
-$('login-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';try{await enterConsole(await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}}));}catch(e){$('password').value='';$('login-error').textContent=e.message;}finally{button.disabled=false;}});
-$('logout').addEventListener('click',()=>{cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
+function showLogin() {cancelUpdateRestart();if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();ruleCommitting=false;$('rule-fields').disabled=false;polling=false;recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();const target=readUpdateTarget();if(target)$('login-error').textContent='先前更新的目标版本为 '+target+'，尚未确认当前运行版本。请重新登录后核验；VPN 未重载。';}
+async function enterConsole(data) {cancelUpdateRestart();if(finishOperation)finishOperation();sessionGeneration++;const session=sessionGeneration;csrf=data.csrf;if(typeof startupResume==='function')startupResume();$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status();if(session===sessionGeneration&&csrf){const target=readUpdateTarget();if(target)await operation('核验更新后版本',()=>waitForUpdatedConsole(target,true));}}
+$('login-form').addEventListener('submit',async event=>{
+ event.preventDefault();cancelUpdateRestart();if(finishOperation)finishOperation();sessionGeneration++;
+ const request=++loginRequest,session=sessionGeneration,button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';
+ try{const data=await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}});if(request!==loginRequest||session!==sessionGeneration)return;await enterConsole(data);}
+ catch(e){if(request===loginRequest&&session===sessionGeneration){$('password').value='';$('login-error').textContent=e.message;}}
+ finally{if(request===loginRequest)button.disabled=false;}
+});
+$('logout').addEventListener('click',()=>{if(updateRestartOwner){cancelUpdateRestart();if(finishOperation)finishOperation();}forgetUpdateTarget();cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
 async function status(current=()=>true) {
- if (!csrf || polling || !current()) return;
+ if (!csrf || polling || updateRestartOwner || !current()) return;
  const session=sessionGeneration,owner={};polling=owner;
  try {
   const state=await api('/status');if(session!==sessionGeneration||!csrf||!current())return;serviceState=state;renderServiceButtons();
@@ -481,23 +487,67 @@ $('export-current').onclick=()=>{
  if(busy||!confirm('导出文件包含节点密码，请妥善保管，不要公开分享。将导出磁盘上的当前配置，不含未保存的编辑。继续？'))return;
  return operation('导出当前配置',async()=>{const session=csrf,data=await api('/config/export');if(csrf!==session||!csrf)throw new Error('会话已改变，未下载配置。');const report=conversionReport(data.conversion);if(report.issues.length)throw new Error(messages.CONFIG_CONVERSION_UNSUPPORTED);if(report.warnings.length||report.skipped.length){renderConversion(report);$('import-preview').hidden=false;}downloadConfig(data);notice('已导出磁盘上的当前 AnyTLS 配置（含节点密码），未更改或应用配置。'+(report.warnings.length||report.skipped.length?' 转换差异与跳过：'+[...report.warnings,...report.skipped].join('；'):''));});
 };
+let updateRestartOwner=null, updateRestartManaged=false;
+const updateRestartKey='anytls.webui.update-target.v1', updateRestartTTL=15*60*1000;
+function validUpdateTarget(version){
+ if(typeof version!=='string'||version.length>128||version.trim()!==version)return false;
+ if(/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version))return true;
+ if(!/^v[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}$/.test(version)||version.slice(1,5)==='0000')return false;
+ const day=version.slice(1,11),date=new Date(day+'T00:00:00Z');return !Number.isNaN(date.getTime())&&date.toISOString().slice(0,10)===day;
+}
+function cancelUpdateRestart(){
+ const owner=updateRestartOwner;updateRestartOwner=null;
+ if(owner){if(owner.controller)owner.controller.abort();if(owner.wake){clearTimeout(owner.timer);owner.wake();}}
+}
+function forgetUpdateTarget(){try{sessionStorage.removeItem(updateRestartKey);}catch{/* Storage may be disabled; never store credentials elsewhere. */}}
+function rememberUpdateTarget(target){try{sessionStorage.setItem(updateRestartKey,JSON.stringify({tag:'WEBUI_UPDATE_TARGET',target,createdAt:Date.now()}));}catch{/* Current-page verification still works without storage. */}}
+function readUpdateTarget(){
+ try{const value=JSON.parse(sessionStorage.getItem(updateRestartKey));if(value&&value.tag==='WEBUI_UPDATE_TARGET'&&validUpdateTarget(value.target)&&Number.isFinite(value.createdAt)&&value.createdAt<=Date.now()&&Date.now()-value.createdAt<updateRestartTTL)return value.target;}catch{/* Invalid storage is not version evidence. */}
+ forgetUpdateTarget();return null;
+}
+async function updateVersionRequest(owner,timeout){
+ const controller=new AbortController();owner.controller=controller;
+ let timer;const aborted=new Promise((resolve,reject)=>controller.signal.addEventListener('abort',()=>reject(new Error('版本读取超时或已取消。')),{once:true}));
+ timer=setTimeout(()=>controller.abort(),timeout);
+ try{return await Promise.race([(async()=>{const response=await fetch('/api/v1/version',{method:'GET',credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});return {response,data:response.status===401?null:await response.json()};})(),aborted]);}
+ finally{clearTimeout(timer);if(owner.controller===controller)owner.controller=null;}
+}
+function updateRestartFeedback(text,failure=false){$('update-result').textContent=text+'\nVPN 未重载；更新不调用特权助手或系统授权。';notice(text,failure);}
+async function waitForUpdatedConsole(target,resumed=false){
+ cancelUpdateRestart();const owner={session:sessionGeneration,controller:null,wake:null,timer:null};updateRestartOwner=owner;
+ $('logout').disabled=false;
+ const current=()=>updateRestartOwner===owner&&owner.session===sessionGeneration&&Boolean(csrf),deadline=Date.now()+90000;
+ updateRestartFeedback(resumed?'已重新登录；正在核验先前更新的目标版本 '+target+'，尚未确认当前运行版本…':'磁盘程序已安装；已安排重启，正在等待 Web 控制台恢复并确认运行版本 '+target+'…');
+ try{
+  for(let attempt=0;attempt<30&&Date.now()<deadline&&current();attempt++){
+   let result;try{result=await updateVersionRequest(owner,Math.min(3000,deadline-Date.now()));}catch{if(!current())return;}
+   if(!current())return;
+   if(result&&result.response.status===401){showLogin();$('login-error').textContent='控制台已响应，但尚未确认运行目标版本 '+target+'。旧会话可能已失效，请重新登录后核验；VPN 未重载。';return;}
+   if(result&&result.response.status===200&&result.data&&result.data.version===target){forgetUpdateTarget();$('version').textContent=target;updateRestartFeedback('Web 控制台已恢复，已确认当前运行版本：'+target+'。');return;}
+   if(attempt<29&&Date.now()<deadline)await new Promise(resolve=>{owner.wake=resolve;owner.timer=setTimeout(()=>{owner.wake=null;resolve();},Math.min(1000,deadline-Date.now()));});
+  }
+  if(current())updateRestartFeedback('磁盘程序已安装为 '+target+'；等待已结束，尚未确认 Web 控制台运行目标版本。请手动刷新并登录核对；不会自动重试安装。',true);
+ }finally{if(updateRestartOwner===owner)updateRestartOwner=null;}
+}
 function clearUpdate(text='尚未检查。') {
- updateAvailable=false;$('run-update').disabled=true;$('update-result').textContent=text;
+ updateAvailable=false;updateRestartManaged=false;$('run-update').disabled=true;$('update-result').textContent=text;
 }
 function renderUpdate(data,install) {
- const statuses={UPDATED:'已安装完成',RESTART_REQUIRED:'已安装新版，需重启控制台',UPDATE_AVAILABLE:'发现可用更新',UP_TO_DATE:'磁盘程序已是最新版本'};
- if(!data||!['current','installed','latest'].every(k=>typeof data[k]==='string'&&data[k].trim())||!['available','sourceOnly','updated','restartRequired'].every(k=>typeof data[k]==='boolean')||!own(statuses,data.status)||install&&(data.status!=='UPDATED'||!data.updated||!data.restartRequired))throw new Error('更新响应不完整，安装结果待核对。请重新检查；不会自动回滚或重启。');
+ const statuses={UPDATED:'磁盘程序已安装',RESTART_REQUIRED:'已安装新版，需重启控制台',UPDATE_AVAILABLE:'发现可用更新',UP_TO_DATE:'磁盘程序已是最新版本'};
+ if(!data||!['current','installed','latest'].every(k=>typeof data[k]==='string'&&data[k].trim())||!['available','sourceOnly','updated','restartRequired'].every(k=>typeof data[k]==='boolean')||!own(statuses,data.status)||['restartScheduled','restartManaged'].some(k=>own(data,k)&&typeof data[k]!=='boolean')||own(data,'restartError')&&typeof data.restartError!=='string'||install&&(data.status!=='UPDATED'||!data.updated||!data.restartRequired)||data.restartScheduled===true&&(!install||!validUpdateTarget(data.installed)||data.installed!==data.latest||data.status!=='UPDATED'||!data.updated||!data.restartRequired))throw new Error('更新响应不完整，安装结果待核对。请重新检查；不会自动回滚或重启。');
+ updateRestartManaged=data.restartManaged===true;
  updateAvailable=data.available&&!data.sourceOnly&&data.status==='UPDATE_AVAILABLE';
  const restart=data.restartRequired||data.current!==data.installed;
  const lines=[statuses[data.status],'当前控制台（内存）：'+data.current,'已安装程序（磁盘）：'+data.installed,'官方最新版本：'+data.latest];
  if(data.sourceOnly)lines.push('当前平台仅有源码或缺少完整预编译材料，不能安装；不会调用 Go 编译。');
- if(restart)lines.push('需要重启控制台才能运行已安装版本；本次未自动重启控制台，VPN 未重载。');
+ if(restart)lines.push(data.restartScheduled===true?'已安排自动重启 Web 控制台；正在准备等待并核验运行版本，VPN 未重载。':'需要手动重启 Web 控制台才能运行已安装版本；本次未自动重启控制台，VPN 未重载。');
+ if(own(data,'restartError'))lines.push('未能安排自动重启；请手动重启 Web 控制台后登录核对运行版本。');
  if(install)lines.push('配置已保留；更新不调用特权助手或系统授权。');
  $('update-result').textContent=lines.join('\n');
 }
 function updateOperation(install) {
  if(busy||!csrf||install&&!updateAvailable)return;
- if(install&&!confirm('将下载并校验官方预编译程序，备份程序并保留配置；无需 Go、特权助手或系统授权。不会自动重启控制台或 VPN。继续？'))return;
+ if(install&&!confirm('将下载并校验官方预编译程序，备份程序并保留配置；无需 Go、特权助手或系统授权。'+(updateRestartManaged?'安装验证通过后将自动重启 Web 控制台，浏览器等待恢复并核验版本；可能需要重新登录。':'当前控制台未确认受托管，安装后需手动重启 Web 控制台。')+'不会重载 VPN。继续？'))return;
  return operation(install?'安装更新':'检查新版本',async()=>{
   const session=sessionGeneration,current=()=>session===sessionGeneration&&Boolean(csrf);
   clearUpdate(install?'正在下载、校验并安装预编译更新…':'正在检查官方稳定版本…');
@@ -505,6 +555,7 @@ function updateOperation(install) {
    const data=await api(install?'/update':'/update-check',install?{method:'POST',body:{confirm:true}}:{});
    if(!current())return;
    renderUpdate(data,install);
+   if(install&&data.restartScheduled===true){rememberUpdateTarget(data.installed);await waitForUpdatedConsole(data.installed);return;}
    notice(install?'预编译更新已安装；请查看版本与重启提示。':'版本检查完成，请查看下方结果。');
   } catch(error) {
    if(!current())return;
