@@ -256,7 +256,7 @@ func webAgentCommand(action string, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"label": s.label(), "target": s.target(), "plist": s.path(), "pid": pid, "restartManaged": managed})
 	}
 	if _, err := webAgentLaunch(ctx, "print", s.target()); err == nil {
-		return errors.New("agent job already loaded; inspect agent-status and bootout explicitly before reinstalling")
+		return errors.New("agent job already loaded; inspect agent-status; bootout is idle-only and may interrupt an active installation and its child; never unload during installation")
 	}
 	// Never kill or take over a manual listener, even if it looks like AnyTLS.
 	listener, err := net.Listen("tcp4", net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
@@ -313,7 +313,7 @@ func webAgentCommand(action string, args []string) error {
 		text, err := webAgentLaunch(ctx, "print", s.target())
 		pid := webAgentJobPID(text)
 		if err == nil && pid > 0 && s.verify(pid) == nil {
-			fmt.Printf("WebUI agent loaded: %s\nPlist: %s\nStop without respawn: launchctl bootout %s\n", s.target(), s.path(), s.target())
+			fmt.Printf("WebUI agent loaded: %s\nPlist: %s\nWARNING: bootout is idle-only; it may interrupt an active installation and its child even with ExitTimeOut=0. Never unload during installation.\nStop without respawn (idle only): launchctl bootout %s\n", s.target(), s.path(), s.target())
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
