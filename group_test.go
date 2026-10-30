@@ -84,8 +84,12 @@ func TestFileRuleSetSHAAndOrderedReference(t *testing.T) {
 	if len(route["rule_set"].([]any)) != 1 {
 		t.Fatal(route)
 	}
-	rule := route["rules"].([]any)[2].(map[string]any)
-	if rule["rule_set"].([]string)[0] != "private_ip" || rule["outbound"] != "direct" {
+	rules := tunBusinessRules(t, cfg)
+	if len(rules) != 1 {
+		t.Fatalf("expected only the no-resolve rule after DNS capture: %#v", rules)
+	}
+	rule := rules[0].(map[string]any)
+	if rule["rule_set"].([]string)[0] != "private_ip" || rule["outbound"] != "direct" || rule["action"] != "route" || route["final"] != "anytls-out" {
 		t.Fatal(rule)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "private.json"), []byte(`{"version":3,"rules":[]}`), 0600); err != nil {

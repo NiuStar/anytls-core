@@ -10,9 +10,15 @@ import (
 )
 
 func TestGeoIPCNCompilerRecords(t *testing.T) {
+	for _, mode := range []string{"proxy", "tun"} {
+		t.Run(mode, func(t *testing.T) { testGeoIPCNCompilerRecords(t, mode) })
+	}
+}
+
+func testGeoIPCNCompilerRecords(t *testing.T, mode string) {
 	for _, suffix := range []string{"", ",no-resolve"} {
 		p := routingFixture(t, " - DOMAIN,earlier.invalid,REJECT\n - GEOIP,CN,DIRECT"+suffix+"\n - MATCH,main\n")
-		c, e := prepareRuntimeWithRecords(&runtimeOptions{Config: p, NodeName: "main", Mode: "proxy", LocalPort: 11080, AllowInsecure: true})
+		c, e := prepareRuntimeWithRecords(&runtimeOptions{Config: p, NodeName: "main", Mode: mode, LocalPort: 11080, AllowInsecure: true})
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -40,6 +46,20 @@ func TestGeoIPCNCompilerRecords(t *testing.T) {
 		if suffix == "" {
 			first++
 		}
+		if mode == "tun" {
+			tunBusinessRules(t, cfg)
+			first = 3
+		}
+		wantSlots := first + 2
+		if suffix == "" {
+			wantSlots++
+			if rules[first+1].(map[string]any)["action"] != "resolve" || rules[first+1].(map[string]any)["server"] != "secure-dns" {
+				t.Fatal("resolve must remain immediately before GEOIP")
+			}
+		}
+		if len(rules) != wantSlots {
+			t.Fatal("unexpected GEOIP slot count")
+		}
 		if rules[first].(map[string]any)["action"] != "reject" {
 			t.Fatal("resolution reordered before earlier rule")
 		}
@@ -52,9 +72,15 @@ func TestGeoIPCNCompilerRecords(t *testing.T) {
 		if (suffix == "") != (resolves == 1) {
 			t.Fatal("no-resolve contract")
 		}
-		if suffix != "" {
+		if suffix != "" && mode == "proxy" {
 			if _, ok := cfg["dns"]; ok {
-				t.Fatal("no-resolve unexpectedly added DNS")
+				t.Fatal("no-resolve unexpectedly added DNS in proxy mode")
+			}
+		}
+		if mode == "tun" {
+			dns, ok := cfg["dns"].(map[string]any)
+			if !ok || dns["final"] != "secure-dns" || dns["reverse_mapping"] != true {
+				t.Fatal("TUN no-resolve must not disable unified DNS capture")
 			}
 		}
 		if e = engine.Check(context.Background(), c.JSON); e != nil {

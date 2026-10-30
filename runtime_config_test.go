@@ -165,6 +165,29 @@ func TestSameRuntimeForExternalAndEmbedded(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The frozen CLI predates the TUN-only DNS capture contract. Apply
+			// exactly that delta to its expected output; retain all ordered user
+			// slots, resolver actions, endpoints, and every other field/byte check.
+			if tc.mode == "tun" || tc.legacy {
+				reference := normalizedRuntime(t, want)
+				route := reference["route"].(map[string]any)
+				var business []any
+				if oldRules, ok := route["rules"].([]any); ok {
+					prefix := []any{map[string]any{"action": "sniff"}, map[string]any{"protocol": []any{"dns"}, "action": "hijack-dns"}}
+					if len(oldRules) < 2 || !reflect.DeepEqual(oldRules[:2], prefix) {
+						t.Fatalf("unexpected frozen RULE-SET capture prefix: %#v", oldRules)
+					}
+					business = oldRules[2:]
+				}
+				route["rules"] = append([]any{map[string]any{"port": 53, "action": "hijack-dns"}, map[string]any{"action": "sniff"}, map[string]any{"protocol": []string{"dns"}, "action": "hijack-dns"}}, business...)
+				reference["dns"].(map[string]any)["reverse_mapping"] = true
+				want, err = json.MarshalIndent(reference, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Independent literal prefix validation, not a production helper.
+				tunBusinessRules(t, got)
+			}
 			if !reflect.DeepEqual(normalizedRuntime(t, b), normalizedRuntime(t, want)) {
 				t.Fatal("complete normalized runtime JSON differs from frozen compiler (ordered arrays retained)")
 			}

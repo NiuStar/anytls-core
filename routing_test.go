@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,26 @@ func routingFixture(t *testing.T, rules string) string {
 	}
 	return p
 }
+
+// Assert the complete, fixed TUN capture prefix before inspecting ordered
+// business slots. Do not filter synthetics: resolve placement remains observable.
+func tunBusinessRules(t *testing.T, cfg map[string]any) []any {
+	t.Helper()
+	rules, ok := cfg["route"].(map[string]any)["rules"].([]any)
+	if !ok || len(rules) < 3 {
+		t.Fatalf("missing TUN DNS capture prefix: %#v", cfg["route"])
+	}
+	prefix, err := json.Marshal(rules[:3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"action":"hijack-dns","port":53},{"action":"sniff"},{"action":"hijack-dns","protocol":["dns"]}]`
+	if string(prefix) != want {
+		t.Fatalf("TUN DNS capture prefix: %s != %s", prefix, want)
+	}
+	return rules[3:]
+}
+
 func TestClashRoutingOrderedAndServerBypass(t *testing.T) {
 	p := routingFixture(t, " - DOMAIN,www.example.org,backup\n - DOMAIN-SUFFIX,example.org,DIRECT\n - IP-CIDR,10.0.0.0/8,DIRECT\n - DOMAIN,ads.example.org,REJECT\n - MATCH,main\n")
 	nodes, err := loadNodes(p)
@@ -29,21 +50,18 @@ func TestClashRoutingOrderedAndServerBypass(t *testing.T) {
 		t.Fatal(err)
 	}
 	routes := cfg["route"].(map[string]any)
-	rr := routes["rules"].([]any)
-	if len(rr) != 5 {
-		t.Fatalf("expected sniff plus 4 rules, got %#v", rr)
+	rr := tunBusinessRules(t, cfg)
+	if len(rr) != 4 {
+		t.Fatalf("expected DNS prefix plus 4 business rules, got %#v", routes)
 	}
-	if rr[0].(map[string]any)["action"] != "sniff" {
-		t.Fatalf("sniff must be first: %v", rr)
+	if rr[0].(map[string]any)["domain"].([]string)[0] != "www.example.org" || rr[0].(map[string]any)["outbound"] != "node-1" {
+		t.Fatalf("ordered rule lost: %v", rr[0])
 	}
-	if rr[1].(map[string]any)["domain"].([]string)[0] != "www.example.org" || rr[1].(map[string]any)["outbound"] != "node-1" {
-		t.Fatalf("ordered rule lost: %v", rr[1])
-	}
-	if rr[2].(map[string]any)["outbound"] != "direct" || rr[3].(map[string]any)["ip_cidr"].([]string)[0] != "10.0.0.0/8" {
+	if rr[1].(map[string]any)["domain_suffix"].([]string)[0] != "example.org" || rr[1].(map[string]any)["outbound"] != "direct" || rr[2].(map[string]any)["ip_cidr"].([]string)[0] != "10.0.0.0/8" || rr[2].(map[string]any)["outbound"] != "direct" {
 		t.Fatalf("direct or CIDR lost: %v", rr)
 	}
-	if rr[4].(map[string]any)["action"] != "reject" {
-		t.Fatalf("reject lost: %v", rr[4])
+	if rr[3].(map[string]any)["domain"].([]string)[0] != "ads.example.org" || rr[3].(map[string]any)["action"] != "reject" {
+		t.Fatalf("reject lost: %v", rr[3])
 	}
 	if routes["final"] != "anytls-out" {
 		t.Fatalf("MATCH default lost: %v", routes)
@@ -72,11 +90,21 @@ func TestRoutingNoRulesKeepsExistingBehavior(t *testing.T) {
 	if err := os.WriteFile(p, []byte("proxies: []\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := map[string]any{"route": map[string]any{"final": "anytls-out"}}
+	cfg := map[string]any{
+		"inbounds":  []any{map[string]any{"type": "mixed"}},
+		"outbounds": []any{},
+		"route":     map[string]any{"final": "anytls-out"},
+	}
 	if err := applyRouting(p, nil, node{}, cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := cfg["route"].(map[string]any)["rules"]; ok {
 		t.Fatal("changed ruleless config")
+	}
+	if cfg["route"].(map[string]any)["final"] != "anytls-out" {
+		t.Fatal("changed ruleless final outbound")
+	}
+	if _, ok := cfg["dns"]; ok {
+		t.Fatal("added DNS to ruleless mixed config")
 	}
 }

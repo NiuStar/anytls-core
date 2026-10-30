@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 )
 
 func TestResolveOccursOnlyAtNonNoResolveIPRule(t *testing.T) {
@@ -22,7 +25,10 @@ func TestResolveOccursOnlyAtNonNoResolveIPRule(t *testing.T) {
 	if err := applyRouting(p, nodes, nodes[0], cfg, true); err != nil {
 		t.Fatal(err)
 	}
-	rules := cfg["route"].(map[string]any)["rules"].([]any)
+	rules := tunBusinessRules(t, cfg)
+	if len(rules) != 4 || rules[0].(map[string]any)["rule_set"].([]string)[0] != "private" || rules[1].(map[string]any)["rule_set"].([]string)[0] != "proxy" || rules[2].(map[string]any)["action"] != "resolve" || rules[3].(map[string]any)["rule_set"].([]string)[0] != "telegram" {
+		t.Fatalf("expected private/no-resolve, proxy/domain, resolve, telegram/IP order: %#v", rules)
+	}
 	lastSet := ""
 	resolved := false
 	for _, v := range rules {
@@ -42,6 +48,35 @@ func TestResolveOccursOnlyAtNonNoResolveIPRule(t *testing.T) {
 	}
 	if !resolved {
 		t.Fatal("missing resolve action")
+	}
+	// Both real rule-set files keep their own capture identity. Shared IP
+	// references are deduplicated as sources, not as user rule slots.
+	for _, mode := range []string{"proxy", "tun"} {
+		compiled, err := prepareRuntimeWithRecords(&runtimeOptions{Config: p, NodeName: "main", Mode: mode, LocalPort: 11080, AllowInsecure: true})
+		if err != nil || compiled.Manifest == nil {
+			t.Fatalf("%s records compile: %v", mode, err)
+		}
+		m := compiled.Manifest
+		prefix := 2 // mixed: sniff + conditional protocol DNS capture
+		if mode == "tun" {
+			prefix = 3
+		}
+		if len(m.Rules) != prefix+4 || m.Rules[prefix+2].ActionType != "resolve" {
+			t.Fatalf("%s resolve/SDK slot order: %#v", mode, m.Rules)
+		}
+		for i, slot := range []int{prefix, prefix + 1, prefix + 3} {
+			r := m.Rules[slot].Route
+			wantSHA := shaHex(ip)
+			if i == 1 {
+				wantSHA = shaHex(domain)
+			}
+			if r.Evidence != cr.ProvenanceVerified || r.SourceIndex == nil || *r.SourceIndex != i || r.SourceID == nil || *r.SourceID != m.Generation+":rule:"+fmt.Sprint(i) || r.RuleSet == nil || r.RuleSet.Label != []string{"private", "proxy", "telegram"}[i] || r.RuleSet.SHA256 != wantSHA {
+				t.Fatalf("%s rule-set source identity at SDK slot %d: %#v", mode, slot, r)
+			}
+		}
+		if len(m.CapturedSources) != 4 || m.CapturedSources[2].Kind != cr.SourceRuleSet || !m.CapturedSources[2].Present || m.CapturedSources[2].Ordinal != 0 || m.CapturedSources[2].SHA256 == nil || *m.CapturedSources[2].SHA256 != shaHex(ip) || m.CapturedSources[3].Kind != cr.SourceRuleSet || !m.CapturedSources[3].Present || m.CapturedSources[3].Ordinal != 1 || m.CapturedSources[3].SHA256 == nil || *m.CapturedSources[3].SHA256 != shaHex(domain) {
+			t.Fatalf("%s ordered rule-set captures: %#v", mode, m.CapturedSources)
+		}
 	}
 }
 

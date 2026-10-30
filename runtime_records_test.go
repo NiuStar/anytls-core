@@ -28,7 +28,14 @@ func recordsCompilerFixture(t *testing.T, rules string) (runtimeOptions, []byte,
 }
 
 func TestRecordsCompilerExactJSONAndOrigins(t *testing.T) {
+	for _, mode := range []string{"proxy", "tun"} {
+		t.Run(mode, func(t *testing.T) { testRecordsCompilerExactJSONAndOrigins(t, mode) })
+	}
+}
+
+func testRecordsCompilerExactJSONAndOrigins(t *testing.T, mode string) {
 	o, config, set := recordsCompilerFixture(t, " - DOMAIN,first.invalid,outer\n - DOMAIN,first.invalid,shared\n - RULE-SET,local,DIRECT\n - MATCH,outer\n")
+	o.Mode = mode
 	old, err := prepareRuntime(&o)
 	if err != nil {
 		t.Fatal(err)
@@ -55,10 +62,22 @@ func TestRecordsCompilerExactJSONAndOrigins(t *testing.T) {
 	if err != nil || digest != m.ManifestID {
 		t.Fatalf("manifest digest: %v", err)
 	}
-	if len(m.Rules) != 6 || m.Rules[0].Synthetic != cr.SyntheticSniff || m.Rules[1].Synthetic != cr.SyntheticHijack || m.Rules[4].Synthetic != cr.SyntheticResolve {
+	slots := m.Rules
+	if mode == "tun" {
+		if len(tunBusinessRules(t, old)) != 4 || len(slots) != 7 || slots[0].Synthetic != cr.SyntheticHijack || slots[0].ActionType != "hijack-dns" {
+			t.Fatalf("TUN port-53 capture slot: %#v", slots)
+		}
+		if slots[0].Route.SourceID != nil || slots[0].Route.SourceIndex != nil || slots[0].Route.Evidence != cr.ProvenanceUnknown {
+			t.Fatal("TUN capture acquired user source identity")
+		}
+		// Only the explicit leading port-53 capture is new for this fixture;
+		// retain all old sniff/protocol-capture/user/resolve slot assertions.
+		slots = slots[1:]
+	}
+	if len(slots) != 6 || slots[0].Synthetic != cr.SyntheticSniff || slots[1].Synthetic != cr.SyntheticHijack || slots[4].Synthetic != cr.SyntheticResolve {
 		t.Fatalf("final slot order: %#v", m.Rules)
 	}
-	first, second := m.Rules[2].Route, m.Rules[3].Route
+	first, second := slots[2].Route, slots[3].Route
 	if *first.SourceIndex != 0 || *second.SourceIndex != 1 || *first.SourceID == *second.SourceID {
 		t.Fatal("duplicate source identity lost")
 	}
@@ -71,7 +90,7 @@ func TestRecordsCompilerExactJSONAndOrigins(t *testing.T) {
 	if m.FinalOrigin.Kind != cr.RuleMatch || *m.FinalOrigin.SourceIndex != 3 || m.FinalOrigin.OutboundTag != "node-1" {
 		t.Fatal("MATCH is separate final origin")
 	}
-	if m.Rules[5].Route.RuleSet == nil || m.Rules[5].Route.RuleSet.SHA256 != shaHex(set) {
+	if slots[5].Route.RuleSet == nil || slots[5].Route.RuleSet.SHA256 != shaHex(set) || slots[5].Route.SourceIndex == nil || *slots[5].Route.SourceIndex != 2 || slots[5].Route.SourceID == nil || *slots[5].Route.SourceID != m.Generation+":rule:2" {
 		t.Fatal("top-level set digest")
 	}
 	if len(m.Outbounds) != 3 || m.Outbounds[0].Tag != "anytls-out" || m.Outbounds[1].Tag != "node-1" || m.Outbounds[2].Tag != "direct" {
@@ -97,7 +116,14 @@ func TestRecordsCompilerExactJSONAndOrigins(t *testing.T) {
 }
 
 func TestRecordsCompilerDefaultSelectionAndGenerations(t *testing.T) {
+	for _, mode := range []string{"proxy", "tun"} {
+		t.Run(mode, func(t *testing.T) { testRecordsCompilerDefaultSelectionAndGenerations(t, mode) })
+	}
+}
+
+func testRecordsCompilerDefaultSelectionAndGenerations(t *testing.T, mode string) {
 	o, _, _ := recordsCompilerFixture(t, "")
+	o.Mode = mode
 	o.NodeName = ""
 	if _, err := prepareRuntimeWithRecords(&o); err == nil || err.Error() != "no node selected; use select or -node" {
 		t.Fatal("absent selection policy changed")
@@ -121,8 +147,21 @@ func TestRecordsCompilerDefaultSelectionAndGenerations(t *testing.T) {
 	if r.Kind != cr.RuleDefault || r.SourceID != nil || r.SourceIndex != nil || r.Condition != nil || len(r.GroupPath) != 0 || *r.FinalNodeLabel != "b" || *r.FinalNodeID != a.Manifest.Generation+":node:1" {
 		t.Fatal("ruleless default is not actual selected node")
 	}
-	if !a.Manifest.CapturedSources[1].Present || *a.Manifest.CapturedSources[1].SHA256 != shaHex([]byte("b\n")) || len(a.Manifest.Rules) != 0 {
-		t.Fatal("selected source/empty SDK slots")
+	wantSlots := 0
+	if mode == "tun" {
+		wantSlots = 3
+		if len(tunBusinessRules(t, normalizedRuntime(t, a.JSON))) != 0 || len(a.Manifest.Rules) != 3 {
+			t.Fatal("ruleless TUN must retain exactly the DNS capture prefix")
+		}
+		for i, want := range []cr.SyntheticKind{cr.SyntheticHijack, cr.SyntheticSniff, cr.SyntheticHijack} {
+			slot := a.Manifest.Rules[i]
+			if slot.Synthetic != want || slot.Route.SourceID != nil || slot.Route.SourceIndex != nil || slot.Route.Evidence != cr.ProvenanceUnknown {
+				t.Fatalf("ruleless TUN synthetic attribution at %d: %#v", i, slot)
+			}
+		}
+	}
+	if !a.Manifest.CapturedSources[1].Present || *a.Manifest.CapturedSources[1].SHA256 != shaHex([]byte("b\n")) || len(a.Manifest.Rules) != wantSlots {
+		t.Fatal("selected source/mode-specific SDK slots")
 	}
 }
 
