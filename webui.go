@@ -351,9 +351,6 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mime := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "startup.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
-		if name == "index.html" {
-			b = bytes.Replace(b, []byte(`<div class="note">更新仅替换`), []byte(`<div class="note">安装开始后，关闭网页、断开连接或十分钟请求超时均不会停止安装；其他修改会保持忙碌，直到安装退出并完成版本核验。请勿强制退出控制台或更新进程；进程崩溃不保证安装生命周期安全。更新仅替换`), 1)
-		}
 		rw.Header().Set("Content-Type", mime[name])
 		rw.Write(b)
 		return

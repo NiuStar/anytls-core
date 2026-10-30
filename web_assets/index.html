@@ -126,7 +126,7 @@
       </section>
       <section id="view-update" class="view" hidden>
         <div class="page-heading"><h1>版本更新</h1><p class="muted">检查官方稳定版本，保留现有配置。</p></div>
-        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">官方预编译 · 无需 Go 或系统授权 · 保留配置及程序备份</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result" role="status" aria-live="polite">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">更新保留配置及程序备份，不调用特权助手或系统授权，不重载 VPN。仅当确认由本机服务管理器托管并安排重启时，浏览器自动等待 Web 控制台恢复并核验真实运行版本；未托管或旧版控制台仍需手动重启。重启后可能需要重新登录；登录页出现不代表新版已运行，重新登录后会继续核验。等待超时请手动刷新并核对，不会自动重复安装。控制台新版不代表 VPN 运行快照已更新。</div></div>
+        <div class="panel update-panel"><div class="panel-toolbar"><div><h3>AnyTLS 更新</h3><span class="hint">官方预编译 · 无需 Go 或系统授权 · 保留配置及程序备份</span></div><div class="action-bar"><button id="check-update">检查新版本</button><button id="run-update" class="primary" disabled>安装更新</button></div></div><pre id="update-result" role="status" aria-live="polite">尚未检查。若当前程序不提供更新协议，会明确显示不可用。</pre><div class="note">安装开始后，关闭网页、断开连接或十分钟请求超时均不会停止安装；其他修改会保持忙碌，直到安装退出并完成版本核验。请勿强制退出控制台或更新进程；进程崩溃不保证安装生命周期安全。更新保留配置及程序备份，不调用特权助手或系统授权，不重载 VPN。仅当确认由本机服务管理器托管并安排重启时，浏览器自动等待 Web 控制台恢复并核验真实运行版本；未托管或旧版控制台仍需手动重启。重启后可能需要重新登录；登录页出现不代表新版已运行，重新登录后会继续核验。等待超时请手动刷新并核对，不会自动重复安装。控制台新版不代表 VPN 运行快照已更新。</div></div>
       </section>
     </div><footer>AnyTLS 本机控制台 <span id="transport-footer">正在读取传输方式 · HTTP 无 TLS</span></footer>
   </main>

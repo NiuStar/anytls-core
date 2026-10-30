@@ -50,4 +50,6 @@ Darwin arm64、普通 UID501、独立 `/Users/lihaiyan/.ais2/webautorestart-dev0
 3. 真正的独立 LaunchAgent：普通程序安装/实际 launchctl 直接字段核验、登录和内存 version、SIGTERM 后 KeepAlive 换 PID、伪造手动 flag 拒绝、bootout 后任务消失且 plist 留存。
 4. 两个官方 wrapper 构建的 **测试专用** 可执行映像，真实 launchd+HTTP+更新器 Run/wait/readback+旧 server drain+进程退出+新 PID+登录/version 全链路。只替换外部网络安装 seam 为隔离映像原子替换（TestMain 仅在 `_test.go`）；未从网络下载正式发布。失败安装保持 PID39678；成功响应完整 `restartScheduled:true`，新 PID39739，旧 cookie401，新内存 v1.0.1。old SHA `fa99b3d71a4809bdc299f92ea1a7240c23e09b52dcd8c36d98ad26b2a5bdaf36`，new SHA `2a6825467b5257d3f1090adaf2365f2696bce020d9280d2f119b5f3cb4cd82af`。
 
+历史生命周期验证的 `native-home` plist 未包含最终的 `ExitTimeOut=0`，加载任务显示 exit timeout=5。因此以下历史测试支持先前的重启链路，不构成最终超时策略的真实 launchd 验收；最终配置的活动请求保留和 bootout 行为须在新隔离 attempt 中另验。原失败与原件保留。
+
 原始日志和回执保存在上述隔离根目录：`backend-red-business2.log`、`slice1-green.log`、`slice2-red.log`、`slice2-green.log`、`backend-runtime.log`、`backend-security.log`、`backend-build.log`、`native-*.log/json`、`acceptance-*-build2.log`、`acceptance-result.json`、`acceptance-protected-{before,after}.json`。早期 wrapper 参数拒绝日志单独保留，不算业务 RED。进程保护清单前后相同，两个隔离任务均已 bootout，配置和 plist 保留。该清单不等于 root 私有数据完整快照；正式服务/完整原生回归由独立总审查另做。
