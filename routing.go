@@ -47,11 +47,15 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 		manifest.Outbounds = append(manifest.Outbounds, nodeOrigin(manifest, nodes, selected.Name, "anytls-out"))
 		manifest.FinalOrigin = routeOrigin(manifest, nodes, -1, string(cr.RuleDefault), "", selected.Name, selected.Name, "anytls-out", []cr.GroupEdge{})
 	}
+	inbound := cfg["inbounds"].([]any)[0].(map[string]any)
+	isTUN := inbound["type"] == "tun"
+	if isTUN && manifest != nil {
+		manifest.Rules = append(manifest.Rules, syntheticOrigin("hijack-dns", cr.SyntheticHijack), syntheticOrigin("sniff", cr.SyntheticSniff), syntheticOrigin("hijack-dns", cr.SyntheticHijack))
+	}
 	if len(doc.Rules) == 0 {
 		return nil
 	}
 	route := cfg["route"].(map[string]any)
-	inbound := cfg["inbounds"].([]any)[0].(map[string]any)
 	if inbound["type"] != "tun" && inbound["type"] != "mixed" {
 		return errors.New("routing requires tun or mixed inbound")
 	}
@@ -62,7 +66,9 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 		excluded = append(excluded, inbound["route_exclude_address"].([]string)...)
 	}
 	rules := []any{map[string]any{"action": "sniff"}}
-	if manifest != nil {
+	if isTUN {
+		rules = unifiedTUNDNSRules()
+	} else if manifest != nil {
 		manifest.Rules = append(manifest.Rules, syntheticOrigin("sniff", cr.SyntheticSniff))
 	}
 	matched := false
@@ -249,9 +255,11 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 		return errors.New("routing rules require a final MATCH target")
 	}
 	if len(sets) > 0 || geoIPResolve {
-		rules = append(rules[:1], append([]any{map[string]any{"protocol": []string{"dns"}, "action": "hijack-dns"}}, rules[1:]...)...)
-		if manifest != nil {
-			manifest.Rules = append(manifest.Rules[:1], append([]cr.RuleOrigin{syntheticOrigin("hijack-dns", cr.SyntheticHijack)}, manifest.Rules[1:]...)...)
+		if !isTUN {
+			rules = append(rules[:1], append([]any{map[string]any{"protocol": []string{"dns"}, "action": "hijack-dns"}}, rules[1:]...)...)
+			if manifest != nil {
+				manifest.Rules = append(manifest.Rules[:1], append([]cr.RuleOrigin{syntheticOrigin("hijack-dns", cr.SyntheticHijack)}, manifest.Rules[1:]...)...)
+			}
 		}
 		if dns, ok := cfg["dns"].(map[string]any); ok {
 			dns["reverse_mapping"] = true

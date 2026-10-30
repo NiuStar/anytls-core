@@ -263,7 +263,8 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 			prefix = "/128"
 		}
 		cfg["inbounds"] = []any{map[string]any{"type": "tun", "tag": "tun-in", "address": []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"}, "mtu": 1500, "auto_route": true, "route_exclude_address": []string{n.Server + prefix}, "dns_mode": "hijack", "stack": "mixed"}}
-		cfg["dns"] = map[string]any{"servers": []any{map[string]any{"type": "https", "tag": "secure-dns", "server": "1.1.1.1", "tls": map[string]any{"server_name": "cloudflare-dns.com"}, "detour": "anytls-out"}}, "final": "secure-dns"}
+		cfg["dns"] = unifiedTUNDNS()
+		cfg["route"].(map[string]any)["rules"] = unifiedTUNDNSRules()
 	default:
 		return nil, errors.New("mode must be proxy or tun")
 	}
