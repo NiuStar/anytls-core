@@ -202,9 +202,9 @@ func (e *boundedEncoder) value(v reflect.Value, depth int) error {
 		if err := e.add("["); err != nil {
 			return err
 		}
-		// Single-record DTOs normally visit each struct type just once. Pay
-		// for a cache only when a collection can reuse its element schema.
-		if v.Len() > 1 && v.Type().Elem().Kind() == reflect.Struct && e.metadata == nil {
+		// One-off DTOs and tiny source lists do not amortize a schema map.
+		// Enable reuse only for collections with at least three structs.
+		if v.Len() > 2 && v.Type().Elem().Kind() == reflect.Struct && e.metadata == nil {
 			e.metadata = make(fieldMetadata)
 		}
 		for i := 0; i < v.Len(); i++ {
@@ -337,7 +337,7 @@ func decodeToken(d *json.Decoder, v reflect.Value, token any, depth int, metadat
 				return err
 			}
 			v.Set(reflect.Append(v, item))
-			if *metadata == nil && v.Type().Elem().Kind() == reflect.Struct && d.More() {
+			if *metadata == nil && v.Len() >= 2 && v.Type().Elem().Kind() == reflect.Struct && d.More() {
 				*metadata = make(fieldMetadata)
 			}
 		}
