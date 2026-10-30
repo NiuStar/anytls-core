@@ -339,20 +339,7 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 405, "METHOD_NOT_ALLOWED")
 			return
 		}
-		names := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/style.css": "style.css"}
-		name, ok := names[r.URL.Path]
-		if !ok {
-			http.NotFound(rw, r)
-			return
-		}
-		b, err := webAssets.ReadFile("web_assets/" + name)
-		if err != nil {
-			webError(rw, 500, "ASSET_UNAVAILABLE")
-			return
-		}
-		mime := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "startup.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
-		rw.Header().Set("Content-Type", mime[name])
-		rw.Write(b)
+		webServeStatic(rw, r)
 		return
 	}
 	session, ok := w.authenticated(r)
