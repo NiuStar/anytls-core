@@ -49,8 +49,8 @@ func TestResolveOccursOnlyAtNonNoResolveIPRule(t *testing.T) {
 	if !resolved {
 		t.Fatal("missing resolve action")
 	}
-	// Both real rule-set files keep their own capture identity. Shared IP
-	// references are deduplicated as sources, not as user rule slots.
+	// Each distinct label keeps its ordered capture identity, even when two
+	// labels refer to the same file bytes. User rule slots remain distinct too.
 	for _, mode := range []string{"proxy", "tun"} {
 		compiled, err := prepareRuntimeWithRecords(&runtimeOptions{Config: p, NodeName: "main", Mode: mode, LocalPort: 11080, AllowInsecure: true})
 		if err != nil || compiled.Manifest == nil {
@@ -74,8 +74,14 @@ func TestResolveOccursOnlyAtNonNoResolveIPRule(t *testing.T) {
 				t.Fatalf("%s rule-set source identity at SDK slot %d: %#v", mode, slot, r)
 			}
 		}
-		if len(m.CapturedSources) != 4 || m.CapturedSources[2].Kind != cr.SourceRuleSet || !m.CapturedSources[2].Present || m.CapturedSources[2].Ordinal != 0 || m.CapturedSources[2].SHA256 == nil || *m.CapturedSources[2].SHA256 != shaHex(ip) || m.CapturedSources[3].Kind != cr.SourceRuleSet || !m.CapturedSources[3].Present || m.CapturedSources[3].Ordinal != 1 || m.CapturedSources[3].SHA256 == nil || *m.CapturedSources[3].SHA256 != shaHex(domain) {
+		if len(m.CapturedSources) != 5 {
 			t.Fatalf("%s ordered rule-set captures: %#v", mode, m.CapturedSources)
+		}
+		for i, want := range []string{shaHex(ip), shaHex(domain), shaHex(ip)} {
+			source := m.CapturedSources[i+2]
+			if source.Kind != cr.SourceRuleSet || !source.Present || source.Ordinal != i || source.SHA256 == nil || *source.SHA256 != want {
+				t.Fatalf("%s rule-set capture %d: %#v", mode, i, source)
+			}
 		}
 	}
 }
