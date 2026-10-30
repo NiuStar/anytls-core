@@ -33,8 +33,9 @@ func EncodeBounded(value any, budget int) ([]byte, error) {
 }
 
 type boundedEncoder struct {
-	b     []byte
-	limit int
+	b        []byte
+	limit    int
+	metadata fieldMetadata
 }
 
 func (e *boundedEncoder) add(s string) error {
@@ -112,6 +113,22 @@ type wireField struct {
 	index []int
 }
 
+// A schema cache belongs to exactly one encoding or decoding operation. It
+// retains types and field paths only, never caller values or encoded buffers.
+type fieldMetadata map[reflect.Type][]wireField
+
+func (m *fieldMetadata) get(t reflect.Type) []wireField {
+	if fs, ok := (*m)[t]; ok {
+		return fs
+	}
+	fs := fields(t, nil)
+	if *m == nil {
+		*m = make(fieldMetadata)
+	}
+	(*m)[t] = fs
+	return fs
+}
+
 func fields(t reflect.Type, prefix []int) []wireField {
 	var result []wireField
 	for i := 0; i < t.NumField(); i++ {
@@ -161,7 +178,7 @@ func (e *boundedEncoder) value(v reflect.Value, depth int) error {
 		if err := e.add("{"); err != nil {
 			return err
 		}
-		for i, f := range fields(v.Type(), nil) {
+		for i, f := range e.metadata.get(v.Type()) {
 			if i > 0 {
 				if err := e.add(","); err != nil {
 					return err
@@ -218,7 +235,8 @@ func DecodeStrict(data []byte, out any, budget int) error {
 	temp := reflect.New(p.Elem().Type()).Elem()
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.UseNumber()
-	if err := decodeValue(d, temp, 0); err != nil {
+	var metadata fieldMetadata
+	if err := decodeValue(d, temp, 0, &metadata); err != nil {
 		return err
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -242,7 +260,7 @@ func ReadStrict(r io.Reader, out any, budget int) error {
 	}
 	return DecodeStrict(b, out, budget)
 }
-func decodeValue(d *json.Decoder, v reflect.Value, depth int) error {
+func decodeValue(d *json.Decoder, v reflect.Value, depth int, metadata *fieldMetadata) error {
 	if depth > 32 {
 		return ErrInvalid
 	}
@@ -259,17 +277,17 @@ func decodeValue(d *json.Decoder, v reflect.Value, depth int) error {
 	}
 	if v.Kind() == reflect.Pointer {
 		v.Set(reflect.New(v.Type().Elem()))
-		return decodeToken(d, v.Elem(), token, depth)
+		return decodeToken(d, v.Elem(), token, depth, metadata)
 	}
-	return decodeToken(d, v, token, depth)
+	return decodeToken(d, v, token, depth, metadata)
 }
-func decodeToken(d *json.Decoder, v reflect.Value, token any, depth int) error {
+func decodeToken(d *json.Decoder, v reflect.Value, token any, depth int, metadata *fieldMetadata) error {
 	switch v.Kind() {
 	case reflect.Struct:
 		if token != json.Delim('{') {
 			return ErrInvalid
 		}
-		fs := fields(v.Type(), nil)
+		fs := metadata.get(v.Type())
 		seen := make(map[string]bool, len(fs))
 		for d.More() {
 			key, err := d.Token()
@@ -285,7 +303,7 @@ func decodeToken(d *json.Decoder, v reflect.Value, token any, depth int) error {
 			for _, f := range fs {
 				if f.name == name {
 					found = true
-					if err := decodeValue(d, v.FieldByIndex(f.index), depth+1); err != nil {
+					if err := decodeValue(d, v.FieldByIndex(f.index), depth+1, metadata); err != nil {
 						return err
 					}
 					break
@@ -310,7 +328,7 @@ func decodeToken(d *json.Decoder, v reflect.Value, token any, depth int) error {
 		v.Set(reflect.MakeSlice(v.Type(), 0, 0))
 		for d.More() {
 			item := reflect.New(v.Type().Elem()).Elem()
-			if err := decodeValue(d, item, depth+1); err != nil {
+			if err := decodeValue(d, item, depth+1, metadata); err != nil {
 				return err
 			}
 			v.Set(reflect.Append(v, item))
