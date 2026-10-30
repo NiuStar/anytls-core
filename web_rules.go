@@ -114,14 +114,18 @@ func (w *webConsole) getRules(rw http.ResponseWriter, r *http.Request) {
 // The full-options collaborator is request-local and never invoked for a list.
 // Keep the raw snapshot/layout projection shared; only editor choices are lazy.
 func webRulesProjection(b []byte, listOnly bool, supplyOptions func(webRuleDoc) ([]string, []string)) (map[string]any, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(b, &root); err != nil {
+		return nil, err
+	}
 	var doc webRuleDoc
-	if err := yaml.Unmarshal(b, &doc); err != nil {
+	if err := root.Decode(&doc); err != nil {
 		return nil, err
 	}
 	if doc.Rules == nil {
 		doc.Rules = []string{}
 	}
-	_, editErr := webRuleLayout(b)
+	_, editErr := webRuleLayoutFromNode(b, &root)
 	etag := `"` + shaHex(b) + `"`
 	projection := map[string]any{"rules": doc.Rules, "etag": etag, "editable": editErr == nil, "edit_error": func() string {
 		if editErr != nil {
@@ -142,9 +146,18 @@ var webRuleLine = regexp.MustCompile(`^( *)-[ \t]+`)
 // No YAML round trip: edits are one byte insertion at a verified block item.
 // Unrelated anchors, comments, unknown fields and scalar spelling stay untouched.
 func webRuleLayout(b []byte) ([]*yaml.Node, error) {
-	unsupported := errors.New("RULE_EDIT_UNSUPPORTED")
 	var root yaml.Node
-	if yaml.Unmarshal(b, &root) != nil || len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode {
+	if yaml.Unmarshal(b, &root) != nil {
+		return nil, errors.New("RULE_EDIT_UNSUPPORTED")
+	}
+	return webRuleLayoutFromNode(b, &root)
+}
+
+// Inventory decoding and layout checks share only this request's syntax tree.
+// Mutations still use webRuleLayout's independent parse and original ordering.
+func webRuleLayoutFromNode(b []byte, root *yaml.Node) ([]*yaml.Node, error) {
+	unsupported := errors.New("RULE_EDIT_UNSUPPORTED")
+	if len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode {
 		return nil, unsupported
 	}
 	var rules *yaml.Node
