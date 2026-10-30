@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-30-02
+
+- 新增普通用户 WebUI LaunchAgent 托管与精确身份核验，保留监听地址/端口；不sudo、不接管旧监听、不控制VPN。
+- 托管控制台网页更新成功且版本读回完成后，回复/Flush→停止准入→完整排空→退出，由launchd启动磁盘新版；失败/不确定/未托管不自动退出。浏览器重登录后核内存版本，不把401当成功，不自动重复安装。
+- 安装生命周期警告改为静态HTML。外部bootout可在ExitTimeOut=0下立即中断活动父子进程，仅空闲且避免并发时可卸载；撤不实保障，原FAIL保留，不新增agent-stop。
+- 已验实现f78353f：Mac573顶层/2116子PASS、5SKIP、0FAIL，vet/build/cleanVCS/保护及独立审查通过；真实隔离launchd更新使用测试专用网络安装seam，非目标Intel或公网下载更新验收。首次需一次性启用托管，旧内存不会自动获得功能；发布不安装、不重载VPN/helper。见[版本说明](docs/releases/v2026-10-30-02.md)。
+
 ## v2026-10-30-01
 
 - TUN 的 UDP／TCP 53 查询独立于 GEOIP／RULE-SET 优先进入统一严格 DoH，经基础选中 AnyTLS 节点访问，失败不静默退明文；保用户规则、来源映射、proxy兼容和停止自救。覆盖仅限进入TUN的普通DNS，旧缓存、内网split-DNS与应用自带加密DNS另列。
