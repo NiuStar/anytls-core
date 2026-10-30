@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-30-03
+
+- 四个固定公开Web静态资源一次构建identity/gzip并发只读复用，保留no-store、原始内容、安全头及认证边界；API/配置/错误不压缩、不增磁盘缓存。
+- 按全部Accept-Encoding字段和质量权重协商，显式拒绝、identity回退及406严格处理；GET-only与HEAD405保持。
+- 实测四资源正文169663→54393B（减少67.94%），热handler去除payload级重复复制；identity分配次数11→12、gzip11→13，lazy构建约2.103ms/4.6MB累计分配，容量不等于RSS。不是WAN、页面延迟、整机或瘦身收益。
+- 发布前focused/成对测量绑定52c6d1a与329e4bc；完整最终构建/审查/CI及公开附件结果另验。既有status挂起/Shutdown错误与GoogleIPv6未在本版修复；继承后台更新重启及外部bootout警告。见[版本说明](docs/releases/v2026-10-30-03.md)。
+
 ## v2026-10-30-02
 
 - 新增普通用户 WebUI LaunchAgent 托管与精确身份核验，保留监听地址/端口；不sudo、不接管旧监听、不控制VPN。

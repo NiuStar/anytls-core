@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-30-02** 新增普通用户 WebUI LaunchAgent 托管及网页更新成功后自动重启控制台；保留监听地址/端口，安装子进程退出并核对版本后再回复、排空、退出，由launchd拉起新版。失败或未托管不自动退出，重新登录后核验内存版本，不重载VPN、不更新助手。首次须在空闲时退出旧Web控制台并一次性执行 `webui install-agent`；旧内存和nohup不会自动变成托管。**安装期间禁止外部bootout或强杀：ExitTimeOut=0不保证外部卸载安全，原失败证据保留。** 实现f78353f已通过Mac原生573顶层/2116子测试、5跳过、vet/build/cleanVCS、独立审查及隔离launchd更新链路；网络安装使用测试专用seam，不是目标Intel实机验收。统一DoH及此前优化继承，覆盖和内网风险不变。普通update不替换root助手，VPN运行快照不会因控制台更新自动切换；发布不安装或启停。见[版本说明](docs/releases/v2026-10-30-02.md)及[托管操作说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-30-03** 为四个固定公开Web资源增加只读复用及gzip协商；保留no-store、原始内容、MIME/安全头及Host/认证边界，不压缩API、配置或错误。Go1.27.3实测正文169663→54393B，减少67.94%；热handler减少重复复制，但分配次数略增，首次表示构建有约2.1ms/4.6MB累计分配成本，非RSS或WAN/浏览器延迟承诺。完整最终验收与公开附件另验。既有status挂起、Shutdown错误及GoogleIPv6问题未在本版修复。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；公开发布不安装或切换目标机。见[版本说明](docs/releases/v2026-10-30-03.md)、[测量报告](docs/static-transfer-report.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
