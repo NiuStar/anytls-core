@@ -30,8 +30,6 @@ import (
 
 	"github.com/NiuStar/anytls-core/internal/engine"
 	"github.com/miekg/dns"
-	M "github.com/sagernet/sing/common/metadata"
-	"github.com/sagernet/sing/protocol/socks"
 )
 
 // Evidence-only entry. Neither environment variables nor ordinary go test enable
@@ -92,7 +90,7 @@ func wanValidateManifest(raw []byte, digest string, now int64) (wanManifest, err
 	}
 	// Decoder disallows unknown fields; duplicate keys are rejected independently.
 	var tree any
-	if !wanUniqueJSON(raw, &tree) {
+	if !wanUniqueJSON(raw, &tree) || !wanCanonicalManifest(raw) {
 		return m, wanCode("MANIFEST_SCHEMA")
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -110,6 +108,30 @@ func wanValidateManifest(raw []byte, digest string, now int64) (wanManifest, err
 		return m, wanCode("MANIFEST_SOURCE")
 	}
 	return m, nil
+}
+
+// Validate exact canonical keys before encoding/json's case-insensitive struct
+// matching. Require every key, including nested source metadata.
+func wanCanonicalManifest(raw []byte) bool {
+	var object func([]byte, reflect.Type) bool
+	object = func(b []byte, typ reflect.Type) bool {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(b, &fields) != nil || len(fields) != typ.NumField() {
+			return false
+		}
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			value, ok := fields[f.Tag.Get("json")]
+			if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return false
+			}
+			if f.Type.Kind() == reflect.Struct && !object(value, f.Type) {
+				return false
+			}
+		}
+		return true
+	}
+	return object(raw, reflect.TypeOf(wanManifest{}))
 }
 
 // Reject duplicate keys at every depth instead of accepting JSON last-wins.
@@ -324,19 +346,94 @@ type wanReport struct {
 	Recovery         string                      `json:"recovery"`
 }
 
+// Own the TCP socket before any SOCKS bytes. Authentication is deliberately
+// strict: pinned SDK ClientHandshake5 also accepts unoffered NOAUTH. A secret
+// challenge attributes an ordinary unowned port claimant, not a malicious same-
+// UID process able to inspect this process's memory/configuration.
+func wanAuthenticated(ctx context.Context, addr, token string) (net.Conn, func(), error) {
+	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, nil, wanCode("CONNECT_FAILURE")
+	}
+	// AfterFunc owns cancellation closure; cleanup joins its completion. Close on
+	// TCP is local/nonblocking, with no linger enabled. No helper goroutine remains.
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = c.Close(); close(done) })
+	cleanup := func() {
+		if stop() {
+			_ = c.Close()
+		} else {
+			<-done
+		}
+	}
+	fail := func(code string) (net.Conn, func(), error) { cleanup(); return nil, nil, wanCode(code) }
+	deadline, ok := ctx.Deadline()
+	if !ok || c.SetDeadline(deadline) != nil {
+		return fail("DEADLINE_FAILURE")
+	}
+	exchange := func(request []byte, response []byte) bool {
+		n, e := c.Write(request)
+		if e != nil || n != len(request) {
+			return false
+		}
+		_, e = io.ReadFull(c, response)
+		return e == nil
+	}
+	method := make([]byte, 2)
+	if !exchange([]byte{5, 1, 2}, method) || !bytes.Equal(method, []byte{5, 2}) {
+		return fail("AUTH_FAILURE")
+	}
+	if len(token) == 0 || len(token) > 255 {
+		return fail("AUTH_FAILURE")
+	}
+	auth := append([]byte{1, 7}, []byte("sampler")...)
+	auth = append(auth, byte(len(token)))
+	auth = append(auth, []byte(token)...)
+	status := make([]byte, 2)
+	if !exchange(auth, status) || !bytes.Equal(status, []byte{1, 0}) {
+		return fail("AUTH_FAILURE")
+	}
+	return c, cleanup, nil
+}
+
 func wanQuery(ctx context.Context, addr, token, name string, typ uint16, id uint16) (string, time.Duration) {
 	start := time.Now()
-	client := socks.NewClient(recordsSOCKSDialer{}, M.ParseSocksaddr(addr), socks.Version5, "sampler", token)
-	c, e := client.DialContext(ctx, "tcp", M.ParseSocksaddr("1.1.1.1:53"))
+	// Budget includes TCP dial, auth, CONNECT, DNS write and DNS read, not just
+	// the payload exchange. Cancellation actively closes the owned socket.
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	c, cleanup, e := wanAuthenticated(ctx, addr, token)
 	if e != nil {
+		return e.Error(), time.Since(start)
+	}
+	defer cleanup()
+	// RFC1928 CONNECT to the fixed DNS capture target, only after strict auth.
+	request := []byte{5, 1, 0, 1, 1, 1, 1, 1, 0, 53}
+	if n, e := c.Write(request); e != nil || n != len(request) {
 		return "CONNECT_FAILURE", time.Since(start)
 	}
-	defer c.Close()
-	deadline := time.Now().Add(4 * time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
+	reply := make([]byte, 4)
+	if _, e := io.ReadFull(c, reply); e != nil || reply[0] != 5 || reply[1] != 0 || reply[2] != 0 {
+		return "CONNECT_FAILURE", time.Since(start)
 	}
-	_ = c.SetDeadline(deadline)
+	size := 0
+	switch reply[3] {
+	case 1:
+		size = 4 + 2
+	case 4:
+		size = 16 + 2
+	case 3:
+		b := make([]byte, 1)
+		if _, e := io.ReadFull(c, b); e != nil {
+			return "CONNECT_FAILURE", time.Since(start)
+		}
+		size = int(b[0]) + 2
+	default:
+		return "CONNECT_FAILURE", time.Since(start)
+	}
+	if _, e := io.ReadFull(c, make([]byte, size)); e != nil {
+		return "CONNECT_FAILURE", time.Since(start)
+	}
 	q := new(dns.Msg)
 	q.SetQuestion(name, typ)
 	q.Id = id
@@ -366,8 +463,44 @@ func wanQuery(ctx context.Context, addr, token, name string, typ uint16, id uint
 	return "OTHER_RCODE", time.Since(start)
 }
 
+// Accept wrappers/joins only when every leaf is exactly context.Canceled.
+// errors.Is is insufficient: a cancellation joined with a Close failure is not
+// successful cleanup. Bound recursion also rejects malformed/cyclic wrappers.
+func wanCancellationOnly(err error) bool {
+	var visit func(error, int) bool
+	visit = func(e error, depth int) bool {
+		if e == nil || depth > 64 {
+			return false
+		}
+		if e == context.Canceled {
+			return true
+		}
+		if many, ok := e.(interface{ Unwrap() []error }); ok {
+			children := many.Unwrap()
+			if len(children) == 0 {
+				return false
+			}
+			for _, child := range children {
+				if !visit(child, depth+1) {
+					return false
+				}
+			}
+			return true
+		}
+		if one, ok := e.(interface{ Unwrap() error }); ok {
+			return visit(one.Unwrap(), depth+1)
+		}
+		return false
+	}
+	return visit(err, 0)
+}
+
 // One owned engine at a time; no fault injection into any system resource.
 func wanRunEngine(ctx context.Context, n node, index int, report *wanReport) error {
+	return wanRunEngineWithRunner(ctx, n, index, report, engine.Run)
+}
+
+func wanRunEngineWithRunner(ctx context.Context, n node, index int, report *wanReport, runner func(context.Context, []byte) error) error {
 	spare, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		return wanCode("PORT_PROBE")
@@ -393,31 +526,56 @@ func wanRunEngine(ctx context.Context, n node, index int, report *wanReport) err
 	metrics := new(engine.DNSMetrics)
 	ctx, cancel := context.WithCancel(engine.WithDNSMetrics(ctx, metrics))
 	ended := make(chan error, 1)
-	go func() { ended <- engine.Run(ctx, wire) }()
+	go func() { ended <- runner(ctx, wire) }()
 	// Always join, even readiness failure. Fixed errors never expose SDK text.
 	var runErr error
+	ownerEnded := false
+	var ownerErr error
+	checkOwner := func() bool {
+		if !ownerEnded {
+			select {
+			case ownerErr = <-ended:
+				ownerEnded = true
+				report.EnginesJoined++
+			default:
+			}
+		}
+		return ownerEnded
+	}
 	ready := false
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		select {
-		case <-ended:
-			cancel()
-			report.EnginesJoined++
-			return wanCode("ENGINE_START")
-		default:
+		if checkOwner() {
+			runErr = wanCode("ENGINE_START")
+			break
 		}
-		c, e := net.DialTimeout("tcp", addr, 20*time.Millisecond)
-		if e == nil {
-			c.Close()
+		authCtx, authCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		_, closeAuth, authErr := wanAuthenticated(authCtx, addr, token)
+		if authErr == nil {
+			closeAuth()
+		}
+		authCancel()
+		if checkOwner() {
+			runErr = wanCode("ENGINE_START")
+			break
+		}
+		if authErr == nil {
 			ready = true
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	if ready {
 		for domainIndex, name := range wanDomains {
 			for _, typ := range []uint16{dns.TypeA, dns.TypeAAAA} {
 				for repeat := 0; repeat < 3; repeat++ {
+					if checkOwner() {
+						runErr = wanCode("ENGINE_EARLY_EXIT")
+						break
+					}
 					if ctx.Err() != nil || report.Questions >= 54 {
 						runErr = wanCode("QUESTION_BUDGET")
 						break
@@ -429,6 +587,10 @@ func wanRunEngine(ctx context.Context, n node, index int, report *wanReport) err
 					outcome, elapsed := wanQuery(ctx, addr, token, name, typ, uint16(report.Questions+1))
 					report.Questions++
 					report.Rows = append(report.Rows, wanRow{domainIndex, index, mode, dns.TypeToString[typ], outcome, elapsed.Nanoseconds()})
+					if checkOwner() {
+						runErr = wanCode("ENGINE_EARLY_EXIT")
+						break
+					}
 					if outcome != "NOERROR" {
 						runErr = wanCode("QUERY_FAILED")
 						break
@@ -442,18 +604,26 @@ func wanRunEngine(ctx context.Context, n node, index int, report *wanReport) err
 				break
 			}
 		}
-	} else {
+	} else if runErr == nil {
 		runErr = wanCode("READINESS")
 	}
+	if checkOwner() && runErr == nil {
+		runErr = wanCode("ENGINE_EARLY_EXIT")
+	}
 	cancel()
-	select {
-	case e := <-ended:
-		report.EnginesJoined++
-		if e != nil && !errors.Is(e, context.Canceled) && runErr == nil {
-			runErr = wanCode("ENGINE_STOP")
+	if !ownerEnded {
+		select {
+		case ownerErr = <-ended:
+			report.EnginesJoined++
+			ownerEnded = true
+		// Overall root admission deadline plus at most five seconds for SDK join.
+		// Unknown cleanup is always failure; rebind cannot override this marker.
+		case <-time.After(5 * time.Second):
+			return wanCode("ENGINE_JOIN")
 		}
-	case <-time.After(5 * time.Second):
-		return wanCode("ENGINE_JOIN")
+	}
+	if ownerErr != nil && !wanCancellationOnly(ownerErr) {
+		runErr = wanCode("ENGINE_STOP")
 	}
 	report.Metrics = append(report.Metrics, metrics.Snapshot())
 	l, e := net.Listen("tcp", addr)
