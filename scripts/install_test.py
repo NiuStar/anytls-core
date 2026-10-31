@@ -300,6 +300,7 @@ class InstallerTests(unittest.TestCase):
         ns = {'__name__': 'unit_trusted', '__file__': str(source/'scripts/go-patched.py')}
         exec(compile(wrapper, 'trusted-unit-wrapper', 'exec'), ns)
         receipt = dict(rc=0, ephemeral_cleanup='ok', root_inputs_unchanged=True,
+                       original_module_zip_unchanged=True,
                        original_doh_source_unchanged=True, wrapper_sha256=hashlib.sha256(wrapper).hexdigest(),
                        argv=['build','-p','2','-tags',i.TAGS,'-trimpath','-o',str(output),'.'],
                        go_version='go version go1.27.3 darwin/arm64',

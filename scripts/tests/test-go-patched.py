@@ -224,6 +224,7 @@ class OutputReservationTests(unittest.TestCase):
                         cache_debug=source, original_debug=b"unchanged",
                         cache_chrome=source, original_chrome=b"unchanged",
                         cache_doh=source, original_doh=b"unchanged",
+                        cache_zip=source, original_zip_sha=wrapper.sha(b"unchanged"),
                         root_inputs={}, ROOT=root, original_leaf={"source": b"unchanged"}, directory=root, os=os, shutil=shutil,
                         require=wrapper.require, sha=wrapper.sha)
 

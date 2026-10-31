@@ -395,6 +395,8 @@ def main(argv):
     # on CI this materializes only this module if its Dir is not yet cached.
     info = json.loads(read("mod", "download", "-json", f"{MODULE}@{VERSION}"))
     metadata(info, m)
+    cache_zip = Path(info["Zip"])
+    original_zip_sha = sha(cache_zip.read_bytes())
     directory = Path(info["Dir"]).resolve()
     if selected.get("Dir"):
         require(Path(selected["Dir"]).resolve() == directory, "selected module Dir mismatch")
@@ -432,6 +434,7 @@ def main(argv):
         replacement = work / "sing-box"
         replacement.mkdir()
         receipt["archive"] = stage_archive(Path(info["Zip"]), replacement, m["module_sum"])
+        require(receipt["archive"]["zip_sha256"] == original_zip_sha, "module-cache ZIP changed before staging")
         staged_source = replacement / m["file"]
         require(staged_source.read_bytes() == original, "archive/cache box.go mismatch")
         staged_source.write_bytes(patched)
@@ -493,6 +496,7 @@ def main(argv):
         require(staged_chrome.read_bytes() == patched_retry, "final staged retry source changed")
         require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")
         require(staged_doh.read_bytes() == patched_doh, "final staged DoH source changed")
+        require(sha(cache_zip.read_bytes()) == original_zip_sha, "module-cache ZIP changed during command")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
         if output and rc == 0:
@@ -515,6 +519,7 @@ def main(argv):
         finally:
             shutil.rmtree(work)
         require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")
+        require(sha(cache_zip.read_bytes()) == original_zip_sha, "module-cache ZIP changed during command")
         require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
                 "module-cache sources changed during command")
         require(cache_chrome.read_bytes() == original_chrome, "module-cache AnyTLS source changed during command")
@@ -526,6 +531,7 @@ def main(argv):
                    original_anytls_outbound_unchanged=True)
     receipt["original_leaf_sources_unchanged"] = True
     receipt["original_doh_source_unchanged"] = True
+    receipt["original_module_zip_unchanged"] = True
     print("PATCHED_GO_END " + json.dumps(receipt, sort_keys=True), flush=True)
     return rc
 
