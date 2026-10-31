@@ -162,6 +162,41 @@ func TestDNSMetricsConcurrentSnapshot(t *testing.T) {
 	}
 }
 
+func TestDNSMetricsRegistryOptInIsolation(t *testing.T) {
+	rawJSON := []byte(`{"dns":{"servers":[{"type":"https","tag":"fixture","server":"127.0.0.1"}]}}`)
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			var m *DNSMetrics
+			if enabled {
+				m = new(DNSMetrics)
+			}
+			ctx, opts, err := decodeOptions(WithDNSMetrics(context.Background(), m), rawJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upstream, err := service.FromContext[adapter.DNSTransportRegistry](ctx).CreateDNSTransport(ctx, logger.NOP(), "fixture", C.DNSTypeHTTPS, opts.DNS.Servers[0].Options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer upstream.Reset()
+			_, wrapped := upstream.(*observedHTTPS)
+			if wrapped != enabled {
+				t.Fatalf("wrapped=%t enabled=%t", wrapped, enabled)
+			}
+			if !enabled {
+				if _, ok := upstream.(*transport.HTTPSTransport); !ok {
+					t.Fatal("disabled not original concrete")
+				}
+			}
+		})
+	}
+	first, second := new(DNSMetrics), new(DNSMetrics)
+	first.complete(dnsmetrics.A, &dns.Msg{}, nil, 0)
+	if second.Snapshot().UpstreamExchange.Total != 0 {
+		t.Fatal("run collectors shared")
+	}
+}
+
 func TestDNSMetricsWrapperTypeAndLifecycle(t *testing.T) {
 	upstream := new(transport.HTTPSTransport)
 	if got, err := wrapHTTPS(upstream, nil); got != upstream || err != nil {
@@ -304,6 +339,49 @@ func TestDNSMetricsRealHTTPSAsync(t *testing.T) {
 	s := m.Snapshot()
 	if requests.Load() != 2 || s.UpstreamExchange.Total != 2 || s.UpstreamExchange.QTypes[dnsmetrics.A] != 1 || s.UpstreamExchange.QTypes[dnsmetrics.AAAA] != 1 || s.UpstreamExchange.Outcomes[dnsmetrics.NoError] != 2 || callerTrace.Load() != int32(s.Connections.Acquisitions) {
 		t.Fatalf("requests=%d trace=%d snapshot=%+v", requests.Load(), callerTrace.Load(), s)
+	}
+}
+
+func BenchmarkDNSMetricsTransport(b *testing.B) {
+	// Paired real SDK invocation with deterministic dial failure: includes SDK
+	// packing, request setup and sync/async behavior, but no network RTT or TLS.
+	for _, async := range []bool{false, true} {
+		for _, enabled := range []bool{false, true} {
+			b.Run(fmt.Sprintf("async_%t/enabled_%t", async, enabled), func(b *testing.B) {
+				original := errors.New("benchmark-dial")
+				raw := transport.NewHTTPSRaw(sdns.NewTransportAdapter(C.DNSTypeHTTPS, "fixture", nil), logger.NOP(), dnsMetricFailDialer{original}, &url.URL{Scheme: "https", Host: "fixture.invalid"}, http.Header{}, M.ParseSocksaddr("127.0.0.1:443"), nil)
+				defer raw.Reset()
+				var m *DNSMetrics
+				if enabled {
+					m = new(DNSMetrics)
+				}
+				upstream, err := wrapHTTPS(raw, m)
+				if err != nil {
+					b.Fatal(err)
+				}
+				q := new(dns.Msg).SetQuestion("synthetic.invalid.", dns.TypeA)
+				done := make(chan struct{}, 1)
+				callback := func(response *dns.Msg, err error) {
+					if response != nil || err != original {
+						b.Error("identity changed")
+					}
+					done <- struct{}{}
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if async {
+						upstream.ExchangeAsync(context.Background(), q, callback)
+						<-done
+					} else {
+						response, err := upstream.Exchange(context.Background(), q)
+						if response != nil || err != original {
+							b.Fatal("identity changed")
+						}
+					}
+				}
+			})
+		}
 	}
 }
 

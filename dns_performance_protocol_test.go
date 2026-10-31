@@ -66,6 +66,10 @@ func dnsPerfStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, 
 }
 
 func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Request, *dns.Msg), fault string) *dnsPerfFixture {
+	return dnsPerfStartMetrics(t, answer, fault, true)
+}
+
+func dnsPerfStartMetrics(t *testing.T, answer func(http.ResponseWriter, *http.Request, *dns.Msg), fault string, enabled bool) *dnsPerfFixture {
 	t.Helper()
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
@@ -200,7 +204,9 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	f.metrics = new(engine.DNSMetrics)
+	if enabled {
+		f.metrics = new(engine.DNSMetrics)
+	}
 	ctx = engine.WithDNSMetrics(ctx, f.metrics)
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
 		f.traceAcquired.Add(1)
@@ -378,6 +384,30 @@ func dnsPerfRun(t *testing.T, f *dnsPerfFixture, q *dns.Msg, negative bool) time
 	a, elapsed, err := f.exchange(q)
 	dnsPerfCheck(t, q, a, err, negative)
 	return elapsed
+}
+
+func TestDNSPerformanceMetricsDisabledEquivalence(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			f := dnsPerfStartMetrics(t, nil, "", enabled)
+			for i := 0; i < 10; i++ {
+				dnsPerfRun(t, f, f.query("repeat", dns.TypeA), false)
+			}
+			f.shutdown()
+			if f.count(f.query("repeat", dns.TypeA)) != 1 || f.accepted.Load() != 1 || f.traceAcquired.Load() != 1 {
+				t.Fatal("metrics changed cache/reuse protocol")
+			}
+			s := f.metrics.Snapshot()
+			if s.Enabled != enabled {
+				t.Fatal("enabled state")
+			}
+			if enabled {
+				f.checkMetrics(t, 1)
+			} else if s.UpstreamExchange.Total != 0 || s.Connections.Acquisitions != 0 {
+				t.Fatal("nil collector populated")
+			}
+		})
+	}
 }
 
 func TestDNSPerformanceCache(t *testing.T) {
@@ -714,6 +744,11 @@ func TestDNSPerformanceStrictFaultRecovery(t *testing.T) {
 			// Restoring only the server-side cert/auth gate: same endpoint, same policy,
 			// same question, same live engine, no client reconfiguration/restart.
 			dnsPerfRun(t, f, f.query("strict-recovery", dns.TypeA), false)
+			f.shutdown()
+			f.checkMetrics(t, 2)
+			if fault == "doh_tls" && f.metrics.Snapshot().UpstreamExchange.Outcomes[dnsmetrics.TLSFailure] != 1 {
+				t.Errorf("typed cert failure not counted: %+v", f.metrics.Snapshot())
+			}
 			if f.count(q) != 1 {
 				t.Errorf("strict same-engine recovery upstream=%d want=1", f.count(q))
 			}
@@ -758,6 +793,10 @@ func TestDNSPerformanceBlockedCancellation(t *testing.T) {
 		t.Logf("DNS_PERF_CANCEL original_error=%v handler_canceled=true caller_joined=true engine_joined=true", err)
 	case <-time.After(3 * time.Second):
 		t.Error("blocked caller not joined")
+	}
+	f.checkMetrics(t, 1)
+	if f.metrics.Snapshot().UpstreamExchange.Outcomes[dnsmetrics.Canceled] != 1 {
+		t.Errorf("canceled completion missing: %+v", f.metrics.Snapshot())
 	}
 	if f.count(q) != 1 {
 		t.Errorf("blocked upstream count=%d want=1", f.count(q))
