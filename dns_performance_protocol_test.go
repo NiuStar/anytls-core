@@ -51,6 +51,7 @@ type dnsPerfFixture struct {
 	accepted, closed atomic.Int64
 	tlsComplete      atomic.Int64
 	shutdown         func()
+	metrics          *engine.DNSMetrics
 	answer           func(http.ResponseWriter, *http.Request, *dns.Msg)
 	badTLS, badAuth  atomic.Bool
 }
@@ -196,6 +197,8 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	f.metrics = new(engine.DNSMetrics)
+	ctx = engine.WithDNSMetrics(ctx, f.metrics)
 	ended := make(chan error, 1)
 	go func() { ended <- engine.Run(ctx, wire) }()
 	var once sync.Once
@@ -361,6 +364,10 @@ func TestDNSPerformanceCache(t *testing.T) {
 	dnsPerfRun(t, f, f.query("different", dns.TypeA), false)
 	if n := f.count(f.query("different", dns.TypeA)); n != 1 {
 		t.Errorf("different-name upstream=%d", n)
+	}
+	f.shutdown()
+	if got := f.metrics.Snapshot().UpstreamExchange.Total; got != 3 {
+		t.Errorf("runtime upstream_exchange=%d want=3 (not caller count 21)", got)
 	}
 	t.Logf("DNS_PERF_CACHE caller_count=21 expected_upstream=3 samples_us=%v", samples)
 }
