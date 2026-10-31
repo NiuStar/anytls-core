@@ -23,7 +23,10 @@ import (
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	"github.com/NiuStar/anytls-core/internal/engine"
+	anytls "github.com/anytls/sing-anytls"
+	"github.com/anytls/sing-anytls/padding"
 	"github.com/miekg/dns"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/protocol/socks"
 )
@@ -41,22 +44,30 @@ type dnsPerfFixture struct {
 	questions        map[string]int
 	protocols        map[int]int
 	connections      map[net.Conn]int
+	states           map[net.Conn]http.ConnState
 	requestsByConn   map[int]int
 	nextConn         int
 	accepted, closed atomic.Int64
 	shutdown         func()
 	answer           func(http.ResponseWriter, *http.Request, *dns.Msg)
+	badTLS, badAuth  atomic.Bool
 }
 
 type dnsPerfConnKey struct{}
 
 func dnsPerfStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, *dns.Msg)) *dnsPerfFixture {
+	return dnsPerfStartFault(t, answer, "")
+}
+
+func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Request, *dns.Msg), fault string) *dnsPerfFixture {
 	t.Helper()
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
 		t.Fatal(err)
 	}
-	f := &dnsPerfFixture{prefix: hex.EncodeToString(nonce), questions: map[string]int{}, protocols: map[int]int{}, connections: map[net.Conn]int{}, requestsByConn: map[int]int{}, answer: answer}
+	f := &dnsPerfFixture{prefix: hex.EncodeToString(nonce), questions: map[string]int{}, protocols: map[int]int{}, connections: map[net.Conn]int{}, states: map[net.Conn]http.ConnState{}, requestsByConn: map[int]int{}, answer: answer}
+	f.badTLS.Store(fault == "doh_tls")
+	f.badAuth.Store(fault == "password")
 	f.trap = unifiedDNSStartTrap(t, 0, false)
 	f.trap.control(t, "before")
 	f.baseline = f.trap.count.Load()
@@ -85,7 +96,13 @@ func dnsPerfStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, 
 		}
 	}))
 	f.doh.EnableHTTP2 = true
-	f.doh.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	_, wrongCert := runtimeCertificate(t)
+	f.doh.TLS = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if f.badTLS.Load() {
+			return &wrongCert, nil
+		}
+		return &cert, nil
+	}}
 	f.doh.Config.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
 		f.mu.Lock()
 		f.nextConn++
@@ -95,6 +112,9 @@ func dnsPerfStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, 
 		return context.WithValue(ctx, dnsPerfConnKey{}, id)
 	}
 	f.doh.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		f.mu.Lock()
+		f.states[c] = s
+		f.mu.Unlock()
 		if s == http.StateNew {
 			f.accepted.Add(1)
 		}
@@ -106,7 +126,11 @@ func dnsPerfStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, 
 	target := f.doh.Listener.Addr().String()
 	t.Cleanup(func() { f.doh.Close(); unifiedDNSRebind(t, "tcp", target) })
 	var peerPort int
-	f.peer, peerPort = unifiedDNSStartPeer(t, target, cert)
+	if fault == "password" {
+		f.peer, peerPort = dnsPerfAuthPeer(t, target, cert, &f.badAuth)
+	} else {
+		f.peer, peerPort = unifiedDNSStartPeer(t, target, cert)
+	}
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.pem")
 	runtimeWrite(t, caPath, ca, 0600)
@@ -233,6 +257,16 @@ func (f *dnsPerfFixture) count(q *dns.Msg) int {
 	return f.questions[dnsPerfKey(q)]
 }
 func (f *dnsPerfFixture) exchange(q *dns.Msg) (*dns.Msg, time.Duration, error) {
+	return f.exchangeSent(q, nil)
+}
+func (f *dnsPerfFixture) exchangeSent(q *dns.Msg, sent func()) (*dns.Msg, time.Duration, error) {
+	if sent != nil {
+		defer func() {
+			if sent != nil {
+				sent()
+			}
+		}()
+	}
 	start := time.Now()
 	client := socks.NewClient(recordsSOCKSDialer{}, M.ParseSocksaddr(f.addr), socks.Version5, "", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -246,6 +280,10 @@ func (f *dnsPerfFixture) exchange(q *dns.Msg) (*dns.Msg, time.Duration, error) {
 	dc := &dns.Conn{Conn: c}
 	if err = dc.WriteMsg(q); err != nil {
 		return nil, time.Since(start), err
+	}
+	if sent != nil {
+		sent()
+		sent = nil
 	}
 	a, err := dc.ReadMsg()
 	return a, time.Since(start), err
@@ -266,7 +304,7 @@ func dnsPerfCheck(t *testing.T, q, a *dns.Msg, err error, negative bool) {
 			return
 		}
 		soa, ok := a.Ns[0].(*dns.SOA)
-		if !ok || soa.Hdr.Name != "invalid." || soa.Ns != "ns.invalid." || soa.Mbox != "hostmaster.invalid." || soa.Serial != 1 || soa.Minttl != 1 || soa.Hdr.Ttl > 1 {
+		if !ok || soa.Hdr.Name != "invalid." || soa.Hdr.Class != dns.ClassINET || soa.Ns != "ns.invalid." || soa.Mbox != "hostmaster.invalid." || soa.Serial != 1 || soa.Refresh != 60 || soa.Retry != 60 || soa.Expire != 60 || soa.Minttl != 1 || soa.Hdr.Ttl > 1 {
 			t.Errorf("exact negative SOA mismatch: %v", a.Ns)
 		}
 		return
@@ -341,8 +379,7 @@ func TestDNSPerformanceConcurrentCoalescing(t *testing.T) {
 		go func() {
 			ready.Done()
 			<-start
-			sent.Done()
-			a, elapsed, err := f.exchange(q)
+			a, elapsed, err := f.exchangeSent(q, sent.Done)
 			results <- result{q, a, elapsed, err}
 		}()
 	}
@@ -354,8 +391,8 @@ func TestDNSPerformanceConcurrentCoalescing(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Error("held upstream never entered")
 	}
-	// Hold the first actual upstream response while all barrier-released callers
-	// are active. This is a bounded observation window, not a latency assertion.
+	// All complete DNS frames have been written to the real mixed inbound.
+	// Keep the first upstream response held for a bounded observation window.
 	timer := time.NewTimer(150 * time.Millisecond)
 	<-timer.C
 	heldCount := f.count(f.query("concurrent", dns.TypeA))
@@ -399,6 +436,22 @@ func TestDNSPerformanceConnectionReuse(t *testing.T) {
 	}
 	// HTTP/2 idle closure is performed on the actual server-side connection, not
 	// an HTTP/1-only CloseIdleConnections approximation.
+	deadline := time.Now().Add(time.Second)
+	for {
+		f.mu.Lock()
+		idle := len(f.states) == 1
+		for _, state := range f.states {
+			idle = idle && state == http.StateIdle
+		}
+		f.mu.Unlock()
+		if idle {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("DoH connection never became idle before forced close")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	f.mu.Lock()
 	var conns []net.Conn
 	for c := range f.connections {
@@ -432,7 +485,11 @@ func TestDNSPerformanceTTLExpiry(t *testing.T) {
 			})
 			q := f.query("ttl", dns.TypeA)
 			start := time.Now()
-			dnsPerfRun(t, f, q, negative)
+			a, _, err := f.exchange(q)
+			dnsPerfCheck(t, q, a, err, negative)
+			if !negative && (a == nil || len(a.Answer) != 1 || a.Answer[0].Header().Ttl != 1) {
+				t.Error("positive TTL must be exactly one second")
+			}
 			dnsPerfRun(t, f, f.query("ttl", dns.TypeA), negative)
 			if n := f.count(q); n != 1 {
 				t.Errorf("pre-expiry upstream=%d want=1", n)
@@ -480,5 +537,145 @@ func TestDNSPerformanceHTTPRecovery(t *testing.T) {
 	dnsPerfRun(t, f, f.query("recover", dns.TypeA), false)
 	if f.count(q) != 2 {
 		t.Errorf("same-engine recovery upstream=%d want=2", f.count(q))
+	}
+}
+
+// The forwarding handler is the existing real AnyTLS peer. Only service selection
+// changes at accept time; never mutate Service.users while sessions read it.
+func dnsPerfAuthPeer(t *testing.T, target string, cert tls.Certificate, bad *atomic.Bool) (*unifiedDNSPeer, int) {
+	t.Helper()
+	p := &unifiedDNSPeer{target: target}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeService := func(password string) *anytls.Service {
+		s, e := anytls.NewService(anytls.ServiceConfig{Users: []anytls.User{{Name: "fixture", Password: password}}, PaddingScheme: padding.DefaultPaddingScheme, Handler: p, Logger: logger.NOP()})
+		if e != nil {
+			l.Close()
+			t.Fatal(e)
+		}
+		return s
+	}
+	goodService, badService := makeService("synthetic-unified-only"), makeService("synthetic-rejected-only")
+	ctx, cancel := context.WithCancel(context.Background())
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		for {
+			c, e := l.Accept()
+			if e != nil {
+				return
+			}
+			p.track(c)
+			p.accepted.Add(1)
+			svc := goodService
+			if bad.Load() {
+				svc = badService
+			}
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				defer c.Close()
+				tc := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+				_ = tc.SetDeadline(time.Now().Add(20 * time.Second))
+				if tc.HandshakeContext(ctx) == nil {
+					p.authenticated.Add(1)
+					_ = svc.NewConnection(ctx, tc, M.SocksaddrFromNet(c.RemoteAddr()), nil)
+				}
+			}()
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		l.Close()
+		p.mu.Lock()
+		for _, c := range p.conns {
+			c.Close()
+		}
+		p.mu.Unlock()
+		done := make(chan struct{})
+		go func() { p.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Error("auth peer join deadline")
+		}
+		unifiedDNSRebind(t, "tcp", l.Addr().String())
+	})
+	return p, l.Addr().(*net.TCPAddr).Port
+}
+
+func TestDNSPerformanceStrictFaultRecovery(t *testing.T) {
+	for _, fault := range []string{"doh_tls", "password"} {
+		t.Run(fault, func(t *testing.T) {
+			f := dnsPerfStartFault(t, nil, fault)
+			q := f.query("strict-recovery", dns.TypeA)
+			a, elapsed, err := f.exchange(q)
+			if err == nil && (a == nil || a.Id != q.Id || !a.Response || !reflect.DeepEqual(a.Question, q.Question) || a.Rcode == dns.RcodeSuccess || len(a.Answer) != 0) {
+				t.Errorf("strict failure returned invalid/success response: %v", a)
+			}
+			if f.count(q) != 0 {
+				t.Error("invalid TLS/auth reached HTTP DNS handler")
+			}
+			if fault == "password" && (f.peer.authenticated.Load() == 0 || f.peer.streams.Load() != 0) {
+				t.Error("password control must complete strict TLS but deny authenticated streams")
+			}
+			if fault == "doh_tls" && (f.accepted.Load() == 0 || f.peer.streams.Load() == 0) {
+				t.Error("bad TLS control never reached DoH TLS listener through AnyTLS")
+			}
+			t.Logf("DNS_PERF_STRICT_FAILURE fault=%s original_error=%v elapsed_us=%d", fault, err, elapsed.Microseconds())
+			f.badTLS.Store(false)
+			f.badAuth.Store(false)
+			// Restoring only the server-side cert/auth gate: same endpoint, same policy,
+			// same question, same live engine, no client reconfiguration/restart.
+			dnsPerfRun(t, f, f.query("strict-recovery", dns.TypeA), false)
+			if f.count(q) != 1 {
+				t.Errorf("strict same-engine recovery upstream=%d want=1", f.count(q))
+			}
+		})
+	}
+}
+
+func TestDNSPerformanceBlockedCancellation(t *testing.T) {
+	entered, canceled := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	f := dnsPerfStart(t, func(w http.ResponseWriter, r *http.Request, q *dns.Msg) {
+		first.Do(func() { close(entered) })
+		<-r.Context().Done()
+		close(canceled)
+	})
+	result := make(chan error, 1)
+	q := f.query("blocked", dns.TypeAAAA)
+	go func() {
+		a, _, err := f.exchange(q)
+		if err == nil {
+			err = fmt.Errorf("blocked query returned response: %v", a)
+		}
+		result <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocked handler not entered")
+	}
+	f.shutdown()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Error("engine cancel did not cancel blocked HTTP handler")
+	}
+	select {
+	case err := <-result:
+		var ne net.Error
+		if err == nil || (errors.As(err, &ne) && ne.Timeout()) {
+			t.Errorf("timeout cannot prove downstream cancellation: %v", err)
+		}
+		t.Logf("DNS_PERF_CANCEL original_error=%v handler_canceled=true caller_joined=true engine_joined=true", err)
+	case <-time.After(3 * time.Second):
+		t.Error("blocked caller not joined")
+	}
+	if f.count(q) != 1 {
+		t.Errorf("blocked upstream count=%d want=1", f.count(q))
 	}
 }
