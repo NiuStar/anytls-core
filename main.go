@@ -189,8 +189,9 @@ func execute(args []string) error {
 	core := fs.String("core", "sing-box", "sing-box executable path")
 	config := fs.String("config", "", "private YAML file with proxies/nodes")
 	nodeName := fs.String("node", "", "select AnyTLS node by name")
-	mode := fs.String("network", "proxy", "proxy (loopback SOCKS/HTTP) or tun (system VPN)")
-	localPort := fs.Int("local-port", 11080, "loopback SOCKS/HTTP listen port")
+	mode := fs.String("network", "proxy", "proxy (SOCKS/HTTP) or tun (system VPN)")
+	localListen := fs.String("local-listen", "0.0.0.0", "SOCKS/HTTP listen IPv4 address (unauthenticated; use 127.0.0.1 for local-only)")
+	localPort := fs.Int("local-port", 11080, "SOCKS/HTTP listen port")
 	allowInsecure := fs.Bool("allow-insecure", false, "explicitly allow skip-cert-verify (MITM risk)")
 	dnsMetrics := fs.Bool("dns-metrics", false, "emit one completed-run DNS summary to stderr (embedded_core run only)")
 	recordService := fs.Bool("record-service", false, "internal authorized service recording marker")
@@ -208,7 +209,10 @@ func execute(args []string) error {
 	if err := validateDNSMetricsFlag(*dnsMetrics, fs.Arg(0), !externalCoreRequired()); err != nil {
 		return err
 	}
-	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalPort: *localPort, AllowInsecure: *allowInsecure, RecordService: *recordService}
+	if err := validateProxyListen(*localListen); err != nil {
+		return err
+	}
+	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalListen: *localListen, LocalPort: *localPort, AllowInsecure: *allowInsecure, RecordService: *recordService}
 	ctx := context.Background()
 	if o.Command == "run" {
 		var stop context.CancelFunc

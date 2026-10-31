@@ -14,6 +14,7 @@ import (
 type runtimeOptions struct {
 	Command, Config, NodeName, Mode string
 	Server, SNI, CA, PasswordFile   string
+	LocalListen                     string
 	LocalPort                       int
 	AllowInsecure                   bool
 	RecordService                   bool
@@ -109,7 +110,11 @@ func prepareRuntimeMap(o *runtimeOptions, manifest *cr.Manifest) (map[string]any
 		if err != nil {
 			return nil, err
 		}
-		cfg, err = buildNode(n, o.Mode, o.LocalPort, o.AllowInsecure)
+		listen := o.LocalListen
+		if listen == "" {
+			listen = "0.0.0.0"
+		}
+		cfg, err = buildNodeWithListen(n, o.Mode, o.LocalPort, o.AllowInsecure, listen)
 		if err != nil {
 			return nil, err
 		}

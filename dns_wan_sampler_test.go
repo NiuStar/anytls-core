@@ -265,7 +265,7 @@ func wanAssemble(n node, port int, token string) (map[string]any, error) {
 	if n.MinIdle > 1 || n.CA != "" || n.SkipVerify || n.CertificatePublicKeySHA256 != "" || n.CertificateSHA256 == "" || net.ParseIP(n.Server) == nil || net.ParseIP(n.Server).To4() == nil {
 		return nil, wanCode("NODE_TRUST")
 	}
-	cfg, e := buildNode(n, "proxy", port, false)
+	cfg, e := buildNodeWithListen(n, "proxy", port, false, "127.0.0.1")
 	if e != nil {
 		return nil, wanCode("COMPILER")
 	}
@@ -279,7 +279,7 @@ func wanAssemble(n node, port int, token string) (map[string]any, error) {
 	return cfg, nil
 }
 func wanAssertPolicy(cfg map[string]any, n node, port int, token string) error {
-	expected, e := buildNode(n, "proxy", port, false)
+	expected, e := buildNodeWithListen(n, "proxy", port, false, "127.0.0.1")
 	if e != nil {
 		return wanCode("COMPILER")
 	}

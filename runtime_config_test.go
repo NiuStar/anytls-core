@@ -188,6 +188,19 @@ func TestSameRuntimeForExternalAndEmbedded(t *testing.T) {
 				// Independent literal prefix validation, not a production helper.
 				tunBusinessRules(t, got)
 			}
+			if tc.mode == "proxy" && !tc.legacy {
+				reference := normalizedRuntime(t, want)
+				in := reference["inbounds"].([]any)[0].(map[string]any)
+				if in["type"] != "mixed" || in["listen"] != "127.0.0.1" {
+					t.Fatalf("unexpected frozen proxy inbound: %#v", in)
+				}
+				// Only the authorized default-listen delta differs from the frozen CLI.
+				in["listen"] = "0.0.0.0"
+				want, err = json.MarshalIndent(reference, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if !reflect.DeepEqual(normalizedRuntime(t, b), normalizedRuntime(t, want)) {
 				t.Fatal("complete normalized runtime JSON differs from frozen compiler (ordered arrays retained)")
 			}

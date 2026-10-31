@@ -37,7 +37,7 @@ func TestSelectConfigNodeAndProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := cfg["inbounds"].([]any)[0].(map[string]any)
-	if in["type"] != "mixed" || in["listen"] != "127.0.0.1" {
+	if in["type"] != "mixed" || in["listen"] != "0.0.0.0" {
 		t.Fatalf("inbound: %v", in)
 	}
 	out := cfg["outbounds"].([]any)[0].(map[string]any)

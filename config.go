@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,18 @@ func choose(nodes []node, name string) (node, error) {
 }
 
 func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]any, error) {
+	return buildNodeWithListen(n, mode, port, allowInsecure, "0.0.0.0")
+}
+
+func validateProxyListen(listen string) error {
+	addr, err := netip.ParseAddr(listen)
+	if err != nil || !addr.Is4() || addr.String() != listen {
+		return errors.New("invalid local-listen: expected a canonical IPv4 address")
+	}
+	return nil
+}
+
+func buildNodeWithListen(n node, mode string, port int, allowInsecure bool, listen string) (map[string]any, error) {
 	if n.Type != "anytls" {
 		return nil, errors.New("only AnyTLS is supported")
 	}
@@ -256,7 +269,10 @@ func buildNode(n node, mode string, port int, allowInsecure bool) (map[string]an
 		if port < 1 || port > 65535 {
 			return nil, errors.New("invalid local port")
 		}
-		cfg["inbounds"] = []any{map[string]any{"type": "mixed", "tag": "local-proxy", "listen": "127.0.0.1", "listen_port": port}}
+		if err := validateProxyListen(listen); err != nil {
+			return nil, err
+		}
+		cfg["inbounds"] = []any{map[string]any{"type": "mixed", "tag": "local-proxy", "listen": listen, "listen_port": port}}
 	case "tun":
 		prefix := "/32"
 		if net.ParseIP(n.Server).To4() == nil {

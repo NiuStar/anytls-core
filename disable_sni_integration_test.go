@@ -165,7 +165,7 @@ func TestDisableSNILocalTLS(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				cfg, err := buildNode(nodes[0], "proxy", port, false)
+				cfg, err := buildNodeWithListen(nodes[0], "proxy", port, false, "127.0.0.1")
 				if err != nil {
 					t.Fatal(err)
 				}
