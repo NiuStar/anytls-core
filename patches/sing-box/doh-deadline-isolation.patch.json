@@ -1,0 +1,28 @@
+{
+  "replacements": [
+    {
+      "old": "\t\"errors\"\n",
+      "new": ""
+    },
+    {
+      "old": "\t\"time\"\n",
+      "new": ""
+    },
+    {
+      "old": "\tlogger           logger.ContextLogger\n\tdialer           N.Dialer\n\tdestination      *url.URL\n\theaders          http.Header\n\tserverAddr       M.Socksaddr\n\tfallback         *atomic.Bool\n\tkeepIdle         atomic.Bool\n\ttransportAccess  sync.Mutex\n\ttransport        *HTTPSTransportWrapper\n\ttransportResetAt time.Time\n",
+      "new": "\tlogger          logger.ContextLogger\n\tdialer          N.Dialer\n\tdestination     *url.URL\n\theaders         http.Header\n\tserverAddr      M.Socksaddr\n\tfallback        *atomic.Bool\n\tkeepIdle        atomic.Bool\n\ttransportAccess sync.Mutex\n\ttransport       *HTTPSTransportWrapper\n"
+    },
+    {
+      "old": "\tt.transportResetAt = time.Now()\n",
+      "new": ""
+    },
+    {
+      "old": "\tstartAt := time.Now()\n",
+      "new": ""
+    },
+    {
+      "old": "\t\tif errors.Is(err, context.DeadlineExceeded) {\n\t\t\tt.transportAccess.Lock()\n\t\t\tdefer t.transportAccess.Unlock()\n\t\t\tif t.transportResetAt.After(startAt) {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tt.resetTransportLocked()\n\t\t}\n",
+      "new": ""
+    }
+  ]
+}

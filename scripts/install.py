@@ -283,6 +283,26 @@ def ensure_link(target, link):
         link.symlink_to(target)
 
 
+def certified_build(stdout, wrapper, source, output):
+    # Execute only the caller's trusted local wrapper, never archive Python.
+    ns = {"__name__": "trusted_installer_wrapper", "__file__": str(source / "scripts/go-patched.py")}
+    exec(compile(wrapper, "trusted-local-wrapper", "exec"), ns)
+    ends = [json.loads(line.split(" ", 1)[1]) for line in stdout.decode().splitlines()
+            if line.startswith("PATCHED_GO_END ")]
+    require(len(ends) == 1, "source build missing unique certified END")
+    r = ends[0]
+    m, patch = ns["doh_identity"](source)
+    require(r.get("doh_deadline_isolation") == ns["doh_receipt"](m, patch),
+            "source build DoH identity mismatch")
+    require(r.get("rc") == 0 and r.get("ephemeral_cleanup") == "ok"
+            and r.get("root_inputs_unchanged") is True and r.get("original_doh_source_unchanged") is True
+            and r.get("wrapper_sha256") == hashlib.sha256(wrapper).hexdigest()
+            and r.get("output_sha256") == hashlib.sha256(output.read_bytes()).hexdigest()
+            and r.get("target") == {"GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "0"},
+            "source build certified output mismatch")
+    return r
+
+
 def run(args, transport=open_url):
     require(platform.system() == "Darwin" and platform.machine() == "arm64", "source installer supports macOS arm64 only")
     require(os.geteuid() != 0, "run installer as your normal user, never root/sudo")
@@ -326,7 +346,8 @@ def run(args, transport=open_url):
         env["GO_BIN"] = str(go.resolve())
         output = work / "anytls-built"
         try:
-            subprocess.run([sys.executable, "-I", str(source / "scripts/go-patched.py"), "build", "-p", "2", "-tags", TAGS, "-trimpath", "-o", str(output), "."], cwd=source, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800, check=True)
+            built = subprocess.run([sys.executable, "-I", str(source / "scripts/go-patched.py"), "build", "-p", "2", "-tags", TAGS, "-trimpath", "-o", str(output), "."], cwd=source, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800, check=True)
+            receipt = certified_build(built.stdout, wrapper, source, output)
             reported = subprocess.check_output([str(output), "version"], env=env, stderr=subprocess.PIPE, timeout=20).decode().strip()
             require(reported == tag, "built executable version mismatch: target release must support `version` and return its exact tag; old executable preserved")
         except subprocess.SubprocessError:
@@ -337,6 +358,7 @@ def run(args, transport=open_url):
         kept = sources / (tag + "-" + uuid.uuid4().hex)
         os.replace(source, kept)
         shutil.copyfile(sums, kept / "RELEASE-SHA256SUMS")
+        (kept / "CERTIFIED-BUILD.json").write_text(json.dumps(receipt, indent=2) + "\n")
         backup = publish_binary(output, target, app)
         if not args.update:
             created = install_config(kept, app)

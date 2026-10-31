@@ -1,0 +1,19 @@
+{
+  "module": "github.com/sagernet/sing-box",
+  "version": "v1.14.3",
+  "commit": "7054cac5124465ffdb145870d7c01885566711b1",
+  "module_sum": "h1:cBg8TP5SPWoMAlWqTqbSNdHGKPUciZisjQbLtqFlMZA=",
+  "go_mod_sum": "h1:Yei01EtPLnLTpLho05THCbqUwfidsaE/0vm1oSu+XQA=",
+  "toolchain": "go1.27.3",
+  "file": "dns/transport/https.go",
+  "patch": "doh-deadline-isolation.patch.json",
+  "patch_sha256": "8d8c84132e0ea5389a2f9d376c92e5a6cd97cb7944e5fd17828f6f101aeb4acf",
+  "source_sha256": "0557f1e843e0275208b88f88bf6ba392b120bbeeaa2d47c6b815b6c8bd92ed12",
+  "result_sha256": "cee76ca2ec0d3016e0620c89249a8d9f14008fa9b26956ccdb81367484b4aae1",
+  "start_identity_sha256": "9679eb6c27343cbdc0bcb3559869638a4c78c2809dca9760439f46f506636c5f",
+  "core_identity_sha256": "7faf6af8e873bb568f15029070f3c8051365af7ba3dd43f343488d78dcaee9e3",
+  "chrome_identity_sha256": "8752f6fc7dff8ddb1b73150603d7d5c78524f537d075ef7cf29e4228bd05b026",
+  "leaf_identity_sha256": "0e28b9a7e7258f2f588b49ce4820739998f610abdaf465a4f8b7b7530ce71589",
+  "retry_identity_sha256": "0d0c382ffa625c89bc044294a2cd07b6e1c65d8b1878c56a1bc7c98ed874f70d",
+  "fixture": "https.go.txt"
+}

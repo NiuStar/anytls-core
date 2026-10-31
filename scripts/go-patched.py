@@ -29,6 +29,47 @@ LEAF_FILES = ("option/tls.go", "common/tls/std_client.go", "common/tls/utls_clie
 RETRY_IDENTITY_SHA = "0d0c382ffa625c89bc044294a2cd07b6e1c65d8b1878c56a1bc7c98ed874f70d"
 
 
+DOH_IDENTITY_SHA = "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33cc7ff"
+
+
+def doh_identity(root=ROOT):
+    raw = (root / "patches/sing-box/doh-deadline-isolation.identity.json").read_bytes()
+    require(sha(raw) == DOH_IDENTITY_SHA, "DoH identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION and m["toolchain"] == CURRENT_GO
+            and m["file"] == "dns/transport/https.go", "unsupported DoH revision/toolchain")
+    require(tuple(m[k] for k in ("start_identity_sha256", "core_identity_sha256", "chrome_identity_sha256",
+                                 "leaf_identity_sha256", "retry_identity_sha256")) ==
+            (IDENTITY_SHA, CORE_IDENTITY_SHA, CHROME_IDENTITY_SHA, LEAF_IDENTITY_SHA, RETRY_IDENTITY_SHA),
+            "DoH historical chain mismatch")
+    start, _ = identity(root)
+    require(all(m[k] == start[k] for k in ("commit", "module_sum", "go_mod_sum")),
+            "DoH upstream chain mismatch")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "DoH patch SHA mismatch")
+    return m, patch
+
+
+def transform_doh(source, m, patch):
+    require(sha(source) == m["source_sha256"], "DoH source SHA mismatch")
+    ops = json.loads(patch)
+    require(set(ops) == {"replacements"} and len(ops["replacements"]) == 6, "invalid DoH patch")
+    text = source.decode("utf-8")
+    for op in ops["replacements"]:
+        require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1,
+                "DoH exact replacement mismatch")
+        text = text.replace(op["old"], op["new"], 1)
+    result = text.encode("utf-8")
+    require(sha(result) == m["result_sha256"], "DoH result SHA mismatch")
+    return result
+
+
+def doh_receipt(m, patch):
+    return {"identity_sha256": DOH_IDENTITY_SHA, "patch_sha256": sha(patch),
+            "file": m["file"], "source_sha256": m["source_sha256"],
+            "result_sha256": m["result_sha256"], "toolchain": CURRENT_GO}
+
+
 def retry_identity(root=ROOT):
     raw = (root / "patches/sing-box/retry.identity.json").read_bytes()
     require(sha(raw) == RETRY_IDENTITY_SHA, "retry identity SHA mismatch")
@@ -329,6 +370,7 @@ def main(argv):
     chrome_m, chrome_patch = chrome_identity()
     leaf_m, leaf_patch = leaf_identity()
     retry_m, retry_patch = retry_identity()
+    doh_m, doh_patch = doh_identity()
     require(all(retry_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum"))
             and retry_m["source_sha256"] == chrome_m["result_sha256"], "retry upstream chain mismatch")
     require(all(leaf_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
@@ -366,6 +408,9 @@ def main(argv):
     original_chrome = cache_chrome.read_bytes()
     patched_chrome = transform_chrome(original_chrome, chrome_m, chrome_patch)
     patched_retry = transform_retry(patched_chrome, retry_m, retry_patch)
+    cache_doh = directory / doh_m["file"]
+    original_doh = cache_doh.read_bytes()
+    patched_doh = transform_doh(original_doh, doh_m, doh_patch)
     original_leaf = {name: (directory / name).read_bytes() for name in LEAF_FILES}
     require(all(sha(original_leaf[pin["file"]]) == pin["source_sha256"] for pin in leaf_m["files"]),
             "module-cache leaf source SHA mismatch")
@@ -406,6 +451,10 @@ def main(argv):
         staged_chrome.write_bytes(patched_retry)
         receipt["transient_retry"] = retry_receipt(retry_m, retry_patch)
         receipt["chrome_result_sha256_scope"] = "Chrome intermediate; transient_retry binds final outbound"
+        staged_doh = replacement / doh_m["file"]
+        require(staged_doh.read_bytes() == original_doh, "archive/cache DoH source mismatch")
+        staged_doh.write_bytes(patched_doh)
+        receipt["doh_deadline_isolation"] = doh_receipt(doh_m, doh_patch)
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
@@ -442,6 +491,8 @@ def main(argv):
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in core_m["files"]), "final staged core sources changed")
         require(staged_chrome.read_bytes() == patched_retry, "final staged retry source changed")
+        require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")
+        require(staged_doh.read_bytes() == patched_doh, "final staged DoH source changed")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
         if output and rc == 0:
@@ -463,6 +514,7 @@ def main(argv):
                 reservation.close()
         finally:
             shutil.rmtree(work)
+        require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")
         require(source.read_bytes() == original and cache_debug.read_bytes() == original_debug,
                 "module-cache sources changed during command")
         require(cache_chrome.read_bytes() == original_chrome, "module-cache AnyTLS source changed during command")
@@ -473,6 +525,7 @@ def main(argv):
                    original_box_unchanged=True, original_debug_unchanged=True,
                    original_anytls_outbound_unchanged=True)
     receipt["original_leaf_sources_unchanged"] = True
+    receipt["original_doh_source_unchanged"] = True
     print("PATCHED_GO_END " + json.dumps(receipt, sort_keys=True), flush=True)
     return rc
 

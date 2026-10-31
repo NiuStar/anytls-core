@@ -12,6 +12,7 @@ def certified_sources(root,receipt):
  chrome,chrome_patch=wrapper.chrome_identity(root)
  leaf,leaf_patch=wrapper.leaf_identity(root)
  retry,retry_patch=wrapper.retry_identity(root)
+ doh,doh_patch=wrapper.doh_identity(root)
  if not re.search(r'^go 1\.27\.3$',(root/'go.mod').read_text(),re.M):raise ValueError('root module requires Go 1.27.3')
  if receipt.get('go_version','').split()[2:3]!=[wrapper.CURRENT_GO]:raise ValueError('certified toolchain mismatch')
  expected={'identity_sha256':wrapper.IDENTITY_SHA,'wrapper_sha256':wrapper.sha((root/'scripts/go-patched.py').read_bytes()),
@@ -20,13 +21,15 @@ def certified_sources(root,receipt):
            'core_slim':{'identity_sha256':wrapper.CORE_IDENTITY_SHA,'patch_sha256':wrapper.sha(core_patch),'files':core['files']},
            'chrome_backend':wrapper.chrome_receipt(chrome,chrome_patch),
            'leaf_certificate':wrapper.leaf_receipt(leaf,leaf_patch),
-           'transient_retry':wrapper.retry_receipt(retry,retry_patch)}
+           'transient_retry':wrapper.retry_receipt(retry,retry_patch),
+           'doh_deadline_isolation':wrapper.doh_receipt(doh,doh_patch)}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
  return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
          'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json',
          'patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json',
          'patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json',
-         'patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json']
+         'patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json',
+         'patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
 
 
 def source_notice(data):

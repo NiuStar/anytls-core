@@ -231,8 +231,8 @@ class InstallerTests(unittest.TestCase):
             tag = "v2026-10-21-02"
             prefix = "anytls-core-" + tag
             fixture = app / "fixture.tar.gz"
-            materials = ["patches/sing-box/identity.json", "patches/sing-box/box-start.patch.json",
-                         "patches/sing-box/core-slim.identity.json", "patches/sing-box/core-slim.patch.json"]
+            materials = [str(p.relative_to(Path(i.__file__).resolve().parent.parent))
+                         for p in (Path(i.__file__).resolve().parent.parent / "patches/sing-box").glob("*.json")]
             root = Path(i.__file__).resolve().parent.parent
             self.archive(fixture, [(prefix + "/VERSION", tarfile.REGTYPE, tag.encode()), (prefix + "/LICENSE", tarfile.REGTYPE, b"UNIT license"), (prefix + "/scripts/go-patched.py", tarfile.REGTYPE, b"ARCHIVE WRAPPER MUST NEVER EXECUTE")] +
                          [(prefix + "/" + name, tarfile.REGTYPE, (root / name).read_bytes()) for name in materials])
@@ -260,6 +260,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(command[command.index("-tags") + 1], i.TAGS)
                 self.assertEqual(kwargs["env"]["GO_BIN"], "/UNIT/go")
                 Path(command[command.index("-o") + 1]).write_bytes(b"UNIT-NEW-NOT-EXECUTED")
+                return self.certified_result(source, Path(command[command.index("-o") + 1]), wrapper.read_bytes())
             with mock.patch.object(i.platform, "system", return_value="Darwin"), mock.patch.object(i.platform, "machine", return_value="arm64"), mock.patch.object(i, "find_go", return_value=Path("/UNIT/go")), mock.patch.object(i.subprocess, "run", side_effect=unit_build), mock.patch.object(i.subprocess, "check_output", return_value=tag.encode()), mock.patch("sys.stdout", new=io.StringIO()):
                 self.assertEqual(i.run(args, transport), tag)
             self.assertEqual(target.read_bytes(), b"UNIT-NEW-NOT-EXECUTED")
@@ -294,19 +295,49 @@ class InstallerTests(unittest.TestCase):
                     i.run(args, lambda *args: self.fail("no network"))
             self.assertFalse(app.exists())
 
+    def certified_result(self, source, output, wrapper):
+        # UNIT-SIMULATED compiler result; real installer validates all pins.
+        ns = {'__name__': 'unit_trusted', '__file__': str(source/'scripts/go-patched.py')}
+        exec(compile(wrapper, 'trusted-unit-wrapper', 'exec'), ns)
+        receipt = dict(rc=0, ephemeral_cleanup='ok', root_inputs_unchanged=True,
+                       original_doh_source_unchanged=True, wrapper_sha256=hashlib.sha256(wrapper).hexdigest(),
+                       output_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+                       target={'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0'},
+                       doh_deadline_isolation=ns['doh_receipt'](*ns['doh_identity'](source)))
+        return i.subprocess.CompletedProcess([], 0, ('PATCHED_GO_END '+json.dumps(receipt)+'\n').encode(), b'')
+
+    def test_certified_build_rejects_missing_end_doh_and_output_drift(self):
+        root=Path(i.__file__).resolve().parent.parent
+        wrapper=(root/'scripts/go-patched.py').read_bytes()
+        with self.temp() as d:
+            output=Path(d)/'output';output.write_bytes(b'unit compiler output')
+            good=self.certified_result(root,output,wrapper).stdout
+            self.assertEqual(i.certified_build(good,wrapper,root,output)['rc'],0)
+            for bad in (b'',good+good):
+                with self.assertRaisesRegex(ValueError,'unique certified END'):i.certified_build(bad,wrapper,root,output)
+            r=json.loads(good.decode().split(' ',1)[1])
+            for field in ('doh_deadline_isolation','output_sha256','wrapper_sha256','target','original_doh_source_unchanged'):
+                bad=dict(r);bad.pop(field)
+                with self.assertRaisesRegex(ValueError,'identity|output'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
+            output.write_bytes(b'tampered')
+            with self.assertRaisesRegex(ValueError,'output'):i.certified_build(good,wrapper,root,output)
+
     def install_fixture(self, app, home, *, failure=None, legacy=False, update=False):
         tag = "v2026-10-21-02"
         prefix = "anytls-core-" + tag
         archive = app / "fixture.tar.gz"
+        root = Path(i.__file__).resolve().parent.parent
         self.archive(archive, [(prefix + "/VERSION", tarfile.REGTYPE, tag.encode()),
                                (prefix + "/LICENSE", tarfile.REGTYPE, b"license fixture"),
                                (prefix + "/config.example.yaml", tarfile.REGTYPE, b"example fixture"),
                                (prefix + "/scripts/go-patched.py", tarfile.REGTYPE, b"UNTRUSTED ARCHIVE PYTHON"),
-                               (prefix + "/scripts/json.py", tarfile.REGTYPE, b"raise RuntimeError('archive import must not run')")])
+                               (prefix + "/scripts/json.py", tarfile.REGTYPE, b"raise RuntimeError('archive import must not run')")] +
+                     [(prefix + "/" + str(p.relative_to(root)), tarfile.REGTYPE, p.read_bytes())
+                      for p in (root / "patches/sing-box").glob("*.json")])
         data = archive.read_bytes()
         name = prefix + "-source.tar.gz"
         sums = (("0" * 64 if failure == "checksum" else hashlib.sha256(data).hexdigest()) + "  " + name + "\n").encode()
-        wrapper = app / "trusted.py"; wrapper.write_bytes(b"TRUSTED LOCAL WRAPPER")
+        wrapper = app / "trusted.py"; wrapper.write_bytes((root / "scripts/go-patched.py").read_bytes())
         args = type("Args", (), {"app_dir": str(app), "target": str(app / "anytls") if legacy else None,
                                 "update": update, "version": None, "install_toolchain": False, "wrapper": str(wrapper)})()
         def transport(url, kind):
@@ -317,11 +348,12 @@ class InstallerTests(unittest.TestCase):
             return io.BytesIO(sums if url.endswith("SHA256SUMS") else data)
         def build(command, **kwargs):
             self.assertEqual(command[1], "-I")
-            self.assertEqual(Path(command[2]).read_bytes(), b"TRUSTED LOCAL WRAPPER")
+            self.assertEqual(Path(command[2]).read_bytes(), wrapper.read_bytes())
             self.assertEqual(kwargs["env"]["GO_BIN"], "/UNIT/go")
             if failure == "build":
                 raise i.subprocess.CalledProcessError(1, command)
             Path(command[command.index("-o") + 1]).write_bytes(b"BUILT FIXTURE NOT EXECUTED")
+            return self.certified_result(Path(kwargs['cwd']), Path(command[command.index('-o') + 1]), wrapper.read_bytes())
         version = (b"legacy usage text" if failure == "wrong-version" else tag.encode())
         with mock.patch.object(i.platform, "system", return_value="Darwin"), mock.patch.object(i.platform, "machine", return_value="arm64"), mock.patch.object(i.os, "geteuid", return_value=1024), mock.patch.object(i.Path, "home", return_value=home), mock.patch.object(i, "find_go", return_value=Path("/UNIT/go")), mock.patch.object(i.subprocess, "run", side_effect=build), mock.patch.object(i.subprocess, "check_output", side_effect=i.subprocess.CalledProcessError(2, ["version"]) if failure == "no-version" else None, return_value=version), mock.patch("sys.stdout", new=io.StringIO()) as stdout:
             if failure:
