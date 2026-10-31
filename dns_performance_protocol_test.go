@@ -46,8 +46,10 @@ type dnsPerfFixture struct {
 	connections      map[net.Conn]int
 	states           map[net.Conn]http.ConnState
 	requestsByConn   map[int]int
+	handshakes       map[net.Conn]bool
 	nextConn         int
 	accepted, closed atomic.Int64
+	tlsComplete      atomic.Int64
 	shutdown         func()
 	answer           func(http.ResponseWriter, *http.Request, *dns.Msg)
 	badTLS, badAuth  atomic.Bool
@@ -67,6 +69,7 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 	}
 	f := &dnsPerfFixture{prefix: hex.EncodeToString(nonce), questions: map[string]int{}, protocols: map[int]int{}, connections: map[net.Conn]int{}, states: map[net.Conn]http.ConnState{}, requestsByConn: map[int]int{}, answer: answer}
 	f.badTLS.Store(fault == "doh_tls")
+	f.handshakes = map[net.Conn]bool{}
 	f.badAuth.Store(fault == "password")
 	f.trap = unifiedDNSStartTrap(t, 0, false)
 	f.trap.control(t, "before")
@@ -114,6 +117,12 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 	f.doh.Config.ConnState = func(c net.Conn, s http.ConnState) {
 		f.mu.Lock()
 		f.states[c] = s
+		if s == http.StateActive && !f.handshakes[c] {
+			if tc, ok := c.(*tls.Conn); ok && tc.ConnectionState().HandshakeComplete {
+				f.handshakes[c] = true
+				f.tlsComplete.Add(1)
+			}
+		}
 		f.mu.Unlock()
 		if s == http.StateNew {
 			f.accepted.Add(1)
@@ -207,6 +216,13 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 	}
 	t.Cleanup(func() {
 		f.shutdown()
+		deadline := time.Now().Add(time.Second)
+		for f.closed.Load() != f.accepted.Load() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if f.closed.Load() != f.accepted.Load() {
+			t.Errorf("owned DoH connections not closed after engine join: accepted=%d closed=%d", f.accepted.Load(), f.closed.Load())
+		}
 		if f.peer.denied.Load() != 0 || f.peer.streams.Load() == 0 || f.peer.payload.Load() == 0 {
 			t.Error("missing authenticated AnyTLS DoH payload or unexpected destination")
 		}
@@ -216,7 +232,7 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 		f.trap.control(t, "after")
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		t.Logf("DNS_PERF_FINAL questions=%v protocols=%v requests_per_tls_conn=%v tls_accepted=%d tls_closed_before_server_cleanup=%d anytls_tls=%d anytls_streams=%d plaintext_delta=0 engine_joined=true", f.questions, f.protocols, f.requestsByConn, f.accepted.Load(), f.closed.Load(), f.peer.authenticated.Load(), f.peer.streams.Load())
+		t.Logf("DNS_PERF_FINAL questions=%v protocols=%v requests_per_tls_conn=%v tls_accepted=%d tls_handshakes_complete=%d tls_closed_before_server_cleanup=%d anytls_tls=%d anytls_streams=%d plaintext_delta=0 engine_join_attempted=true", f.questions, f.protocols, f.requestsByConn, f.accepted.Load(), f.tlsComplete.Load(), f.closed.Load(), f.peer.authenticated.Load(), f.peer.streams.Load())
 	})
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -371,12 +387,15 @@ func TestDNSPerformanceConcurrentCoalescing(t *testing.T) {
 		err     error
 	}
 	results := make(chan result, callers)
+	var joined sync.WaitGroup
+	joined.Add(callers)
 	var ready, sent sync.WaitGroup
 	ready.Add(callers)
 	sent.Add(callers)
 	for i := 0; i < callers; i++ {
 		q := f.query("concurrent", dns.TypeA)
 		go func() {
+			defer joined.Done()
 			ready.Done()
 			<-start
 			a, elapsed, err := f.exchangeSent(q, sent.Done)
@@ -415,6 +434,7 @@ func TestDNSPerformanceConcurrentCoalescing(t *testing.T) {
 	if n := f.count(f.query("concurrent", dns.TypeA)); n != 1 {
 		t.Errorf("coalescing upstream=%d want=1 held=%d callers=%d", n, heldCount, callers)
 	}
+	joined.Wait()
 	t.Logf("DNS_PERF_COALESCING callbacks=%d upstream_while_held=%d samples_us=%v", len(ids), heldCount, samples)
 }
 
@@ -431,7 +451,7 @@ func TestDNSPerformanceConnectionReuse(t *testing.T) {
 	f.mu.Lock()
 	connCount, h2 := len(f.requestsByConn), f.protocols[2]
 	f.mu.Unlock()
-	if f.accepted.Load() != 1 || connCount != 1 || h2 != 20 {
+	if f.accepted.Load() != 1 || f.tlsComplete.Load() != 1 || connCount != 1 || h2 != 20 {
 		t.Errorf("DoH reuse tls=%d connections=%d h2_requests=%d want=1/1/20", f.accepted.Load(), connCount, h2)
 	}
 	// HTTP/2 idle closure is performed on the actual server-side connection, not
@@ -463,7 +483,7 @@ func TestDNSPerformanceConnectionReuse(t *testing.T) {
 	}
 	q := f.query("after-close", dns.TypeAAAA)
 	dnsPerfRun(t, f, q, false)
-	if f.count(q) != 1 || f.accepted.Load() != 2 {
+	if f.count(q) != 1 || f.accepted.Load() != 2 || f.tlsComplete.Load() != 2 {
 		t.Errorf("same-engine reconnect upstream=%d tls=%d want=1/2", f.count(q), f.accepted.Load())
 	}
 	t.Logf("DNS_PERF_REUSE cache_misses=20 h2_requests=%d original_tls_connections=%d reconnect_tls=%d samples_us=%v", h2, connCount, f.accepted.Load(), samples)
@@ -525,6 +545,9 @@ func TestDNSPerformanceHTTPRecovery(t *testing.T) {
 	})
 	q := f.query("recover", dns.TypeA)
 	a, elapsed, err := f.exchange(q)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Errorf("503 failure must close explicitly, not pass on timeout: %v", err)
+	}
 	if err == nil && (a == nil || a.Id != q.Id || !reflect.DeepEqual(a.Question, q.Question) || a.Rcode == dns.RcodeSuccess || len(a.Answer) != 0) {
 		t.Errorf("503 unexpectedly returned success or invalid identity: %v", a)
 	}
@@ -612,6 +635,9 @@ func TestDNSPerformanceStrictFaultRecovery(t *testing.T) {
 			f := dnsPerfStartFault(t, nil, fault)
 			q := f.query("strict-recovery", dns.TypeA)
 			a, elapsed, err := f.exchange(q)
+			if err != nil && !errors.Is(err, io.EOF) {
+				t.Errorf("strict failure must close explicitly, not pass on timeout: %v", err)
+			}
 			if err == nil && (a == nil || a.Id != q.Id || !a.Response || !reflect.DeepEqual(a.Question, q.Question) || a.Rcode == dns.RcodeSuccess || len(a.Answer) != 0) {
 				t.Errorf("strict failure returned invalid/success response: %v", a)
 			}
