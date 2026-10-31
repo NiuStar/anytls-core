@@ -185,7 +185,7 @@ class PackagingTests(unittest.TestCase):
   self.assertEqual(p.module_escape('github.com/Upper/Name'),'github.com/!upper/!name')
 
  def test_rejects_tampered_or_missing_final_source_identity(self):
-  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim','chrome_backend','leaf_certificate'):
+  for field in ('identity_sha256','wrapper_sha256','patch_sha256','result_sha256','core_slim','chrome_backend','leaf_certificate','doh_deadline_isolation'):
    with self.subTest(field=field),self.package_fixture('arm64') as (root,settings,receipt,invoke):
     receipt.pop(field)
     with self.assertRaisesRegex(ValueError,'source identity'):invoke()
@@ -206,7 +206,7 @@ class PackagingTests(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'root module'):invoke()
 
  def test_rejects_source_archive_without_core_patch_materials(self):
-  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json','patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json'):
+  for name in ('patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json','patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json','patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json'):
    with self.subTest(name=name),self.package_fixture('arm64',missing_material=name) as (root,settings,receipt,invoke):
     with self.assertRaises(KeyError):invoke()
     self.assertFalse(list((root/'out').glob('*corresponding-source.tar.gz')))
