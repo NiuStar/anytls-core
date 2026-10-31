@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-30-03** 为四个固定公开Web资源增加只读复用及gzip协商；保留no-store、原始内容、MIME/安全头及Host/认证边界，不压缩API、配置或错误。Go1.27.3实测正文169663→54393B，减少67.94%；热handler减少重复复制，但分配次数略增，首次表示构建有约2.1ms/4.6MB累计分配成本，非RSS或WAN/浏览器延迟承诺。完整最终验收与公开附件另验。既有status挂起、Shutdown错误及GoogleIPv6问题未在本版修复。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；公开发布不安装或切换目标机。见[版本说明](docs/releases/v2026-10-30-03.md)、[测量报告](docs/static-transfer-report.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-01** 增加默认关闭的 `--dns-metrics`：仅嵌入核心前台 `run` 显式启用，结束后向stderr尝试写一次固定结构JSON聚合，不是WebUI实时监控，不自动给正式daemon启用。只观测上游完成及连接取得；hijacked／cache_hit／coalesced／http_status为NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。SDK确定性拨号失败实测开启同步增加469ns／352B／9alloc，异步496ns／416B／10alloc，不是WAN耗时或提速；helper零分配不代表runtime零分配。缓存、合并、复用与恢复是已有基线，不作为新成果。最终发行完整native／vet／build／package仍PENDING，CI与公开附件另验；不宣称GoogleIPv6、status挂起或Shutdown错误已修复。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；发布不安装或切换目标机。见[版本说明](docs/releases/v2026-10-31-01.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -156,9 +156,9 @@ anytls stop
 
 ## 本版验证与已知限制
 
-- 精确实现提交的 Linux 完整回归460项顶层／1360项子测试 PASS、6项 SKIP，vet通过；定向单条规则9项顶层／50项子测试通过。最终 Mac 原生测试／构建／打包、公开 CI 与公开附件验收待完成，不以 Linux 结果替代。
-- 实际 Chromium 在1280／390宽度通过下拉／文本输入、预览／提交、陈旧响应隔离、保存草稿保护和刷新失败反馈回归；API 为合成响应，不是实际 Mac 助手或 TUN 验收。
-- `TestDiskRecordsStickyAncestorLifecycle` 的本地间歇失败已定位为夹具读取与合法 state.json 原子替换重叠；本版仅在该测试增加互斥排序，保留真实 os.Rename 与全部断言，不改连接记录实现或严格守卫。固定候选100次压力、Linux完整460项顶层／1360项子测试 PASS、6项 SKIP与vet通过；这些证据来自独立修复提交，不冒充最终发行身份验收。旧发行提交的公开 CI run40429261079仍为失败，Ubuntu失败断言不可见、原因 UNKNOWN；不宣称该测试修正已解释或清除旧CI失败。详见版本说明。
+- 本版发行说明为冻结的发布前快照。既有协议基线Mac ARM64隔离7项顶层／4项子测试、运行时接入定向16项顶层及组件限定race8项的已留存结果，各自只绑定对应源码；最终发行完整native full／vet／build／package仍PENDING，独立审查、分支／main／标签CI与公开附件核验另列，不以局部门替代。
+- 默认关闭，只有嵌入核心前台 `run` 显式启用后在返回时尝试写一次stderr JSON；没有WebUI实时指标、持久化开关或自动给正式daemon启用。缓存命中／并发合并／hijacked／HTTP状态均NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。
+- 真实SDK确定性拨号失败benchmark中，开启观测增加同步469ns／352B／9alloc、异步496ns／416B／10alloc；不是WAN／TLS或端到端性能，helper零分配不代表runtime零分配。缓存、并发合并、连接复用与恢复是已有GREEN基线；本版不宣称DNS加速、GoogleIPv6或Intel现场已修复。原生局部门与CLI入口的边界见[版本说明](docs/releases/v2026-10-31-01.md)。
 - 既有 GEOIP 用户 URL 私有副本及记录回放观察属于上一版证据，不作为本版新规则入口的正式 root／TUN 验收；物理出口仍 UNKNOWN。
 - 曾出现间歇 DNS／TLS 超时。有限重试不是连通性保证，持续失败仍停止并恢复网络。
 - 策略组保存会重新序列化 YAML，可能丢注释、未知组字段或改变未加引号的数字字符串。编辑前备份，密码等数字字符串应加引号；本版不宣称任意 YAML 无损往返。

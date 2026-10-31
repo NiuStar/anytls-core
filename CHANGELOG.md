@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-31-01
+
+- 新增默认关闭的 `--dns-metrics`，仅嵌入核心前台run显式启用，完成后stderr尝试输出一次dns_metrics_final JSON聚合；不记录查询名／原始错误／凭据，不是WebUI实时面板，不自动给正式daemon启用。
+- 仅实际观测上游完成及连接取得；hijacked／cache_hit／coalesced／http_status明确NOT_OBSERVED，真实HTTP503因无typed status归OtherError，不解析错误文本。默认nil注册原始transport，不给DNS exchange增加观测开销。
+- 真实SDK确定性拨号失败成对实测开启同步增加469ns／352B／9alloc、异步496ns／416B／10alloc；不是WAN／端到端RTT或DNS提速，helper零分配不等于runtime零分配。缓存、并发合并、复用与恢复为既有GREEN基线，不列新优化。
+- 保留基线Mac隔离7顶层／4子、接入定向16顶层及组件限定race8项证据的精确源码边界；最终发行完整native full／vet／build／package仍PENDING，独立审查／CI／公开附件另验。本说明为冻结发布前快照，不改TLS、detour、端口53严格DoH、TTL或备用策略，不修GoogleIPv6；更新／首次托管流程保持，发布不安装或启停。见[版本说明](docs/releases/v2026-10-31-01.md)。
+
 ## v2026-10-30-03
 
 - 四个固定公开Web静态资源一次构建identity/gzip并发只读复用，保留no-store、原始内容、安全头及认证边界；API/配置/错误不压缩、不增磁盘缓存。
