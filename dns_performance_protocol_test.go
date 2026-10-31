@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	"github.com/NiuStar/anytls-core/internal/dnsmetrics"
 	"github.com/NiuStar/anytls-core/internal/engine"
 	anytls "github.com/anytls/sing-anytls"
 	"github.com/anytls/sing-anytls/padding"
@@ -35,25 +37,26 @@ import (
 // peer, not a mock resolver, native TUN, WAN, or a production-policy change.
 // Existing wire helpers own/join their peers and calibrate plaintext observers.
 type dnsPerfFixture struct {
-	addr, prefix     string
-	doh              *httptest.Server
-	peer             *unifiedDNSPeer
-	trap             *unifiedDNSTrap
-	baseline         int64
-	mu               sync.Mutex
-	questions        map[string]int
-	protocols        map[int]int
-	connections      map[net.Conn]int
-	states           map[net.Conn]http.ConnState
-	requestsByConn   map[int]int
-	handshakes       map[net.Conn]bool
-	nextConn         int
-	accepted, closed atomic.Int64
-	tlsComplete      atomic.Int64
-	shutdown         func()
-	metrics          *engine.DNSMetrics
-	answer           func(http.ResponseWriter, *http.Request, *dns.Msg)
-	badTLS, badAuth  atomic.Bool
+	addr, prefix                          string
+	doh                                   *httptest.Server
+	peer                                  *unifiedDNSPeer
+	trap                                  *unifiedDNSTrap
+	baseline                              int64
+	mu                                    sync.Mutex
+	questions                             map[string]int
+	protocols                             map[int]int
+	connections                           map[net.Conn]int
+	states                                map[net.Conn]http.ConnState
+	requestsByConn                        map[int]int
+	handshakes                            map[net.Conn]bool
+	nextConn                              int
+	accepted, closed                      atomic.Int64
+	tlsComplete                           atomic.Int64
+	shutdown                              func()
+	metrics                               *engine.DNSMetrics
+	traceAcquired, traceReused, traceIdle atomic.Uint64
+	answer                                func(http.ResponseWriter, *http.Request, *dns.Msg)
+	badTLS, badAuth                       atomic.Bool
 }
 
 type dnsPerfConnKey struct{}
@@ -199,6 +202,15 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	f.metrics = new(engine.DNSMetrics)
 	ctx = engine.WithDNSMetrics(ctx, f.metrics)
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		f.traceAcquired.Add(1)
+		if info.Reused {
+			f.traceReused.Add(1)
+		}
+		if info.WasIdle {
+			f.traceIdle.Add(1)
+		}
+	}})
 	ended := make(chan error, 1)
 	go func() { ended <- engine.Run(ctx, wire) }()
 	var once sync.Once
@@ -250,6 +262,25 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 		time.Sleep(5 * time.Millisecond)
 	}
 	return f
+}
+
+func (f *dnsPerfFixture) checkMetrics(t *testing.T, exchanges uint64) {
+	t.Helper()
+	snapshot := f.metrics.Snapshot()
+	if snapshot.UpstreamExchange.Total != exchanges {
+		t.Errorf("metrics upstream_exchange=%d want=%d", snapshot.UpstreamExchange.Total, exchanges)
+	}
+	if snapshot.Connections.Acquisitions != f.traceAcquired.Load() || snapshot.Connections.Reused != f.traceReused.Load() || snapshot.Connections.WasIdle != f.traceIdle.Load() {
+		t.Errorf("caller trace composition differs: metrics=%+v independent=%d/%d/%d", snapshot.Connections, f.traceAcquired.Load(), f.traceReused.Load(), f.traceIdle.Load())
+	}
+	if snapshot.CacheHit != "NOT_OBSERVED" || snapshot.Coalesced != "NOT_OBSERVED" || snapshot.Hijacked != "NOT_OBSERVED" {
+		t.Fatal("unavailable layer fabricated")
+	}
+	b, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("DNS_METRICS_V1 %s", b)
 }
 
 func dnsPerfKey(q *dns.Msg) string {
@@ -366,9 +397,14 @@ func TestDNSPerformanceCache(t *testing.T) {
 		t.Errorf("different-name upstream=%d", n)
 	}
 	f.shutdown()
-	if got := f.metrics.Snapshot().UpstreamExchange.Total; got != 3 {
+	snapshot := f.metrics.Snapshot()
+	if got := snapshot.UpstreamExchange.Total; got != 3 {
 		t.Errorf("runtime upstream_exchange=%d want=3 (not caller count 21)", got)
 	}
+	if snapshot.UpstreamExchange.QTypes[dnsmetrics.A] != 2 || snapshot.UpstreamExchange.QTypes[dnsmetrics.AAAA] != 1 || snapshot.UpstreamExchange.Outcomes[dnsmetrics.NoError] != 3 {
+		t.Errorf("cache metric categories=%+v", snapshot)
+	}
+	f.checkMetrics(t, 3)
 	t.Logf("DNS_PERF_CACHE caller_count=21 expected_upstream=3 samples_us=%v", samples)
 }
 
@@ -442,6 +478,8 @@ func TestDNSPerformanceConcurrentCoalescing(t *testing.T) {
 		t.Errorf("coalescing upstream=%d want=1 held=%d callers=%d", n, heldCount, callers)
 	}
 	joined.Wait()
+	f.shutdown()
+	f.checkMetrics(t, 1)
 	t.Logf("DNS_PERF_COALESCING callbacks=%d upstream_while_held=%d samples_us=%v", len(ids), heldCount, samples)
 }
 
@@ -460,6 +498,11 @@ func TestDNSPerformanceConnectionReuse(t *testing.T) {
 	f.mu.Unlock()
 	if f.accepted.Load() != 1 || f.tlsComplete.Load() != 1 || connCount != 1 || h2 != 20 {
 		t.Errorf("DoH reuse tls=%d connections=%d h2_requests=%d want=1/1/20", f.accepted.Load(), connCount, h2)
+	}
+	f.checkMetrics(t, 20)
+	cstats := f.metrics.Snapshot().Connections
+	if cstats.Acquisitions != 20 || cstats.New != 1 || cstats.Reused != 19 {
+		t.Errorf("real h2 connection metrics=%+v want acquisitions20/new1/reused19", cstats)
 	}
 	// HTTP/2 idle closure is performed on the actual server-side connection, not
 	// an HTTP/1-only CloseIdleConnections approximation.
@@ -493,6 +536,8 @@ func TestDNSPerformanceConnectionReuse(t *testing.T) {
 	if f.count(q) != 1 || f.accepted.Load() != 2 || f.tlsComplete.Load() != 2 {
 		t.Errorf("same-engine reconnect upstream=%d tls=%d want=1/2", f.count(q), f.accepted.Load())
 	}
+	f.shutdown()
+	f.checkMetrics(t, 21)
 	t.Logf("DNS_PERF_REUSE cache_misses=20 h2_requests=%d original_tls_connections=%d reconnect_tls=%d samples_us=%v", h2, connCount, f.accepted.Load(), samples)
 }
 
@@ -565,6 +610,12 @@ func TestDNSPerformanceHTTPRecovery(t *testing.T) {
 	failing.Store(false)
 	// Same question and same running engine: a failure must not poison the cache.
 	dnsPerfRun(t, f, f.query("recover", dns.TypeA), false)
+	f.shutdown()
+	f.checkMetrics(t, 2)
+	snapshot := f.metrics.Snapshot()
+	if snapshot.HTTPStatus != "NOT_OBSERVED" || snapshot.UpstreamExchange.Outcomes[dnsmetrics.OtherError] != 1 || snapshot.UpstreamExchange.Outcomes[dnsmetrics.HTTP503] != 0 || snapshot.UpstreamExchange.Outcomes[dnsmetrics.NoError] != 1 {
+		t.Errorf("503 must remain unclassifiable typed OtherError: %+v", snapshot)
+	}
 	if f.count(q) != 2 {
 		t.Errorf("same-engine recovery upstream=%d want=2", f.count(q))
 	}
