@@ -73,8 +73,8 @@ func TestDNSMetricsTypedOutcomes(t *testing.T) {
 		want dnsmetrics.QType
 	}{{dns.TypeA, dnsmetrics.A}, {dns.TypeAAAA, dnsmetrics.AAAA}} {
 		q := new(dns.Msg).SetQuestion("private.invalid.", tt.wire)
-		before := q.Copy()
-		if dnsMetricQType(q) != tt.want || !reflect.DeepEqual(q, before) {
+		before := q.String()
+		if dnsMetricQType(q) != tt.want || q.String() != before {
 			t.Fatal("question changed")
 		}
 	}
@@ -203,7 +203,7 @@ func (d dnsMetricFailDialer) ListenPacket(context.Context, M.Socksaddr) (net.Pac
 
 func TestDNSMetricsAsyncErrorIdentity(t *testing.T) {
 	original := errors.New("synthetic private dial error")
-	raw := transport.NewHTTPSRaw(sdns.NewTransportAdapter(C.DNSTypeHTTPS, "fixture", nil), logger.NOP(), dnsMetricFailDialer{original}, &url.URL{Scheme: "https", Host: "fixture.invalid"}, nil, M.ParseSocksaddr("127.0.0.1:443"), nil)
+	raw := transport.NewHTTPSRaw(sdns.NewTransportAdapter(C.DNSTypeHTTPS, "fixture", nil), logger.NOP(), dnsMetricFailDialer{original}, &url.URL{Scheme: "https", Host: "fixture.invalid"}, http.Header{}, M.ParseSocksaddr("127.0.0.1:443"), nil)
 	defer raw.Reset()
 	m := new(DNSMetrics)
 	w, err := wrapHTTPS(raw, m)
@@ -211,7 +211,7 @@ func TestDNSMetricsAsyncErrorIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := new(dns.Msg).SetQuestion("private.invalid.", dns.TypeAAAA)
-	before := q.Copy()
+	before := q.String()
 	var calls atomic.Int32
 	done := make(chan struct{})
 	w.ExchangeAsync(context.Background(), q, func(response *dns.Msg, err error) {
@@ -229,7 +229,7 @@ func TestDNSMetricsAsyncErrorIdentity(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("async not joined")
 	}
-	if calls.Load() != 1 || !reflect.DeepEqual(q, before) || m.Snapshot().UpstreamExchange.Total != 1 || m.Snapshot().UpstreamExchange.QTypes[dnsmetrics.AAAA] != 1 {
+	if calls.Load() != 1 || q.String() != before || m.Snapshot().UpstreamExchange.Total != 1 || m.Snapshot().UpstreamExchange.QTypes[dnsmetrics.AAAA] != 1 {
 		t.Fatal("async doubled or mutated")
 	}
 	response, err := w.Exchange(context.Background(), q)
@@ -284,7 +284,7 @@ func TestDNSMetricsRealHTTPSAsync(t *testing.T) {
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { callerTrace.Add(1) }})
 	for _, typ := range []uint16{dns.TypeA, dns.TypeAAAA} {
 		q := new(dns.Msg).SetQuestion("private.invalid.", typ)
-		before := q.Copy()
+		before := q.String()
 		done := make(chan struct{})
 		raw.ExchangeAsync(ctx, q, func(response *dns.Msg, err error) {
 			defer close(done)
@@ -297,7 +297,7 @@ func TestDNSMetricsRealHTTPSAsync(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatal("real async join")
 		}
-		if !reflect.DeepEqual(q, before) {
+		if q.String() != before {
 			t.Fatal("query mutated")
 		}
 	}
