@@ -417,6 +417,20 @@ class InstallerTests(unittest.TestCase):
                                env={"HOME": str(self.home)}, tty=lambda: io.BytesIO())
         self.assertEqual(starts, [BINARY], "successful binary installation must start the new WebUI")
 
+    def test_cli_override_flows_through_run_to_webui(self):
+        self.processes = []
+        real_run = b.run
+        def isolated_run(args):
+            return real_run(args, self.transport, self.runner, system="Darwin", machine="arm64",
+                            euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
+        with mock.patch.object(b, "run", side_effect=isolated_run), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(b.main(["--version", TAG, "--webui-listen=192.168.5.2"]), 0)
+        self.webui_factory.assert_called_once_with(self.app / "anytls-macos", {"HOME": str(self.home)}, listen="192.168.5.2")
+        self.webui_factory.return_value.preflight.assert_called_once()
+        self.webui_factory.return_value.restart.assert_called_once()
+        self.assertIn("192.168.5.2:18089", stdout.getvalue())
+        self.assertNotIn("Explicit existing --listen addresses are preserved", stdout.getvalue())
+
     def test_complete_run_retains_binary_package_and_license(self):
         self.processes = []
         args = types.SimpleNamespace(version=TAG, check_download=False)
@@ -446,7 +460,7 @@ class InstallerTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("0.0.0.0:18089", output)
         self.assertIn("http://<real-host-or-IP>:18089/", output)
-        self.assertIn("Explicit existing --listen", output)
+        self.assertIn("old --listen arguments are not inherited", output)
         self.assertIn("HTTP is unencrypted", output)
         self.assertIn("trusted networks", output)
         self.assertIn("VPN was NOT stopped, reloaded or restarted", output)
@@ -991,6 +1005,63 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn("完成", output.getvalue())
 
 
+class ListenCLITests(unittest.TestCase):
+    def test_default_is_unset_until_install_policy(self):
+        with mock.patch.object(b, "run", return_value={}) as run:
+            self.assertEqual(b.main([]), 0)
+        self.assertIsNone(run.call_args.args[0].webui_listen)
+
+    def test_current_override_reaches_run(self):
+        for host in ("0.0.0.0", "127.0.0.1", "192.168.5.2"):
+            for argv in (["--webui-listen", host], ["--webui-listen=" + host]):
+                with self.subTest(argv=argv), mock.patch.object(b, "run", return_value={}) as run:
+                    self.assertEqual(b.main(argv), 0)
+                    self.assertEqual(run.call_args.args[0].webui_listen, host)
+
+    def test_invalid_override_rejected_before_run(self):
+        hosts = ("", "localhost", "::1", "::ffff:127.0.0.1", "127.1", "127.000.0.1",
+                 "192.168.5.256", "127.0.0.1:18089", " 127.0.0.1", "127.0.0.1\n")
+        for host in hosts:
+            with self.subTest(host=host), mock.patch.object(b, "run") as run, \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                b.main(["--webui-listen=" + host])
+            self.assertEqual(raised.exception.code, 2)
+            run.assert_not_called()
+
+    def test_missing_override_rejected_before_run(self):
+        with mock.patch.object(b, "run") as run, contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as raised:
+            b.main(["--webui-listen"])
+        self.assertEqual(raised.exception.code, 2)
+        run.assert_not_called()
+
+    def test_check_download_rejects_override_before_run(self):
+        with mock.patch.object(b, "run") as run, contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as raised:
+            b.main(["--check-download", "--webui-listen=0.0.0.0"])
+        self.assertEqual(raised.exception.code, 2)
+        run.assert_not_called()
+
+    def test_update_only_rejects_override_before_run(self):
+        argv = ["--update-only", "--version", TAG, "--app-dir", "/owned/app",
+                "--target", "/owned/app/anytls-macos", "--update-arch", "arm64",
+                "--webui-listen=0.0.0.0"]
+        with mock.patch.object(b, "run") as run, contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(b.main(argv), 44)
+        self.assertEqual(stderr.getvalue().strip(), "UPDATE_VALIDATION_FAILED")
+        run.assert_not_called()
+
+    def test_help_explains_current_policy_and_risk(self):
+        with mock.patch.object(b, "run") as run, contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                self.assertRaises(SystemExit) as raised:
+            b.main(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        help_text = " ".join(stdout.getvalue().split())
+        for text in ("--webui-listen", "0.0.0.0", "old", "IPv4", "HTTP", "unencrypted"):
+            self.assertIn(text, help_text)
+        run.assert_not_called()
+
+
 class WebUITests(unittest.TestCase):
     """Real lifecycle code with OS process/HTTP boundaries simulated."""
     def setUp(self):
@@ -1048,7 +1119,6 @@ class WebUITests(unittest.TestCase):
             self.ui.preflight()
             self.ui.restart()
         self.assertEqual(self.ui.listen, "0.0.0.0")
-        self.assertFalse(self.ui.listen_explicit)
         self.assertEqual(self.popen.call_args.args[0],
                          [str(self.target), "webui", "--port", "18089", "--listen", "0.0.0.0"])
         opener.open.assert_called_once_with("http://127.0.0.1:18089/", timeout=1)
@@ -1070,17 +1140,68 @@ class WebUITests(unittest.TestCase):
                     self.ui.preflight()
                     self.ui.restart()
                 self.assertEqual(self.ui.listen, "0.0.0.0")
-                self.assertFalse(self.ui.listen_explicit)
                 self.assertEqual(self.popen.call_args.args[0],
                                  [str(self.target), "webui", "--port", "18089", "--listen", "0.0.0.0"])
                 opener.open.assert_called_once_with("http://127.0.0.1:18089/", timeout=1)
                 self.kill.assert_called_once_with(42, b.signal.SIGTERM)
                 child.terminate.assert_not_called()
 
-    def test_explicit_loopback_remains_loopback_across_restart(self):
+    def test_old_explicit_loopback_migrates_to_install_default(self):
+        old = (*self.identity[:2], self.identity[2] + " --port 18089 --listen 127.0.0.1")
+        child, opener, _ = self.start_fixture()
+        with mock.patch.object(self.ui, "listeners", side_effect=[{42}, {42}, set(), {77}, {77}]), \
+                mock.patch.object(self.ui, "identity", side_effect=[old, old, old, None]):
+            self.ui.preflight()
+            self.ui.restart()
+        self.assertEqual(self.popen.call_args.args[0][-2:], ["--listen", "0.0.0.0"])
+        opener.open.assert_called_once_with("http://127.0.0.1:18089/", timeout=1)
+        self.kill.assert_called_once_with(42, b.signal.SIGTERM)
+
+    def test_all_old_explicit_addresses_use_current_default(self):
+        for host in ("0.0.0.0", "127.0.0.1", "192.168.5.2", "8.8.8.8"):
+            for suffix in (" --listen " + host, " --listen=" + host):
+                with self.subTest(suffix=suffix):
+                    ui = b.WebUI(self.target, {})
+                    old = (*self.identity[:2], self.identity[2] + suffix)
+                    with mock.patch.object(ui, "listeners", return_value={42}), \
+                            mock.patch.object(ui, "identity", return_value=old):
+                        ui.preflight()
+                    self.assertEqual(ui.old, (42, old))
+                    self.assertEqual(ui.listen, "0.0.0.0")
+        self.kill.assert_not_called()
+        self.popen.assert_not_called()
+
+    def test_current_override_wins_over_old_listen(self):
+        for host in ("127.0.0.1", "192.168.5.2", "0.0.0.0"):
+            with self.subTest(host=host):
+                self.ui = b.WebUI(self.target, {}, listen=host)
+                old = (*self.identity[:2], self.identity[2] + " --listen 8.8.8.8")
+                child, opener, _ = self.start_fixture()
+                self.kill.reset_mock()
+                with mock.patch.object(self.ui, "listeners", side_effect=[{42}, {42}, set(), {77}, {77}]), \
+                        mock.patch.object(self.ui, "identity", side_effect=[old, old, old, None]):
+                    self.ui.preflight()
+                    self.ui.restart()
+                self.assertEqual(self.ui.old, (42, old))
+                self.assertEqual(self.popen.call_args.args[0][-2:], ["--listen", host])
+                probe = "127.0.0.1" if host == "0.0.0.0" else host
+                opener.open.assert_called_once_with("http://" + probe + ":18089/", timeout=1)
+                self.kill.assert_called_once_with(42, b.signal.SIGTERM)
+                child.terminate.assert_not_called()
+
+    def test_invalid_current_listen_rejected_before_os_action(self):
+        for host in ("", "localhost", "::1", "::ffff:127.0.0.1", "127.1", "127.000.0.1",
+                     "192.168.5.256", "127.0.0.1:18089", " 127.0.0.1", "127.0.0.1\n"):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                b.WebUI(self.target, {}, listen=host)
+        self.run.assert_not_called()
+        self.popen.assert_not_called()
+        self.kill.assert_not_called()
+
+    def test_current_explicit_loopback_remains_loopback_across_restart(self):
         for suffix in (" --listen 127.0.0.1", " --listen=127.0.0.1"):
             with self.subTest(suffix=suffix):
-                self.ui = b.WebUI(self.target, {"HOME": str(self.app)})
+                self.ui = b.WebUI(self.target, {"HOME": str(self.app)}, listen="127.0.0.1")
                 old = (*self.identity[:2], self.identity[2] + suffix)
                 child, opener, _ = self.start_fixture()
                 self.kill.reset_mock()
@@ -1089,17 +1210,16 @@ class WebUITests(unittest.TestCase):
                     self.ui.preflight()
                     self.ui.restart()
                 self.assertEqual(self.ui.listen, "127.0.0.1")
-                self.assertTrue(self.ui.listen_explicit)
                 self.assertEqual(self.popen.call_args.args[0],
                                  [str(self.target), "webui", "--port", "18089", "--listen", "127.0.0.1"])
                 opener.open.assert_called_once_with("http://127.0.0.1:18089/", timeout=1)
                 self.kill.assert_called_once_with(42, b.signal.SIGTERM)
                 child.terminate.assert_not_called()
 
-    def test_wildcard_public_preflight_restart_preserves_bind_and_concrete_probe(self):
+    def test_current_wildcard_public_override_and_concrete_probe(self):
         for host in ("0.0.0.0", "8.8.8.8", "127.0.0.2"):
             with self.subTest(host=host):
-                self.ui = b.WebUI(self.target, {"HOME": str(self.app)})
+                self.ui = b.WebUI(self.target, {"HOME": str(self.app)}, listen=host)
                 identity = (*self.identity[:2], str(self.target) + " webui --listen=" + host)
                 child, opener, _ = self.start_fixture()
                 self.kill.reset_mock()
@@ -1128,7 +1248,8 @@ class WebUITests(unittest.TestCase):
         self.kill.assert_not_called()
         self.popen.assert_not_called()
 
-    def test_lan_preflight_restart_preserves_listen_and_readiness(self):
+    def test_current_lan_override_restart_and_readiness(self):
+        self.ui = b.WebUI(self.target, {"HOME": str(self.app)}, listen="192.168.5.2")
         identity = ("501", self.identity[1],
                     str(self.target) + " webui --port 18089 --listen 192.168.5.2")
         child, opener, _ = self.start_fixture()
@@ -1156,7 +1277,7 @@ class WebUITests(unittest.TestCase):
         self.popen.assert_not_called()
 
 
-    def test_listen_forms_preserved_through_preflight_restart(self):
+    def test_old_listen_forms_recognized_with_current_explicit_override(self):
         hosts = ("0.0.0.0", "8.8.8.8", "127.0.0.2", "127.0.0.1", "10.0.0.1", "10.255.255.254",
                  "172.16.0.1", "172.31.255.254", "192.168.5.2")
         for host in hosts:
@@ -1164,7 +1285,7 @@ class WebUITests(unittest.TestCase):
                            " --port=18089 --listen " + host,
                            " --listen=" + host + " --port 18089"):
                 with self.subTest(suffix=suffix):
-                    self.ui = b.WebUI(self.target, {"HOME": str(self.app)})
+                    self.ui = b.WebUI(self.target, {"HOME": str(self.app)}, listen=host)
                     identity = (*self.identity[:2], str(self.target) + " webui" + suffix)
                     child, opener, _ = self.start_fixture()
                     self.kill.reset_mock()
@@ -1247,7 +1368,7 @@ class WebUITests(unittest.TestCase):
         identity = (*self.identity[:2], str(self.target) + " webui --listen=192.168.5.2")
         for failure in ("exited", "timed out"):
             with self.subTest(failure=failure):
-                self.ui = b.WebUI(self.target, {})
+                self.ui = b.WebUI(self.target, {}, listen="192.168.5.2")
                 with mock.patch.object(self.ui, "listeners", return_value={42}), \
                         mock.patch.object(self.ui, "identity", return_value=identity):
                     self.ui.preflight()

@@ -359,14 +359,23 @@ def installation_lock(app):
         yield
 
 
+def canonical_ipv4(host):
+    """Require a canonical IPv4 literal; never normalize operator input."""
+    try:
+        address = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError:
+        raise ValueError("listen address must be a canonical IPv4 literal") from None
+    i.require(str(address) == host, "listen address must be a canonical IPv4 literal")
+    return host
+
+
 class WebUI:
     """Only manage the exact current user's default-port WebUI, never the VPN."""
-    def __init__(self, target, env):
+    def __init__(self, target, env, listen="0.0.0.0"):
         self.target, self.env = target, env
         self.timeout = 10
         self.old = None
-        self.listen = "0.0.0.0"
-        self.listen_explicit = False
+        self.listen = canonical_ipv4(listen)
 
     def listeners(self):
         result = subprocess.run(["/usr/sbin/lsof", "-t", "-nP", "-iTCP:18089", "-sTCP:LISTEN"],
@@ -411,14 +420,11 @@ class WebUI:
             options[key] = value if sep else next(tokens, "")
         if options.get("--port", "18089") != "18089":
             return None
-        # An omitted flag cannot establish the old binary's effective bind;
-        # use the new default, while preserving every explicit address.
+        # This parser establishes old process identity only, not the new bind.
         host = options.get("--listen", "0.0.0.0")
         try:
-            address = ipaddress.IPv4Address(host)
-            if str(address) != host:
-                return None
-        except ipaddress.AddressValueError:
+            canonical_ipv4(host)
+        except ValueError:
             return None
         # Match the console's canonical IPv4 syntax, including wildcard/public.
         return host, "--listen" in options
@@ -434,8 +440,8 @@ class WebUI:
             identity = self.identity(pid)
             listen = self.listen_args(identity)
             i.require(listen is not None, "port 18089 is occupied by an unknown process/arguments or UID; close it yourself")
+            # Old argv establishes process authority, not this install's policy.
             self.old = (pid, identity)
-            self.listen, self.listen_explicit = listen
         # Historical webui.pid is never read: a PID is not process authority.
 
     def restart(self):
@@ -497,7 +503,7 @@ class WebUI:
             raise
 
 
-def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tty=None):
+def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tty=None, webui_listen="0.0.0.0"):
     """Only called after every downloaded byte and manifest has been verified."""
     target, config, link = app / "anytls-macos", app / "config.yaml", home / ".local/bin/anytls"
     check_link(target, link)
@@ -505,7 +511,7 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
         regular(target)
     if config.exists() or config.is_symlink():
         regular(config)
-    webui = WebUI(target, env)
+    webui = WebUI(target, env, listen=webui_listen)
     webui.preflight()
     # A unique, regular candidate in appdir matches the helper's fixed path policy.
     fd, name = tempfile.mkstemp(prefix=".anytls-bin-candidate-", dir=app)
@@ -641,6 +647,8 @@ def update_only(args, transport=i.open_url, runner=subprocess.run, system=None, 
 def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=None, euid=None, home=None, tty=None, env=None):
     if getattr(args, "update_only", False):
         return update_only(args, transport, runner, system, machine, euid, env)
+    webui_listen = getattr(args, "webui_listen", None)
+    webui_listen = canonical_ipv4("0.0.0.0" if webui_listen is None else webui_listen)
     home = Path.home() if home is None else Path(home)
     app = home / ".anytls"
     requested_arch = getattr(args, "arch", None)
@@ -678,7 +686,7 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
             shutil.copyfile(work / name, kept / name)
             i.require(sha256(work / name) == sha256(kept / name), "retained release material mismatch")
         with installation_lock(app):
-            backup = install_verified(kept, tag, app, home, runner, env, tty)
+            backup = install_verified(kept, tag, app, home, runner, env, tty, webui_listen=webui_listen)
         print("Installed " + tag + " from verified prebuilt release; authenticated helper status succeeded.")
         if backup:
             print("Previous executable backup: " + str(backup))
@@ -686,7 +694,7 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         print("Run now by absolute path: " + shlex.quote(str(app / "anytls-macos")))
         print("The current terminal PATH is unchanged. Open a new terminal, or for bash/zsh run: export PATH=" +
               shlex.quote(str(home / ".local/bin")) + ':"$PATH"')
-        print("WebUI started using the new binary. Explicit existing --listen addresses are preserved; fresh installs and old commands without --listen now use 0.0.0.0:18089 (all IPv4 interfaces). Open http://<real-host-or-IP>:18089/ using a reachable host/IP, not 0.0.0.0. HTTP is unencrypted; restrict access to trusted networks or protect it with a firewall/SSH tunnel/TLS reverse proxy. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
+        print("WebUI started using the new binary at " + webui_listen + ":18089. This installation uses --webui-listen or the default 0.0.0.0 (all IPv4 interfaces); old --listen arguments are not inherited. Open http://<real-host-or-IP>:18089/ using a reachable host/IP, not 0.0.0.0. HTTP is unencrypted; restrict access to trusted networks or protect it with a firewall/SSH tunnel/TLS reverse proxy. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
         report["executed"] = True
         return report
 
@@ -702,6 +710,8 @@ def main(argv=None):
     parser.add_argument("--version", type=i.validate_version, help="stable tag; default is latest stable release")
     parser.add_argument("--check-download", action="store_true", help="verify only checksums and the selected binary package without executing code or changing configuration")
     parser.add_argument("--arch", choices=("arm64", "amd64"), help="only with --check-download: target archive architecture; default is native on macOS, arm64 elsewhere")
+    parser.add_argument("--webui-listen", type=canonical_ipv4, default=None,
+                        help="this installation's WebUI IPv4 address; default 0.0.0.0 (all interfaces), never inherited from old argv; HTTP is unencrypted; not valid with --check-download or --update-only")
     parser.add_argument("--update-only", action="store_true", help="replace only the existing app executable; no helper, configuration or restart")
     parser.add_argument("--app-dir")
     parser.add_argument("--target")
@@ -712,13 +722,15 @@ def main(argv=None):
         print("UPDATE_VALIDATION_FAILED", file=sys.stderr)
         return 44
     if args.update_only:
-        if not all((args.app_dir, args.target, args.update_arch, args.version)) or args.arch is not None or args.check_download:
+        if not all((args.app_dir, args.target, args.update_arch, args.version)) or args.arch is not None or args.check_download or args.webui_listen is not None:
             print("UPDATE_VALIDATION_FAILED", file=sys.stderr)
             return 44
     elif any((args.app_dir, args.target, args.update_arch)):
         parser.error("--app-dir, --target and --update-arch require --update-only")
     if args.arch is not None and not args.check_download:
         parser.error("--arch is allowed only with --check-download")
+    if args.check_download and args.webui_listen is not None:
+        parser.error("--webui-listen cannot be used with --check-download")
     try:
         result = run(args)
         if args.update_only:
