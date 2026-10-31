@@ -1,5 +1,13 @@
 # Changelog
 
+## v2026-10-31-02
+
+- 修复 SDK 单次 DoH 请求 deadline 触发共享连接池 Reset，连带中断同一 HTTP2 连接上独立健康请求的问题；保留请求取消／错误、显式 Reset 及 scope 关闭的连接回收。不增加重试、备用解析器或明文回退，不改 TLS、detour、TTL／缓存、超时配置和严格 DoH 规则。
+- 认证官方 SDK ZIP、补丁输入／输出及完整 ZIP 前后身份；wrapper、打包器及源码安装器要求真实成功收据和精确源码／结果身份，失败不发布安装目标。沿用原 helper 更新及安全边界，不将单元模拟说成真实安装。
+- 真实 AnyTLS／严格 TLS／HTTP2 的同字节用例保留旧版 RED／候选 GREEN／恢复缺陷 mutation RED。早期候选 `67b1ccd600d34febca5f6abe411bb134f8e43162` 的 Mac ARM64 全套624顶层／2210子PASS、7SKIP及vet/build/package是该提交证据，不冒认最终发行提交。冻结实现 `9fb36edab13e9b4d57d411564e69fda0658409b7` 仅后继修改两个sampler测试文件，另有14项受影响测试／23子PASS、1个WAN默认SKIP。
+- 单个已有选中节点受控WAN基线54次全部NOERROR：首次18次p50 67.987417ms／p95 286.877917ms，同engine重复36次p50 1.082833ms／p95 2.273791ms；不是新旧对照、普遍提速或真实WAN故障注入恢复。sampler仅私有输入显式门控的测试，不新增产品入口；`--dns-metrics`仍默认关闭。
+- 本说明为冻结前发布证据快照；最终发行完整native full／vet／build／package、独立发行审查、分支／main／标签CI及公开双架构附件核验均PENDING。双向IP blackhole／客户端写阻塞、Intel正式TUN未验；不修GoogleIPv6、既有status挂起／Shutdown错误。本次仅本地冻结，不创建tag、不推送、不发布或安装。见[版本说明](docs/releases/v2026-10-31-02.md)。
+
 ## v2026-10-31-01
 
 - 新增默认关闭的 `--dns-metrics`，仅嵌入核心前台run显式启用，完成后stderr尝试输出一次dns_metrics_final JSON聚合；不记录查询名／原始错误／凭据，不是WebUI实时面板，不自动给正式daemon启用。

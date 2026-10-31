@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-01** 增加默认关闭的 `--dns-metrics`：仅嵌入核心前台 `run` 显式启用，结束后向stderr尝试写一次固定结构JSON聚合，不是WebUI实时监控，不自动给正式daemon启用。只观测上游完成及连接取得；hijacked／cache_hit／coalesced／http_status为NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。SDK确定性拨号失败实测开启同步增加469ns／352B／9alloc，异步496ns／416B／10alloc，不是WAN耗时或提速；helper零分配不代表runtime零分配。缓存、合并、复用与恢复是已有基线，不作为新成果。最终发行完整native／vet／build／package仍PENDING，CI与公开附件另验；不宣称GoogleIPv6、status挂起或Shutdown错误已修复。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；发布不安装或切换目标机。见[版本说明](docs/releases/v2026-10-31-01.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-02** 修复共享 DoH 连接池的超时隔离：单个请求到期不再触发全池 Reset、连带中断同连接上的独立健康请求；显式 Reset 与 scope 关闭仍回收连接。真实 AnyTLS／严格 TLS／HTTP2 同测试旧版 RED、候选 GREEN、恢复缺陷 mutation RED；不增加重试／备用解析器，不调整 TLS、detour、TTL、缓存或超时配置。继承默认关闭的 `--dns-metrics`，不新增普通产品 WAN 采样入口。已留存早期候选的 Mac ARM64 完整验收及冻结实现的受影响测试、单节点54次成功 WAN 基线；不是最终发行提交全套通过或新旧 WAN 提速证明。**最终发行提交完整 native／vet／build／package、独立发行审查、CI与公开附件仍 PENDING**；不宣称 GoogleIPv6、status挂起或Shutdown错误已修复。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；本次仅冻结发行metadata，未发布、安装或切换目标机。见[版本说明](docs/releases/v2026-10-31-02.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
