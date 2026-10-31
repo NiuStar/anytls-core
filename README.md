@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-03（发布前证据快照，后续验收另存收据）** 将安装器、手动 WebUI 与新建 WebUI LaunchAgent 的默认监听统一为 `0.0.0.0:18089`，SOCKS／HTTP 代理默认 `0.0.0.0:11080`；显式 `--listen 127.0.0.1`／`--local-listen 127.0.0.1` 仍有效。已有显式 argv 不自动迁移，特权助手 Unix socket 不变。HTTP 明文不加密凭据／会话，代理入站无认证，须用防火墙及可信传输限制访问。实现 `9e8df0f5579672d3b311d5e06b61047f27f27b6a` 已有 Mac ARM64 完整643顶层／2248子PASS、7顶层SKIP、0FAIL及vet/build/package、同测试旧4RED／新4GREEN、真实WebUI默认／回环socket与登录／Origin／CSRF／logout证据；这些是显示版本仍为31-02的实现证据，**不是最终31-03发行身份验收**。真实代理socket、安装器class原生启动、托管LaunchAgent实际runtime尚未运行。最终31-03完整native／vet／build／package、独立发行审查、分支／main／标签CI与公开附件仍PENDING。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；本次不创建标签、不推送、不发布、不安装或切换目标机。见[版本说明](docs/releases/v2026-10-31-03.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-04（后继发布前证据快照）** 修正安装／重装监听策略：默认 `0.0.0.0:18089`，不继承旧进程监听，仅本次显式 `--webui-listen` 覆盖。后继实现 `46f6823560e20fbf431642842915a1242e671784` 相对原功能实现只移植三个经审查测试夹具文件，生产代码不变。Python195项为194PASS／1SKIP；定向原生5顶层／42子PASS不替代原完整641顶层PASS／2FAIL、2246子PASS／2FAIL。已有安装器class两case保留；历史生产HOLD保留，用户确认手动配置与VPN重启不构成Clash主体归因。最终完整native／vet／build／package、独立发行审查、公开CI与附件均PENDING，后续另存身份绑定收据。HTTP明文与无认证mixed代理须由防火墙和可信传输限制；已有托管argv不自动迁移。后台托管／网页更新自动重启保持，普通update不替换root助手或重载VPN。见[版本说明](docs/releases/v2026-10-31-04.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 

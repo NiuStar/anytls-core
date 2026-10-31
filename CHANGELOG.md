@@ -1,5 +1,12 @@
 # Changelog
 
+## v2026-10-31-04（后继发布前证据快照）
+
+- 安装／重装默认全网卡，不再继承旧WebUI监听；仅本次显式覆盖有效，进程身份与认证边界保持。
+- 后继46f6823相对功能c6fe3b3只移植三个经独立审查的Go测试夹具文件，其余文件mode／blob完全相同；不是所有Go文件与公开基线相同。
+- Python195项194PASS／1SKIP，安装器class实际两case证据保留；定向5顶层／42子PASS不抹去原完整641顶层PASS／2FAIL、2246子PASS／2FAIL。独立审查仅源码和定向证据，不是发行批准。
+- 历史生产HOLD保留；用户已确认手动配置及VPN重启，Clash主体不推断。最终完整native／vet／build／package、独立发行审查、CI与公开附件PENDING；发布不等于部署。相对后继仅四项metadata变化，后续另存绑定收据。见[版本说明](docs/releases/v2026-10-31-04.md)。
+
 ## v2026-10-31-03（发布前证据快照）
 
 - 安装器、手动WebUI、新建WebUI LaunchAgent默认 `0.0.0.0:18089`；SOCKS／HTTP代理默认 `0.0.0.0:11080`。显式 `--listen 127.0.0.1`／`--local-listen 127.0.0.1` 保留；已有显式argv不自动迁移，helper Unix socket不变。
