@@ -283,14 +283,15 @@ func (l *dnsBHListener) first(t *testing.T) *dnsBHConn {
 
 type dnsBHConn struct {
 	net.Conn
-	mu        sync.Mutex
-	resume    chan struct{}
-	blocked   chan int
-	done      chan struct{}
-	once      sync.Once
-	forwarded atomic.Int64
-	closes    atomic.Int64
-	readEOF   atomic.Int64
+	mu         sync.Mutex
+	resume     chan struct{}
+	blocked    chan int
+	done       chan struct{}
+	once       sync.Once
+	forwarded  atomic.Int64
+	closes     atomic.Int64
+	readEOF    atomic.Int64
+	blockedTLS atomic.Int64
 }
 
 func (c *dnsBHConn) Read(b []byte) (int, error) {
@@ -323,6 +324,11 @@ func (c *dnsBHConn) Write(b []byte) (int, error) {
 	resume, blocked := c.resume, c.blocked
 	c.mu.Unlock()
 	if resume != nil {
+		// Content type 23 is an encrypted TLS application-data record. Preserve
+		// only the count, never record payload bytes or authentication material.
+		if len(b) >= 5 && b[0] == 23 && b[1] == 3 {
+			c.blockedTLS.Add(1)
+		}
 		select {
 		case blocked <- len(b):
 		default:
@@ -476,7 +482,7 @@ func TestDNSBlackholeNoFINRecovery(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("TLS record never blocked")
 	}
-	if n < 5 || c.closes.Load() != 0 || c.readEOF.Load() != 0 || c.forwarded.Load() != before {
+	if n < 5 || c.blockedTLS.Load() == 0 || c.closes.Load() != 0 || c.readEOF.Load() != 0 || c.forwarded.Load() != before {
 		t.Error("not an open no-FIN TLS delivery gate")
 	}
 	r := dnsRecoveryReceive(t, done)
@@ -500,6 +506,11 @@ func TestDNSBlackholeNoFINRecovery(t *testing.T) {
 	dnsRecoveryAfter(t, f.dnsPerfFixture)
 	f.shutdown()
 	f.checkMetrics(t, 5)
+	for _, q := range []*dns.Msg{f.query("warm", dns.TypeA), f.query("x-blackhole", dns.TypeA), f.query("b-healthy", dns.TypeAAAA), f.query("recovered-1", dns.TypeA), f.query("recovered-28", dns.TypeAAAA)} {
+		if f.count(q) != 1 {
+			t.Errorf("missing request or hidden retry: %s count=%d", dnsPerfKey(q), f.count(q))
+		}
+	}
 	if f.metrics.Snapshot().UpstreamExchange.Outcomes[dnsmetrics.Timeout] != 1 {
 		t.Error("missing real SDK timeout")
 	}
@@ -615,7 +626,8 @@ func TestDNSBlackholeActiveCancelIsolation(t *testing.T) {
 	at := time.Now()
 	cancel()
 	ar := dnsRecoveryReceive(t, ad)
-	if !errors.Is(ar.err, context.Canceled) || time.Since(at) > 2*time.Second {
+	cancelElapsed := time.Since(at)
+	if !errors.Is(ar.err, context.Canceled) || cancelElapsed > 2*time.Second {
 		t.Errorf("explicit cancel not returned promptly: %v", ar.err)
 	}
 	dnsBHWait(t, aEnd, "explicitly canceled handler")
@@ -633,7 +645,15 @@ func TestDNSBlackholeActiveCancelIsolation(t *testing.T) {
 	if f.accepted.Load() != 1 {
 		t.Error("explicit cancellation destroyed shared TLS connection")
 	}
+	for _, q := range []*dns.Msg{f.query("warm", dns.TypeA), f.query("a-cancel", dns.TypeA), f.query("b-healthy", dns.TypeAAAA), f.query("recovered", dns.TypeA)} {
+		if f.count(q) != 1 {
+			t.Errorf("missing raw request or retry: %s count=%d", dnsPerfKey(q), f.count(q))
+		}
+	}
 	raw.Reset()
+	// Also prove the independently running engine remained usable.
+	dnsRecoveryAfter(t, f.dnsPerfFixture)
 	f.shutdown()
-	t.Logf("DNS_CANCEL_ISOLATION fault=APP_RESPONSE_STALL active_context_cancel=true shared_conn=%d cancel_us=%d b_success=%t same_connection_recovery=true engine_root_canceled=false", a.conn, time.Since(at).Microseconds(), br.err == nil)
+	f.checkMetrics(t, 2)
+	t.Logf("DNS_CANCEL_ISOLATION fault=APP_RESPONSE_STALL active_context_cancel=true shared_conn=%d cancel_us=%d b_success=%t same_connection_recovery=true engine_root_canceled=false", a.conn, cancelElapsed.Microseconds(), br.err == nil)
 }
