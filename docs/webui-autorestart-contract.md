@@ -6,7 +6,7 @@
 
 ## 最小产品合同
 
-- 新增显式一次性控制台托管CLI，采用gui/当前UID LaunchAgent，普通用户，无sudo。默认loopback；原LAN监听地址和端口通过显式参数保留，禁止悄悄改变入口。旧手动进程占端口则报冲突，不自动kill任何PID。
+- 新增显式一次性控制台托管CLI，采用gui/当前UID LaunchAgent，普通用户，无sudo。历史合同默认loopback，当前监听候选改为默认0.0.0.0（仅新建或省略参数；已有显式绑定不自动迁移）；原LAN监听地址和端口通过显式参数保留，禁止悄悄改变入口。旧手动进程占端口则报冲突，不自动kill任何PID。
 - LaunchAgent固定程序argv/路径/label，KeepAlive和ThrottleInterval；命令只控制WebUI。注册前检查路径/文件owner/权限/symlink/foreign任务，原配置/选择/密码保持。
 - 网页更新保留已有子进程wait、独立版本读回与actionMu；安装失败不退出，readback不确定不退出。成功后重新确认此进程确属预期launchd托管任务，才能返回restartScheduled=true并安全结束旧server；仅env/flag不得证明托管。
 - 回复先序列化/flush，server停止接收新变更并graceful drain；不得在handler内os.Exit，不自行并行启动第二个Webserver。不以flush成功证明浏览器已收到。

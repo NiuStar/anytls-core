@@ -365,7 +365,7 @@ class WebUI:
         self.target, self.env = target, env
         self.timeout = 10
         self.old = None
-        self.listen = "127.0.0.1"
+        self.listen = "0.0.0.0"
         self.listen_explicit = False
 
     def listeners(self):
@@ -411,7 +411,9 @@ class WebUI:
             options[key] = value if sep else next(tokens, "")
         if options.get("--port", "18089") != "18089":
             return None
-        host = options.get("--listen", "127.0.0.1")
+        # An omitted flag cannot establish the old binary's effective bind;
+        # use the new default, while preserving every explicit address.
+        host = options.get("--listen", "0.0.0.0")
         try:
             address = ipaddress.IPv4Address(host)
             if str(address) != host:
@@ -464,9 +466,7 @@ class WebUI:
     def start(self):
         child = None
         try:
-            args = [str(self.target), "webui", "--port", "18089"]
-            if self.listen_explicit or self.listen != "127.0.0.1":
-                args += ["--listen", self.listen]
+            args = [str(self.target), "webui", "--port", "18089", "--listen", self.listen]
             with private_append(self.target.parent / "webui.log") as log:
                 child = subprocess.Popen(args,
                                          stdin=subprocess.DEVNULL, stdout=log, stderr=log,
@@ -686,7 +686,7 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         print("Run now by absolute path: " + shlex.quote(str(app / "anytls-macos")))
         print("The current terminal PATH is unchanged. Open a new terminal, or for bash/zsh run: export PATH=" +
               shlex.quote(str(home / ".local/bin")) + ':"$PATH"')
-        print("WebUI started using the new binary; existing listen address preserved (fresh installs: http://127.0.0.1:18089/). VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
+        print("WebUI started using the new binary. Explicit existing --listen addresses are preserved; fresh installs and old commands without --listen now use 0.0.0.0:18089 (all IPv4 interfaces). Open http://<real-host-or-IP>:18089/ using a reachable host/IP, not 0.0.0.0. HTTP is unencrypted; restrict access to trusted networks or protect it with a firewall/SSH tunnel/TLS reverse proxy. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
         report["executed"] = True
         return report
 

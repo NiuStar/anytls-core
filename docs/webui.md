@@ -1,4 +1,4 @@
-# 本机 WebUI
+# WebUI
 
 v2026-10-21-02 本机管理界面。源码版本与验证范围见 [版本说明](releases/v2026-10-21-02.md)。
 
@@ -10,7 +10,7 @@ anytls webui
 # 退出 WebUI：在启动它的终端按 Ctrl-C，不会因此停止 VPN。
 ```
 
-可用 `anytls webui --port 18090` 更改端口；只允许 IPv4 loopback，不提供公网监听配置。不要以 root/sudo 启动 WebUI。密码是本工具随机生成的专用凭据，并非 macOS 登录密码。保存位置为程序同目录 `webui.password`（0600），不要上传此文件；`anytls password reset` 轮换密码，旧登录会话失效。HTTP 不加密，仅适用于本机边界；不抵御恶意同 UID 进程。
+可用 `anytls webui --port 18090` 更改端口；默认监听 `0.0.0.0`；其他设备使用 `http://主机实际IP:18089`。显式 `--listen 127.0.0.1` 可仅限本机；也可指定本机已分配的规范 IPv4。不要以 root/sudo 启动 WebUI。密码是本工具随机生成的专用凭据，并非 macOS 登录密码。保存位置为程序同目录 `webui.password`（0600），不要上传此文件；`anytls password reset` 轮换密码，旧登录会话失效。HTTP 不加密，网络访问会明文传输密码和会话；请通过防火墙限制来源或提供可信传输保护。不抵御恶意同 UID 进程。
 
 ## 操作
 

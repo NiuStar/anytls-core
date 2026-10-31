@@ -7,11 +7,11 @@
 先取得包含本功能的可执行文件。旧 WebUI 的旧内存代码不能因为磁盘升级就获得自动重启能力。保留配置、选择、密码以及更新器已有备份；通过原终端 Ctrl-C 或已核实的原 WebUI PID 停止旧控制台，**不要执行 VPN stop，也不要使用 pkill**。确认地址空闲后，以普通登录用户运行：
 
 ```sh
-/path/to/anytls webui install-agent --listen 127.0.0.1 --port 18089
-/path/to/anytls webui agent-status --listen 127.0.0.1 --port 18089
+/path/to/anytls webui install-agent --listen 0.0.0.0 --port 18089
+/path/to/anytls webui agent-status --listen 0.0.0.0 --port 18089
 ```
 
-LAN/全 IPv4 绑定使用原来的字面 IPv4 和端口，例如 `--listen 192.168.1.20 --port 18089` 或 `--listen 0.0.0.0`；不会迁移旧监听或悄悄退回 loopback。HTTP 无 TLS，网络访问仍会明文传输凭据。动态 LAN 地址失效时应显式停用后重新选择地址。
+默认新建托管入口绑定全 IPv4 `0.0.0.0`；仅本机请显式指定 `--listen 127.0.0.1`。已有托管 argv 不自动迁移。LAN/全 IPv4 绑定使用原来的字面 IPv4 和端口，例如 `--listen 192.168.1.20 --port 18089` 或 `--listen 0.0.0.0`；不会迁移旧监听或悄悄退回 loopback。HTTP 无 TLS，网络访问仍会明文传输凭据。动态 LAN 地址失效时应显式停用后重新选择地址。
 
 安装仅使用 `gui/<当前UID>`，需要该用户已有 GUI 登录域；不使用 sudo、LaunchDaemon 或 system 域。程序路径解析符号链接后固定，配置是其同目录 `config.yaml`。label 是 UID、程序绝对路径、配置绝对路径的 SHA-256 前缀，因此不同隔离目录不会共享任务。
 

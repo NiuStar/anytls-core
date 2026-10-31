@@ -59,15 +59,17 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 建议先“导出当前配置”或“保存当前为方案”备份；此入口沿用原子配置保存，不自动创建导入备份。保存后运行中的 VPN 会自动应用，可能短暂断网；未运行时仅保存，不启动。保存与生效结果分别显示。原始配置草稿会保留，但保存版本失效，须先复制草稿，再重新读取合并。仅普通显式块状 rules 列表且末尾有唯一 MATCH 可安全局部插入；流式列表／规则别名／合并等会提示使用原始编辑器，不静默重写原 YAML。选择、订阅、其他规则、注释及未知字段保持原字节。完整接口合同见 [API](web_assets/API.md#single-rule-add-contract)。
 
-### WebUI IPv4 监听（v2026-10-25-02）
+### WebUI 与代理 IPv4 默认监听（候选，尚未发布）
 
-默认仍只监听 `127.0.0.1`。需要所有 IPv4 网卡访问时，普通用户运行：
+安装器、手动 WebUI 和新建 WebUI LaunchAgent 默认监听 `0.0.0.0:18089`。普通用户可直接运行 `anytls webui`；以下命令显式写出默认值：
 
 ```sh
 anytls webui --listen 0.0.0.0 --port 18089
 ```
 
-浏览器使用 `http://服务器IP或主机名:18089`，不是 `0.0.0.0`；无需逐台配置网卡地址或 Host 白名单。也可显式绑定本机已分配的规范 IPv4（含公网地址）。监听参数不接受 DNS、IPv6、前导零或附带端口。默认回环与 root 禁止不变；登录、同请求 Host 的精确 Origin、CSRF 与无 CORS 保留。非回环显示 `network-http`，HTTP 不加密凭据与会话，网络访问控制和传输保护由部署环境管理。已有程序须安装本版并以所需监听参数启动才具有该能力；发布不自动部署或重启。安装器保留已有绑定，切换到通配监听前须退出旧 WebUI，避免端口冲突。
+浏览器使用 `http://服务器IP或主机名:18089`，不是 `0.0.0.0`；无需逐台配置网卡地址或 Host 白名单。也可显式绑定本机已分配的规范 IPv4（含公网地址）。监听参数不接受 DNS、IPv6、前导零或附带端口。默认全 IPv4 监听；显式 `--listen 127.0.0.1` 可限制本机，root 禁止不变；登录、同请求 Host 的精确 Origin、CSRF 与无 CORS 保留。非回环显示 `network-http`，HTTP 不加密凭据与会话，网络访问控制和传输保护由部署环境管理。已有程序须安装本版并以所需监听参数启动才具有该能力；发布不自动部署或重启。安装器保留已有显式绑定（包括显式 `127.0.0.1`）；旧进程未指定地址时，新版使用 `0.0.0.0`。已有 LaunchAgent 的显式 argv 不会自动迁移，旧进程也不会仅因源码变更而改变监听。
+
+SOCKS／HTTP 代理模式默认监听 `0.0.0.0:11080`；使用 `--local-listen 127.0.0.1` 可限制为本机。代理入口没有入站认证，不应直接暴露到不可信网络。请通过防火墙限制访问。TUN 及特权助手 Unix socket 不属于 TCP 监听，不改为网络服务。
 
 ## 功能
 
@@ -79,7 +81,7 @@ anytls webui --listen 0.0.0.0 --port 18089
 
 - `anytls start / stop / status`：launchd 管理系统 TUN，本机 sudo 授权。
 - `anytls config`：终端策略组与节点选择，方向键、回车／空格确认；运行时可保存，`anytls reload` 受控重连后生效。
-- `anytls webui`：普通用户启动本机管理页 `http://127.0.0.1:18089`，账户 `admin`；`anytls password` 查看应用密码，`anytls password reset` 轮换并撤销旧会话。
+- `anytls webui`：普通用户启动全 IPv4 网卡管理页（本机可访问 `http://127.0.0.1:18089`，其他设备使用主机实际地址），账户 `admin`；`anytls password` 查看应用密码，`anytls password reset` 轮换并撤销旧会话。
 - `anytls update --check` / `anytls update`：从 `v2026-10-22-06` 起检查／安装官方预编译更新，无需本机 Go，保留配置与程序备份；不自动重启 VPN 或 WebUI。失败按阶段给出受控原因，网页区分内存与磁盘版本并保留待重启状态。见 [更新说明](docs/install-update.md)。
 - AnyTLS TCP／UDP、Chrome uTLS、gVisor mixed 网络栈。
 - 显式 select 策略组、有序分流、SHA-256 固定本地 JSON 规则集。
