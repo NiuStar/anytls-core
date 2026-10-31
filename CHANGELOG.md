@@ -1,12 +1,12 @@
 # Changelog
 
-## v2026-10-31-03（仅本地冻结，禁止发布）
+## v2026-10-31-03（发布前证据快照）
 
 - 安装器、手动WebUI、新建WebUI LaunchAgent默认 `0.0.0.0:18089`；SOCKS／HTTP代理默认 `0.0.0.0:11080`。显式 `--listen 127.0.0.1`／`--local-listen 127.0.0.1` 保留；已有显式argv不自动迁移，helper Unix socket不变。
 - HTTP明文不加密凭据／会话；代理入站没有认证，必须用防火墙及可信传输限制暴露。不改变登录、Host／Origin／CSRF、TLS、TUN、DNS或路由边界。
 - 实现 `9e8df0f5579672d3b311d5e06b61047f27f27b6a` 已有Mac ARM64完整643顶层／2248子PASS、7顶层SKIP、0FAIL及vet/build/package；Python183项为182PASS／1SKIP。同字节旧4RED／新4GREEN与真实WebUI默认／显式回环socket、登录／Origin／CSRF／logout通过，生产保持。原生候选显示版本31-02，不冒认最终31-03身份。
 - 真实代理socket、安装器class原生启动、托管LaunchAgent实际runtime为NOT_RUN；最终31-03完整native／vet／build／package、独立发行审查、分支／main／标签CI及公开附件均PENDING。本说明为不可追改的发布前快照，后继验收另存收据；不以局部门冒充整体通过。
-- 相对实现仅改VERSION、README、CHANGELOG并新增本版说明，其余Git mode／blob／bytes继承；相对旧公开基线 `c6a2604caa3ee72d2a9c1e60ab851774a7072b91` 包含默认全网卡实现差异。继承旧DoH修复／默认关闭dns-metrics，不声称GoogleIPv6、status挂起或Shutdown错误已修复。本次不创建标签、不推送、不发布、不安装或启停生产。见[版本说明](docs/releases/v2026-10-31-03.md)。
+- 相对实现仅改VERSION、README、CHANGELOG并新增本版说明，其余Git mode／blob／bytes继承；相对旧公开基线 `c6a2604caa3ee72d2a9c1e60ab851774a7072b91` 包含默认全网卡实现差异。继承旧DoH修复／默认关闭dns-metrics，不声称GoogleIPv6、status挂起或Shutdown错误已修复。本说明冻结时尚未创建标签或发布；授权发布后，原生、CI和公开附件验收另存收据。不安装或启停生产。见[版本说明](docs/releases/v2026-10-31-03.md)。
 
 ## v2026-10-31-02
 
