@@ -94,6 +94,25 @@ class ValidationTests(unittest.TestCase):
 
     @mock.patch.object(wrapper.Path, "is_file", return_value=True)
     @mock.patch.object(wrapper.os, "access", return_value=True)
+    def test_json_output_boolean_preserved_and_scoped(self, _access, _is_file):
+        env = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="", GOWORK="off",
+                   GO_BIN="/validation-only/go-not-executed")
+        for flag in ("-json", "-json=true", "-json=false"):
+            args = ["test", flag, "-count=1", "./..."]
+            with self.subTest(flag=flag):
+                _, actual, output = wrapper.arguments(args, env)
+                self.assertEqual(actual, args)
+                self.assertIsNone(output)
+        for args in (["vet", "-json", "./..."],
+                     ["test", "-json=other", "./..."],
+                     ["test", "-json", "-json=false", "./..."],
+                     ["test", "./...", "-json"],
+                     ["test", "-json", "-overlay=other.json", "./..."]):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                wrapper.arguments(args, env)
+
+    @mock.patch.object(wrapper.Path, "is_file", return_value=True)
+    @mock.patch.object(wrapper.os, "access", return_value=True)
     def test_unsupported_invocations_rejected(self, _access, _is_file):
         env = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="", GOWORK="off",
                    GO_BIN="/validation-only/go-not-executed")

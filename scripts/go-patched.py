@@ -221,7 +221,7 @@ def arguments(argv, environ):
     booleans = {"-trimpath", "-race"}
     if args[0] == "test":
         values |= {"-run", "-skip", "-count", "-timeout", "-parallel"}
-        booleans |= {"-v", "-c", "-short", "-failfast"}
+        booleans |= {"-v", "-c", "-short", "-failfast", "-json"}
     output, packages, flags = None, 0, set()
     i = 1
     while i < len(args):
