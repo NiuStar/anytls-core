@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -189,32 +190,48 @@ func unifiedDNSAnswer(q *dns.Msg, poison bool) *dns.Msg {
 	}
 	return a
 }
+
+// Reserve both protocol namespaces before starting either DNS server. Only a
+// kernel-selected TCP number whose UDP number is busy may be discarded; this
+// is bounded fixture allocation, not a retry of engine startup or DNS traffic.
+func unifiedDNSListenPair(port int, listen func(string, string) (net.Listener, error), listenUDP func(string, *net.UDPAddr) (*net.UDPConn, error)) (net.Listener, *net.UDPConn, error) {
+	attempts := 1
+	if port == 0 {
+		attempts = 8
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		tcp, err := listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			return nil, nil, err
+		}
+		udpAddr, err := net.ResolveUDPAddr("udp", tcp.Addr().String())
+		if err != nil {
+			tcp.Close()
+			return nil, nil, err
+		}
+		udp, err := listenUDP("udp", udpAddr)
+		if err == nil {
+			return tcp, udp, nil
+		}
+		tcp.Close()
+		if port != 0 || !errors.Is(err, syscall.EADDRINUSE) || attempt+1 == attempts {
+			return nil, nil, err
+		}
+	}
+	panic("unreachable DNS fixture allocation")
+}
+
 func unifiedDNSStartTrap(t *testing.T, port int, optional bool) *unifiedDNSTrap {
 	t.Helper()
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	tcp, err := net.Listen("tcp", addr)
+	tcp, udp, err := unifiedDNSListenPair(port, net.Listen, net.ListenUDP)
 	if err != nil {
 		if optional {
-			t.Logf("LOCAL_DIRECT_53_TRAP_NOT_RUN tcp bind: %v; SOCKS destination :53 remains tested", err)
+			t.Logf("LOCAL_DIRECT_53_TRAP_NOT_RUN tcp/udp bind: %v; SOCKS destination :53 remains tested", err)
 			return nil
 		}
 		t.Fatal(err)
 	}
-	addr = tcp.Addr().String()
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		tcp.Close()
-		t.Fatal(err)
-	}
-	udp, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		tcp.Close()
-		if optional {
-			t.Logf("LOCAL_DIRECT_53_TRAP_NOT_RUN udp bind: %v", err)
-			return nil
-		}
-		t.Fatal(err)
-	}
+	addr := tcp.Addr().String()
 	p := &unifiedDNSTrap{udp: udp, tcp: tcp}
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) { p.count.Add(1); _ = w.WriteMsg(unifiedDNSAnswer(q, true)) })
 	us := &dns.Server{PacketConn: udp, Handler: handler}

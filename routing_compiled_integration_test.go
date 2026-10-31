@@ -110,6 +110,36 @@ func (s *routingRecordSink) snapshot() []cr.Observation {
 	return append([]cr.Observation(nil), s.rows...)
 }
 
+// Store the engine result once; completion is broadcast to readiness and cleanup.
+func routingCompiledStart(run func() error) (<-chan struct{}, *error) {
+	var engineErr error
+	done := make(chan struct{})
+	go func() { engineErr = run(); close(done) }()
+	return done, &engineErr
+}
+
+func TestRoutingCompiledStartupErrorJoin(t *testing.T) {
+	want := errors.New("controlled engine startup failure")
+	done, engineErr := routingCompiledStart(func() error { return want })
+	// Readiness observes failure, then cleanup must independently observe it.
+	select {
+	case <-done:
+		if !errors.Is(*engineErr, want) {
+			t.Fatalf("startup error lost: %v", *engineErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("controlled startup did not complete")
+	}
+	select {
+	case <-done:
+		if !errors.Is(*engineErr, want) {
+			t.Fatalf("cleanup lost primary error: %v", *engineErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("engine cleanup timeout after readiness consumed startup error")
+	}
+}
+
 func routingCompiledGate(t *testing.T, records bool) {
 	cases := []struct {
 		name, rules, host, want string
@@ -226,12 +256,37 @@ func routingCompiledGate(t *testing.T, records bool) {
 					t.Error("fixture cleanup timeout")
 				}
 			})
+			var dnsQueries atomic.Int64
+			var srv *httptest.Server
+			if strings.HasPrefix(tc.name, "geoip_") {
+				srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					dnsQueries.Add(1)
+					wire, _ := io.ReadAll(r.Body)
+					var q dns.Msg
+					if q.Unpack(wire) != nil {
+						w.WriteHeader(400)
+						return
+					}
+					var a dns.Msg
+					a.SetReply(&q)
+					for _, question := range q.Question {
+						if question.Qtype == dns.TypeA {
+							a.Answer = append(a.Answer, &dns.A{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")})
+						}
+					}
+					wire, _ = a.Pack()
+					w.Header().Set("Content-Type", "application/dns-message")
+					_, _ = w.Write(wire)
+				}))
+				t.Cleanup(srv.Close)
+			}
+			// Reserve after all other local listeners; hold through JSON and digest.
 			spare, e := net.Listen("tcp", "127.0.0.1:0")
 			if e != nil {
 				t.Fatal(e)
 			}
 			mixedPort := spare.Addr().(*net.TCPAddr).Port
-			spare.Close()
+			t.Cleanup(func() { spare.Close() })
 			_, serverPort, _ := net.SplitHostPort(server.Addr().String())
 			yaml := fmt.Sprintf("nodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %s, password: synthetic-routing-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\n", serverPort, caPath)
 			if tc.set {
@@ -247,7 +302,7 @@ func routingCompiledGate(t *testing.T, records bool) {
 			}
 			cfgPath := filepath.Join(dir, "config.yaml")
 			runtimeWrite(t, cfgPath, []byte(yaml), 0600)
-			cfg, e := prepareRuntime(&runtimeOptions{Config: cfgPath, NodeName: "P", Mode: "proxy", LocalPort: mixedPort})
+			cfg, e := prepareRuntime(&runtimeOptions{Config: cfgPath, NodeName: "P", Mode: "proxy", LocalListen: "127.0.0.1", LocalPort: mixedPort})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -270,7 +325,7 @@ func routingCompiledGate(t *testing.T, records bool) {
 			sink := &routingRecordSink{}
 			var manifest *cr.Manifest
 			if records {
-				compiled, err := prepareRuntimeWithRecords(&runtimeOptions{Config: cfgPath, NodeName: "P", Mode: "proxy", LocalPort: mixedPort})
+				compiled, err := prepareRuntimeWithRecords(&runtimeOptions{Config: cfgPath, NodeName: "P", Mode: "proxy", LocalListen: "127.0.0.1", LocalPort: mixedPort})
 				if err != nil || compiled.Manifest == nil {
 					t.Fatalf("records compiler: %v", err)
 				}
@@ -279,7 +334,6 @@ func routingCompiledGate(t *testing.T, records bool) {
 				recordsInput = &engine.RecordsInput{Manifest: manifest, Sink: sink}
 			}
 			// Controlled test-only DoH and predicate substitution; no public dialing.
-			var dnsQueries atomic.Int64
 			if strings.HasPrefix(tc.name, "geoip_") {
 				var runtime map[string]any
 				if e = json.Unmarshal(b, &runtime); e != nil {
@@ -294,26 +348,6 @@ func routingCompiledGate(t *testing.T, records bool) {
 					}
 				}
 				if d, ok := runtime["dns"].(map[string]any); ok {
-					srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						dnsQueries.Add(1)
-						wire, _ := io.ReadAll(r.Body)
-						var q dns.Msg
-						if q.Unpack(wire) != nil {
-							w.WriteHeader(400)
-							return
-						}
-						var a dns.Msg
-						a.SetReply(&q)
-						for _, question := range q.Question {
-							if question.Qtype == dns.TypeA {
-								a.Answer = append(a.Answer, &dns.A{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1")})
-							}
-						}
-						wire, _ = a.Pack()
-						w.Header().Set("Content-Type", "application/dns-message")
-						_, _ = w.Write(wire)
-					}))
-					t.Cleanup(srv.Close)
 					host, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
 					pn, _ := strconv.Atoi(port)
 					certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
@@ -334,14 +368,17 @@ func routingCompiledGate(t *testing.T, records bool) {
 				}
 			}
 			runCtx, stop := context.WithTimeout(ctx, 8*time.Second)
-			ended := make(chan error, 1)
-			go func() { ended <- engine.RunWithRecords(runCtx, b, recordsInput) }()
+			t.Logf("MIXED_FIXTURE_HANDOFF reserved=%s listener=%T scope=owned-loopback", spare.Addr(), spare)
+			if err := spare.Close(); err != nil {
+				t.Fatal(err)
+			}
+			done, engineErr := routingCompiledStart(func() error { return engine.RunWithRecords(runCtx, b, recordsInput) })
 			t.Cleanup(func() {
 				stop()
 				select {
-				case e := <-ended:
-					if e != nil && !errors.Is(e, context.Canceled) {
-						t.Errorf("engine close: %v", e)
+				case <-done:
+					if *engineErr != nil && !errors.Is(*engineErr, context.Canceled) {
+						t.Errorf("engine close: %v", *engineErr)
 					}
 				case <-time.After(3 * time.Second):
 					t.Error("engine cleanup timeout")
@@ -356,8 +393,8 @@ func routingCompiledGate(t *testing.T, records bool) {
 					break
 				}
 				select {
-				case e := <-ended:
-					t.Fatalf("engine ended before mixed ready: %v", e)
+				case <-done:
+					t.Fatalf("engine ended before mixed ready: %v", *engineErr)
 				default:
 				}
 				time.Sleep(10 * time.Millisecond)
