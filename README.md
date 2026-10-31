@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-02** 修复共享 DoH 连接池的超时隔离：单个请求到期不再触发全池 Reset、连带中断同连接上的独立健康请求；显式 Reset 与 scope 关闭仍回收连接。真实 AnyTLS／严格 TLS／HTTP2 同测试旧版 RED、候选 GREEN、恢复缺陷 mutation RED；不增加重试／备用解析器，不调整 TLS、detour、TTL、缓存或超时配置。继承默认关闭的 `--dns-metrics`，不新增普通产品 WAN 采样入口。已留存早期候选的 Mac ARM64 完整验收及冻结实现的受影响测试、单节点54次成功 WAN 基线；不是最终发行提交全套通过或新旧 WAN 提速证明。**最终发行提交完整 native／vet／build／package、独立发行审查、CI与公开附件仍 PENDING**；不宣称 GoogleIPv6、status挂起或Shutdown错误已修复。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；本次仅冻结发行metadata，未发布、安装或切换目标机。见[版本说明](docs/releases/v2026-10-31-02.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-03（仅本地冻结发行 metadata，禁止发布）** 将安装器、手动 WebUI 与新建 WebUI LaunchAgent 的默认监听统一为 `0.0.0.0:18089`，SOCKS／HTTP 代理默认 `0.0.0.0:11080`；显式 `--listen 127.0.0.1`／`--local-listen 127.0.0.1` 仍有效。已有显式 argv 不自动迁移，特权助手 Unix socket 不变。HTTP 明文不加密凭据／会话，代理入站无认证，须用防火墙及可信传输限制访问。实现 `9e8df0f5579672d3b311d5e06b61047f27f27b6a` 已有 Mac ARM64 完整643顶层／2248子PASS、7顶层SKIP、0FAIL及vet/build/package、同测试旧4RED／新4GREEN、真实WebUI默认／回环socket与登录／Origin／CSRF／logout证据；这些是显示版本仍为31-02的实现证据，**不是最终31-03发行身份验收**。真实代理socket、安装器class原生启动、托管LaunchAgent实际runtime尚未运行。最终31-03完整native／vet／build／package、独立发行审查、分支／main／标签CI与公开附件仍PENDING。**后台托管和网页更新自动重启保持；首次须空闲退出旧控制台并一次启用 `webui install-agent`，普通nohup不自动迁移。安装期间禁止外部bootout/强杀，ExitTimeOut=0不保证外部卸载安全。** 普通update不替换root助手、不重载VPN；本次不创建标签、不推送、不发布、不安装或切换目标机。见[版本说明](docs/releases/v2026-10-31-03.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -59,7 +59,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 
 建议先“导出当前配置”或“保存当前为方案”备份；此入口沿用原子配置保存，不自动创建导入备份。保存后运行中的 VPN 会自动应用，可能短暂断网；未运行时仅保存，不启动。保存与生效结果分别显示。原始配置草稿会保留，但保存版本失效，须先复制草稿，再重新读取合并。仅普通显式块状 rules 列表且末尾有唯一 MATCH 可安全局部插入；流式列表／规则别名／合并等会提示使用原始编辑器，不静默重写原 YAML。选择、订阅、其他规则、注释及未知字段保持原字节。完整接口合同见 [API](web_assets/API.md#single-rule-add-contract)。
 
-### WebUI 与代理 IPv4 默认监听（候选，尚未发布）
+### WebUI 与代理 IPv4 默认监听（v2026-10-31-03 冻结候选，禁止发布）
 
 安装器、手动 WebUI 和新建 WebUI LaunchAgent 默认监听 `0.0.0.0:18089`。普通用户可直接运行 `anytls webui`；以下命令显式写出默认值：
 
@@ -158,7 +158,7 @@ anytls stop
 
 ## 本版验证与已知限制
 
-- 本版发行说明为冻结的发布前快照。既有协议基线Mac ARM64隔离7项顶层／4项子测试、运行时接入定向16项顶层及组件限定race8项的已留存结果，各自只绑定对应源码；最终发行完整native full／vet／build／package仍PENDING，独立审查、分支／main／标签CI与公开附件核验另列，不以局部门替代。
+- 本版发行说明为冻结的发布前快照：实现 `9e8df0f5579672d3b311d5e06b61047f27f27b6a` 的Mac ARM64完整643顶层／2248子PASS、7顶层SKIP、0FAIL及vet/build/package，与同测试旧4RED／新4GREEN、真实WebUI socket／认证链只绑定该实现（显示版本31-02）。真实代理socket、安装器class原生启动、托管LaunchAgent runtime未运行；最终31-03完整native／vet／build／package、独立审查、分支／main／标签CI及公开附件仍PENDING，后继收据不得倒填本冻结说明。
 - 默认关闭，只有嵌入核心前台 `run` 显式启用后在返回时尝试写一次stderr JSON；没有WebUI实时指标、持久化开关或自动给正式daemon启用。缓存命中／并发合并／hijacked／HTTP状态均NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。
 - 真实SDK确定性拨号失败benchmark中，开启观测增加同步469ns／352B／9alloc、异步496ns／416B／10alloc；不是WAN／TLS或端到端性能，helper零分配不代表runtime零分配。缓存、并发合并、连接复用与恢复是已有GREEN基线；本版不宣称DNS加速、GoogleIPv6或Intel现场已修复。原生局部门与CLI入口的边界见[版本说明](docs/releases/v2026-10-31-01.md)。
 - 既有 GEOIP 用户 URL 私有副本及记录回放观察属于上一版证据，不作为本版新规则入口的正式 root／TUN 验收；物理出口仍 UNKNOWN。
