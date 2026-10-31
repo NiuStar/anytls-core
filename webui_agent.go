@@ -227,7 +227,7 @@ type webAgentFlags struct {
 
 func newWebAgentFlags(action string) webAgentFlags {
 	fs := flag.NewFlagSet("webui "+action, flag.ContinueOnError)
-	return webAgentFlags{fs, fs.String("listen", "127.0.0.1", "existing WebUI listen IPv4"), fs.Int("port", 18089, "existing WebUI port")}
+	return webAgentFlags{fs, fs.String("listen", "0.0.0.0", "WebUI listen IPv4 (default all IPv4 interfaces; HTTP has no TLS)"), fs.Int("port", 18089, "existing WebUI port")}
 }
 func webAgentCommand(action string, args []string) error {
 	if runtime.GOOS != "darwin" {

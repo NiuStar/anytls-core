@@ -81,12 +81,12 @@ func webuiCommand(args []string) error {
 	fs := flag.NewFlagSet("webui", flag.ContinueOnError)
 	managed := fs.String("managed-agent", "", "internal LaunchAgent identity (not authorization)")
 	port := fs.Int("port", 18089, "HTTP port (1024-65535)")
-	listen := fs.String("listen", "127.0.0.1", "literal local IPv4 address or 0.0.0.0 for all IPv4 interfaces (HTTP has no TLS)")
+	listen := fs.String("listen", "0.0.0.0", "literal local IPv4 address or 0.0.0.0 for all IPv4 interfaces (HTTP has no TLS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || *port < 1024 || *port > 65535 {
-		return errors.New("usage: anytls webui [--listen 127.0.0.1] [--port 18089]; port must be 1024-65535")
+		return errors.New("usage: anytls webui [--listen 0.0.0.0] [--port 18089]; port must be 1024-65535")
 	}
 	if err := webValidateListen(*listen); err != nil {
 		return err
