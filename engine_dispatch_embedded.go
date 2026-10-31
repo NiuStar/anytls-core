@@ -53,6 +53,15 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 	}
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if command == "run" && dnsMetricsEnabled(ctx) {
+		metrics := new(engine.DNSMetrics)
+		ctx = engine.WithDNSMetrics(ctx, metrics)
+		defer func() {
+			if err := writeDNSMetricsFinal(os.Stderr, metrics.Snapshot()); err != nil {
+				fmt.Fprintln(os.Stderr, "dns metrics summary unavailable")
+			}
+		}()
+	}
 	dispatchSpan := st.FromContext(ctx).Begin("START", "CORE_DISPATCH", st.Fields{})
 	var input *engine.RecordsInput
 	if recordService && command == "run" {

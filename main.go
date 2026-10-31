@@ -178,6 +178,7 @@ func execute(args []string) error {
 	}
 	if len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
 		fmt.Println("Commands: config, start, stop, reload, status, webui, password [reset], update [--check], version, list, check, run; saved choices apply with reload")
+		fmt.Println("Usage: anytls-macos [flags] list|select|check|run; --dns-metrics: opt-in completed-run DNS summary to stderr (embedded_core run only)")
 		return nil
 	}
 	fs := flag.NewFlagSet("anytls-macos", flag.ContinueOnError)
@@ -191,6 +192,7 @@ func execute(args []string) error {
 	mode := fs.String("network", "proxy", "proxy (loopback SOCKS/HTTP) or tun (system VPN)")
 	localPort := fs.Int("local-port", 11080, "loopback SOCKS/HTTP listen port")
 	allowInsecure := fs.Bool("allow-insecure", false, "explicitly allow skip-cert-verify (MITM risk)")
+	dnsMetrics := fs.Bool("dns-metrics", false, "emit one completed-run DNS summary to stderr (embedded_core run only)")
 	recordService := fs.Bool("record-service", false, "internal authorized service recording marker")
 	startupOperation := fs.String("startup-operation", "", "internal auxiliary startup correlation")
 	startupEpoch := fs.String("startup-epoch", "", "internal auxiliary helper epoch")
@@ -201,6 +203,9 @@ func execute(args []string) error {
 		return errors.New("usage: anytls-macos [flags] list|select|check|run")
 	}
 	if err := validateCoreFlag(fs); err != nil {
+		return err
+	}
+	if err := validateDNSMetricsFlag(*dnsMetrics, fs.Arg(0), !externalCoreRequired()); err != nil {
 		return err
 	}
 	o := runtimeOptions{Command: fs.Arg(0), Config: *config, NodeName: *nodeName, Mode: *mode, Server: *server, SNI: *sni, CA: *ca, PasswordFile: *passwordFile, LocalPort: *localPort, AllowInsecure: *allowInsecure, RecordService: *recordService}
@@ -222,6 +227,9 @@ func execute(args []string) error {
 			r.Observe("START", "CORE_ENTER", "OK", st.Fields{})
 			startupLaunchReporter(reporter)
 		}
+	}
+	if *dnsMetrics {
+		ctx = withDNSMetricsEnabled(ctx)
 	}
 	compiled, err := prepareRuntimeWithRecordsContext(ctx, &o)
 	if err != nil || compiled.JSON == nil {
