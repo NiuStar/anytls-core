@@ -301,6 +301,8 @@ class InstallerTests(unittest.TestCase):
         exec(compile(wrapper, 'trusted-unit-wrapper', 'exec'), ns)
         receipt = dict(rc=0, ephemeral_cleanup='ok', root_inputs_unchanged=True,
                        original_doh_source_unchanged=True, wrapper_sha256=hashlib.sha256(wrapper).hexdigest(),
+                       argv=['build','-p','2','-tags',i.TAGS,'-trimpath','-o',str(output),'.'],
+                       go_version='go version go1.27.3 darwin/arm64',
                        output_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
                        target={'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0'},
                        doh_deadline_isolation=ns['doh_receipt'](*ns['doh_identity'](source)))
@@ -316,7 +318,7 @@ class InstallerTests(unittest.TestCase):
             for bad in (b'',good+good):
                 with self.assertRaisesRegex(ValueError,'unique certified END'):i.certified_build(bad,wrapper,root,output)
             r=json.loads(good.decode().split(' ',1)[1])
-            for field in ('doh_deadline_isolation','output_sha256','wrapper_sha256','target','original_doh_source_unchanged'):
+            for field in ('doh_deadline_isolation','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
                 bad=dict(r);bad.pop(field)
                 with self.assertRaisesRegex(ValueError,'identity|output'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
             output.write_bytes(b'tampered')
@@ -353,7 +355,13 @@ class InstallerTests(unittest.TestCase):
             if failure == "build":
                 raise i.subprocess.CalledProcessError(1, command)
             Path(command[command.index("-o") + 1]).write_bytes(b"BUILT FIXTURE NOT EXECUTED")
-            return self.certified_result(Path(kwargs['cwd']), Path(command[command.index('-o') + 1]), wrapper.read_bytes())
+            result = self.certified_result(Path(kwargs['cwd']), Path(command[command.index('-o') + 1]), wrapper.read_bytes())
+            if failure == 'receipt':result.stdout = b''
+            elif failure == 'doh':
+                r=json.loads(result.stdout.decode().split(' ',1)[1]);r.pop('doh_deadline_isolation')
+                result.stdout=('PATCHED_GO_END '+json.dumps(r)).encode()
+            elif failure == 'digest':Path(command[command.index('-o') + 1]).write_bytes(b'tampered output')
+            return result
         version = (b"legacy usage text" if failure == "wrong-version" else tag.encode())
         with mock.patch.object(i.platform, "system", return_value="Darwin"), mock.patch.object(i.platform, "machine", return_value="arm64"), mock.patch.object(i.os, "geteuid", return_value=1024), mock.patch.object(i.Path, "home", return_value=home), mock.patch.object(i, "find_go", return_value=Path("/UNIT/go")), mock.patch.object(i.subprocess, "run", side_effect=build), mock.patch.object(i.subprocess, "check_output", side_effect=i.subprocess.CalledProcessError(2, ["version"]) if failure == "no-version" else None, return_value=version), mock.patch("sys.stdout", new=io.StringIO()) as stdout:
             if failure:
@@ -384,7 +392,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_initial_and_update_failures_never_publish(self):
         for update in (False, True):
-            for failure in ("checksum", "build", "wrong-version", "no-version"):
+            for failure in ("checksum", "build", "wrong-version", "no-version", "receipt", "doh", "digest"):
                 with self.subTest(update=update, failure=failure), self.temp() as tmp:
                     home = Path(tmp); app = home / ".anytls"; app.mkdir()
                     (app / "anytls-macos").write_bytes(b"original executable")
