@@ -45,6 +45,7 @@ type dnsBHFixture struct {
 	gate     *dnsBHListener
 	ca       []byte
 	peerAddr string
+	callers  sync.WaitGroup
 }
 
 func dnsBHStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, *dns.Msg)) *dnsBHFixture {
@@ -60,7 +61,10 @@ func dnsBHStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, *d
 	f.baseline = f.trap.count.Load()
 	t.Log("LOCAL_DIRECT_53_TRAP_NOT_RUN: high-port calibrated observer only; no privileged bind attempted")
 	ca, cert := runtimeCertificate(t)
+	var handlers sync.WaitGroup
 	f.doh = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
 		if r.Method != "POST" || r.URL.Path != "/dns-query" || r.Header.Get("Content-Type") != "application/dns-message" {
 			http.Error(w, "invalid DoH request", 400)
 			return
@@ -210,6 +214,9 @@ func dnsBHStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, *d
 		if f.closed.Load() != f.accepted.Load() {
 			t.Errorf("owned DoH connections not closed after engine join: accepted=%d closed=%d", f.accepted.Load(), f.closed.Load())
 		}
+		handlersDone := make(chan struct{})
+		go func() { handlers.Wait(); close(handlersDone) }()
+		dnsBHWait(t, handlersDone, "all owned HTTP handlers")
 		if f.peer.denied.Load() != 0 || f.peer.streams.Load() == 0 || f.peer.payload.Load() == 0 {
 			t.Error("missing authenticated AnyTLS DoH payload or unexpected destination")
 		}
@@ -233,7 +240,14 @@ func dnsBHStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, *d
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return &dnsBHFixture{dnsPerfFixture: f, gate: gate, ca: ca, peerAddr: fmt.Sprintf("127.0.0.1:%d", peerPort)}
+	owned := &dnsBHFixture{dnsPerfFixture: f, gate: gate, ca: ca, peerAddr: fmt.Sprintf("127.0.0.1:%d", peerPort)}
+	t.Cleanup(func() {
+		f.shutdown()
+		joined := make(chan struct{})
+		go func() { owned.callers.Wait(); close(joined) }()
+		dnsBHWait(t, joined, "all owned callers")
+	})
+	return owned
 }
 
 // A write-only gate below crypto/tls stalls real encrypted server->client
@@ -392,13 +406,35 @@ func TestDNSBlackholeGateSelfTest(t *testing.T) {
 	t.Log("DNS_BLACKHOLE_GATE positive_forward=true blocked_ack=true pause_no_close=true pause_no_eof=true same_socket_restored=true")
 }
 
+func (f *dnsBHFixture) start(fn func() dnsRecoveryResult) <-chan dnsRecoveryResult {
+	out := make(chan dnsRecoveryResult, 1)
+	f.callers.Add(1)
+	go func() { defer f.callers.Done(); out <- fn() }()
+	return out
+}
+
 func TestDNSBlackholeNoFINRecovery(t *testing.T) {
 	entered := make(chan dnsRecoveryArrival, 1)
+	bEntered := make(chan dnsRecoveryArrival, 1)
+	bEnded := make(chan struct{})
+	releaseB := make(chan struct{})
+	var bOnce sync.Once
+	unblockB := func() { bOnce.Do(func() { close(releaseB) }) }
+	defer unblockB()
 	release := make(chan struct{})
 	ended := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	f := dnsBHStart(t, func(w http.ResponseWriter, r *http.Request, q *dns.Msg) {
+		if q.Question[0].Name[:1] == "b" {
+			defer close(bEnded)
+			bEntered <- dnsRecoveryArrival{r.Context().Value(dnsPerfConnKey{}).(int), r.ProtoMajor, time.Now()}
+			select {
+			case <-releaseB:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if q.Question[0].Name[:1] == "x" {
 			defer close(ended)
 			entered <- dnsRecoveryArrival{r.Context().Value(dnsPerfConnKey{}).(int), r.ProtoMajor, time.Now()}
@@ -416,9 +452,20 @@ func TestDNSBlackholeNoFINRecovery(t *testing.T) {
 	if c.forwarded.Load() == 0 {
 		t.Fatal("no actual TLS records forwarded")
 	}
-	done := make(chan dnsRecoveryResult, 1)
-	go func() { done <- dnsRecoveryExchange(f.dnsPerfFixture, f.query("x-blackhole", dns.TypeA)) }()
+	done := f.start(func() dnsRecoveryResult {
+		return dnsRecoveryExchange(f.dnsPerfFixture, f.query("x-blackhole", dns.TypeA))
+	})
 	event := dnsRecoveryArrive(t, entered)
+	// B enters independently before the connection-level delivery pause, with
+	// its own remaining default SDK budget after A expires.
+	time.Sleep(time.Second)
+	bDone := f.start(func() dnsRecoveryResult {
+		return dnsRecoveryExchange(f.dnsPerfFixture, f.query("b-healthy", dns.TypeAAAA))
+	})
+	bEvent := dnsRecoveryArrive(t, bEntered)
+	if event.conn != bEvent.conn || event.proto != 2 || bEvent.proto != 2 {
+		t.Error("blackhole streams did not share real h2 connection")
+	}
 	blocked := c.pause()
 	defer c.restore()
 	before := c.forwarded.Load()
@@ -440,15 +487,23 @@ func TestDNSBlackholeNoFINRecovery(t *testing.T) {
 	// A remote close here belongs to the timed-out client, never to fault injection.
 	closesAtDeadline := c.closes.Load()
 	eofAtDeadline := c.readEOF.Load()
+	remaining := 10*time.Second - time.Since(bEvent.at)
+	if remaining < 500*time.Millisecond {
+		t.Errorf("healthy B lacked independent budget: %s", remaining)
+	}
 	c.restore()
+	unblockB()
+	br := dnsRecoveryReceive(t, bDone)
+	dnsPerfCheck(t, br.q, br.a, br.err, false)
+	dnsBHWait(t, bEnded, "blackhole healthy B handler")
 	dnsBHWait(t, ended, "blackhole response handler")
 	dnsRecoveryAfter(t, f.dnsPerfFixture)
 	f.shutdown()
-	f.checkMetrics(t, 4)
+	f.checkMetrics(t, 5)
 	if f.metrics.Snapshot().UpstreamExchange.Outcomes[dnsmetrics.Timeout] != 1 {
 		t.Error("missing real SDK timeout")
 	}
-	t.Logf("DNS_BLACKHOLE fault=NO_FIN_ONEWAY_TLS_WRITE_GATE shared_conn=%d proto=%d blocked_tls_bytes=%d pre_pause_forwarded=%d a_us=%d deadline_peer_closes=%d deadline_peer_eof=%d same_engine_recovery=2 auto_retry=false", event.conn, event.proto, n, before, r.elapsed.Microseconds(), closesAtDeadline, eofAtDeadline)
+	t.Logf("DNS_BLACKHOLE fault=NO_FIN_ONEWAY_TLS_WRITE_GATE shared_conn=%d proto=%d blocked_tls_bytes=%d pre_pause_forwarded=%d a_us=%d b_budget_remaining_us=%d b_success=%t deadline_peer_closes=%d deadline_peer_eof=%d same_engine_recovery=2 auto_retry=false", event.conn, event.proto, n, before, r.elapsed.Microseconds(), remaining.Microseconds(), br.err == nil && br.a != nil && br.a.Rcode == dns.RcodeSuccess, closesAtDeadline, eofAtDeadline)
 }
 
 // This lower seam is deliberate: the mixed inbound's socket Close is not the
@@ -535,9 +590,12 @@ func TestDNSBlackholeActiveCancelIsolation(t *testing.T) {
 	run := func(ctx context.Context, q *dns.Msg) dnsRecoveryResult {
 		start := time.Now()
 		a, e := raw.Exchange(ctx, q)
-		if a != nil {
-			a.Id = q.Id
+		if a != nil && a.Id != 0 {
+			t.Errorf("raw SDK wire ID=%d want=0", a.Id)
 		}
+		// Check the raw SDK's actual normalized identity, not a repaired answer.
+		q = q.Copy()
+		q.Id = 0
 		return dnsRecoveryResult{q, a, time.Since(start), e}
 	}
 	// Raw SDK intentionally normalizes wire IDs to zero, unlike engine callback.
@@ -547,10 +605,9 @@ func TestDNSBlackholeActiveCancelIsolation(t *testing.T) {
 	dnsPerfCheck(t, warm.q, warm.a, warm.err, false)
 	ac, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ad, bd := make(chan dnsRecoveryResult, 1), make(chan dnsRecoveryResult, 1)
-	go func() { ad <- run(ac, f.query("a-cancel", dns.TypeA)) }()
+	ad := f.start(func() dnsRecoveryResult { return run(ac, f.query("a-cancel", dns.TypeA)) })
 	a := dnsRecoveryArrive(t, aIn)
-	go func() { bd <- run(ctx, f.query("b-healthy", dns.TypeAAAA)) }()
+	bd := f.start(func() dnsRecoveryResult { return run(ctx, f.query("b-healthy", dns.TypeAAAA)) })
 	b := dnsRecoveryArrive(t, bIn)
 	if a.conn != b.conn || a.proto != 2 || b.proto != 2 || f.accepted.Load() != 1 {
 		t.Error("not independent streams on same real h2 connection")
