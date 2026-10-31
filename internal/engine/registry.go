@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/adapter/service"
+	"github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/dns/transport"
 	"github.com/sagernet/sing-box/dns/transport/local"
@@ -50,7 +51,11 @@ func Context(ctx context.Context) context.Context {
 	direct.RegisterOutbound(outbounds)
 
 	dnsTransports := dns.NewTransportRegistry()
-	transport.RegisterHTTPS(dnsTransports)
+	if metrics, _ := ctx.Value(dnsMetricsContextKey{}).(*DNSMetrics); metrics != nil {
+		dns.RegisterTransport[option.RemoteHTTPSDNSServerOptions](dnsTransports, constant.DNSTypeHTTPS, newObservedHTTPS)
+	} else {
+		transport.RegisterHTTPS(dnsTransports)
+	}
 	// Upstream Start requires local fallback when the unchanged config has no DNS.
 	local.RegisterTransport(dnsTransports)
 
