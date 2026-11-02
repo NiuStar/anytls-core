@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/anytls/sing-anytls/session"
 	"github.com/sagernet/sing-box/adapter"
@@ -111,7 +112,17 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 			s.release(l)
 		}
 	}()
+	var candidateExpires time.Time
 	attempt := func(dest M.Socksaddr) (net.Conn, error) {
+		s.mu.Lock()
+		allowed := s.validLocked(p.receipt) && launchCtx.Err() == nil && (dest == destination || s.now().Before(candidateExpires))
+		if !allowed {
+			l.cancel()
+		}
+		s.mu.Unlock()
+		if !allowed {
+			return nil, context.Canceled
+		}
 		if err := launchCtx.Err(); err != nil {
 			return nil, err
 		}
@@ -125,7 +136,7 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 		if w, ok := c.(interface{ WaitConnect(context.Context) error }); ok {
 			err = w.WaitConnect(launchCtx)
 			// Unknown/old peers keep the original early stream; neither is family evidence.
-			if errors.Is(err, session.ErrConnectACKUnsupported) || (errors.Is(err, session.ErrConnectACKUnconfirmed) && launchCtx.Err() == nil) {
+			if dest == destination && (errors.Is(err, session.ErrConnectACKUnsupported) || (errors.Is(err, session.ErrConnectACKUnconfirmed) && launchCtx.Err() == nil)) {
 				err = nil
 			}
 		}
@@ -149,6 +160,7 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 				if allowed {
 					candidate := destination
 					candidate.Addr = ip
+					candidateExpires = expires
 					c, err = attempt(candidate)
 				}
 			}
