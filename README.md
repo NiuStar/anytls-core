@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-10-31-04（后继发布前证据快照）** 修正安装／重装监听策略：默认 `0.0.0.0:18089`，不继承旧进程监听，仅本次显式 `--webui-listen` 覆盖。后继实现 `46f6823560e20fbf431642842915a1242e671784` 相对原功能实现只移植三个经审查测试夹具文件，生产代码不变。Python195项为194PASS／1SKIP；定向原生5顶层／42子PASS不替代原完整641顶层PASS／2FAIL、2246子PASS／2FAIL。已有安装器class两case保留；历史生产HOLD保留，用户确认手动配置与VPN重启不构成Clash主体归因。最终完整native／vet／build／package、独立发行审查、公开CI与附件均PENDING，后续另存身份绑定收据。HTTP明文与无认证mixed代理须由防火墙和可信传输限制；已有托管argv不自动迁移。后台托管／网页更新自动重启保持，普通update不替换root助手或重载VPN。见[版本说明](docs/releases/v2026-10-31-04.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-11-02-01（发布前证据快照）** 新增默认启用的逐连接 IPv6→IPv4 安全换族：保留原 IPv6 尝试，仅在业务载荷发送前取得明确、可归因的 CONNECT 失败证据，且 IPv4 候选命中同一实际编译规则与同一具体出口时才允许备用连接；不需要修改 YAML、不全局屏蔽 AAAA。严格 DoH／TLS 与默认监听 `0.0.0.0:18089`／`0.0.0.0:11080` 保持。实现 `35bb6329902412cf54878c50b9baa312cbb8f71e` 已通过独立实现及限定原生证据审查：完整675顶层／2305子PASS、7顶层SKIP、0FAIL、8包及vet/build/package；这不是最终发行提交验收。最终发行原生、CI与公开附件结果另存身份绑定收据。EDNS、自定义TLS／动态selector等未支持路径保留UNKNOWN；用户实际Chrome商店、站点与正式TUN体验仍待验收，不宣称普遍WAN提速或所有IPv6故障已修复。普通update不替换root助手；经助手启动的VPN从助手自身程序暂存核心，启用新版须由用户在本机通过完整安装／系统授权更新配套助手，再自行显式重连，本次冻结不激活。见[版本说明](docs/releases/v2026-11-02-01.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -67,7 +67,7 @@ Release 同时提供对应应用源码、锁定依赖源码和许可证／NOTICE
 anytls webui --listen 0.0.0.0 --port 18089
 ```
 
-浏览器使用 `http://服务器IP或主机名:18089`，不是 `0.0.0.0`；无需逐台配置网卡地址或 Host 白名单。也可显式绑定本机已分配的规范 IPv4（含公网地址）。监听参数不接受 DNS、IPv6、前导零或附带端口。默认全 IPv4 监听；显式 `--listen 127.0.0.1` 可限制本机，root 禁止不变；登录、同请求 Host 的精确 Origin、CSRF 与无 CORS 保留。非回环显示 `network-http`，HTTP 不加密凭据与会话，网络访问控制和传输保护由部署环境管理。已有程序须安装本版并以所需监听参数启动才具有该能力；发布不自动部署或重启。候选安装器在安装／重装时统一使用 `0.0.0.0`，不再从旧进程推断配置；本次安装显式传入 `--webui-listen 127.0.0.1` 才保留为仅本机。此策略修正尚未发布。已有 LaunchAgent 的显式 argv 不会自动迁移，旧进程也不会仅因源码变更而改变监听。
+浏览器使用 `http://服务器IP或主机名:18089`，不是 `0.0.0.0`；无需逐台配置网卡地址或 Host 白名单。也可显式绑定本机已分配的规范 IPv4（含公网地址）。监听参数不接受 DNS、IPv6、前导零或附带端口。默认全 IPv4 监听；显式 `--listen 127.0.0.1` 可限制本机，root 禁止不变；登录、同请求 Host 的精确 Origin、CSRF 与无 CORS 保留。非回环显示 `network-http`，HTTP 不加密凭据与会话，网络访问控制和传输保护由部署环境管理。已有程序须安装支持该能力的版本并以所需监听参数启动；发布不自动部署或重启。本版继承v2026-10-31-04安装器策略：安装／重装统一使用 `0.0.0.0`，不再从旧进程推断配置；本次安装显式传入 `--webui-listen 127.0.0.1` 才限制为仅本机。已有 LaunchAgent 的显式 argv 不会自动迁移，旧进程也不会仅因源码变更而改变监听。
 
 SOCKS／HTTP 代理模式默认监听 `0.0.0.0:11080`；使用 `--local-listen 127.0.0.1` 可限制为本机。代理入口没有入站认证，不应直接暴露到不可信网络。请通过防火墙限制访问。TUN 及特权助手 Unix socket 不属于 TCP 监听，不改为网络服务。
 
@@ -158,8 +158,9 @@ anytls stop
 
 ## 本版验证与已知限制
 
-- 本版发行说明为冻结的发布前快照：实现 `9e8df0f5579672d3b311d5e06b61047f27f27b6a` 的Mac ARM64完整643顶层／2248子PASS、7顶层SKIP、0FAIL及vet/build/package，与同测试旧4RED／新4GREEN、真实WebUI socket／认证链只绑定该实现（显示版本31-02）。真实代理socket、安装器class原生启动、托管LaunchAgent runtime未运行；最终31-03完整native／vet／build／package、独立审查、分支／main／标签CI及公开附件仍PENDING，后继收据不得倒填本冻结说明。
-- 默认关闭，只有嵌入核心前台 `run` 显式启用后在返回时尝试写一次stderr JSON；没有WebUI实时指标、持久化开关或自动给正式daemon启用。缓存命中／并发合并／hijacked／HTTP状态均NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。
+- 本版说明为冻结的发布前证据快照：已审实现 `35bb6329902412cf54878c50b9baa312cbb8f71e` 的Mac ARM64完整675顶层／2305子PASS、7顶层SKIP、0FAIL、8包及vet/build/package通过；定向与限定race各38顶层／67子PASS。以上为继承并认证的实现证据，不是本次重跑或最终发行身份验收。最终发行完整native／vet／build／package、独立发行审查、分支／main／标签CI及公开双架构附件仍PENDING，后续另存绑定收据。
+- 默认逐连接换族保留IPv6优先尝试、同一实际编译规则与同一具体出口约束；证书／认证／取消／ACK未确认不触发换族，备用连接也须ACK成功后才能发送业务载荷。EDNS、自定义TLS、ECS／optimistic／rewrite、动态selector、应用自带DNS及其他未支持路径保持UNKNOWN，不全局禁用IPv6、不添加明文DNS回退。用户真实Chrome商店／站点／正式TUN体验仍待验，不宣称所有故障已修复或普遍WAN提速。
+- `--dns-metrics` 默认关闭，只有嵌入核心前台 `run` 显式启用后在返回时尝试写一次stderr JSON；没有WebUI实时指标、持久化开关或自动给正式daemon启用。缓存命中／并发合并／hijacked／HTTP状态均NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。
 - 真实SDK确定性拨号失败benchmark中，开启观测增加同步469ns／352B／9alloc、异步496ns／416B／10alloc；不是WAN／TLS或端到端性能，helper零分配不代表runtime零分配。缓存、并发合并、连接复用与恢复是已有GREEN基线；本版不宣称DNS加速、GoogleIPv6或Intel现场已修复。原生局部门与CLI入口的边界见[版本说明](docs/releases/v2026-10-31-01.md)。
 - 既有 GEOIP 用户 URL 私有副本及记录回放观察属于上一版证据，不作为本版新规则入口的正式 root／TUN 验收；物理出口仍 UNKNOWN。
 - 曾出现间歇 DNS／TLS 超时。有限重试不是连通性保证，持续失败仍停止并恢复网络。

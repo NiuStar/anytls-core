@@ -1,5 +1,13 @@
 # Changelog
 
+## v2026-11-02-01（发布前证据快照）
+
+- 默认逐连接IPv6→IPv4安全换族，无需修改YAML：保留原IPv6尝试，只在业务载荷前取得明确CONNECT失败证据，并确认IPv4候选命中同一实际编译规则与同一具体出口时才允许备用连接。不是全局禁IPv6／AAAA，也不擅换节点或分流。
+- 备用连接须ACK成功后才放行业务载荷；证书／认证／取消／ACK未确认不得触发换族。DNS来源绑定实际注册实例与客户端scope，覆盖Exchange、ExchangeAsync、Lookup的共享缓存写入守卫；GEOIP／RULE-SET使用冻结来源凭据，证据不足保持UNKNOWN。
+- 严格DoH／TLS、默认WebUI `0.0.0.0:18089`、mixed代理 `0.0.0.0:11080` 及本机权限边界不变。普通update不替换root助手；助手启动的VPN核心从助手自身程序暂存，用户欲启用新版须本机完整安装／系统授权更新助手后自行显式重连，发布不自动激活。
+- 已审实现35bb632的Mac ARM64完整675顶层／2305子PASS、7顶层SKIP、0FAIL、8包及vet/build/package，定向／限定race各38顶层／67子PASS，为认证继承的实现证据，不是最终发行提交验收或本次重跑。相对实现只改四个元数据路径，其余产品blob／mode／SHA256／bytes保持。
+- 最终发行native／独立审查／分支、main、标签CI／公开双架构六附件仍PENDING，后续另存绑定收据。EDNS、自定义TLS／动态selector／ECS／optimistic／rewrite及未支持路径保持UNKNOWN；用户Chrome商店／站点／正式TUN待自行验收，不宣称普遍WAN提速、所有IPv6故障或既有status／Shutdown问题已修复。见[版本说明](docs/releases/v2026-11-02-01.md)。
+
 ## v2026-10-31-04（后继发布前证据快照）
 
 - 安装／重装默认全网卡，不再继承旧WebUI监听；仅本次显式覆盖有效，进程身份与认证边界保持。
