@@ -139,7 +139,7 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 			c.SetDeadline(time.Now().Add(3 * time.Second))
 			dc := &dns.Conn{Conn: c}
 			question := new(dns.Msg)
-			question.SetQuestion("browser.test.", dns.TypeAAAA)
+			question.SetQuestion("g21.invalid.", dns.TypeAAAA)
 			if e = dc.WriteMsg(question); e != nil {
 				t.Fatal(e)
 			}
