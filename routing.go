@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +27,10 @@ func applyRoutingBytes(path string, b []byte, nodes []node, selected node, cfg m
 }
 
 func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg map[string]any, allowInsecure bool, manifest *cr.Manifest) error {
+	return applyRoutingCaptured(path, b, nodes, selected, cfg, allowInsecure, manifest, nil)
+}
+
+func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cfg map[string]any, allowInsecure bool, manifest *cr.Manifest, sources *[]fp.Source) error {
 	var doc struct {
 		Rules     []string               `yaml:"rules"`
 		Groups    []proxyGroup           `yaml:"proxy-groups"`
@@ -122,12 +127,15 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 				return fmt.Errorf("rules[%d]: missing audited rule-set %q", i, value)
 			}
 			if !loadedSets[value] {
-				set, err := loadRuleSet(path, value, spec)
+				set, captured, err := loadRuleSetCaptured(path, value, spec)
 				if err != nil {
 					return fmt.Errorf("rules[%d]: %w", i, err)
 				}
 				sets = append(sets, set)
 				loadedSets[value] = true
+				if sources != nil {
+					*sources = append(*sources, fp.Source{Tag: value, JSON: captured})
+				}
 				// loadRuleSet validated SHA against the same handle used for inline rules.
 				if manifest != nil {
 					sum := spec.SHA256

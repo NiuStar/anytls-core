@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
 )
 
 // runtimeOptions is the shared CLI compiler input. Menus return a nil config.
@@ -23,6 +24,10 @@ type runtimeOptions struct {
 // prepareRuntime preserves YAML selection/routing and the legacy secure flags.
 // It does not locate an engine, write runtime JSON, or start a process.
 func prepareRuntimeMap(o *runtimeOptions, manifest *cr.Manifest) (map[string]any, error) {
+	return prepareRuntimeMapCaptured(o, manifest, nil)
+}
+
+func prepareRuntimeMapCaptured(o *runtimeOptions, manifest *cr.Manifest, sources *[]fp.Source) (map[string]any, error) {
 	if o.Config == "" && o.Server == "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -118,7 +123,7 @@ func prepareRuntimeMap(o *runtimeOptions, manifest *cr.Manifest) (map[string]any
 		if err != nil {
 			return nil, err
 		}
-		if err := applyRoutingRecords(o.Config, configBytes, nodes, n, cfg, o.AllowInsecure, manifest); err != nil {
+		if err := applyRoutingCaptured(o.Config, configBytes, nodes, n, cfg, o.AllowInsecure, manifest, sources); err != nil {
 			return nil, err
 		}
 		if n.EgressIP != "" {

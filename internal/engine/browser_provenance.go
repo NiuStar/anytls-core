@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
+
 	"github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
 	R "github.com/sagernet/sing-box/route/rule"
@@ -95,7 +97,7 @@ func newBrowserProvenance() *browserProvenance {
 }
 func installBrowserProvenance(ctx context.Context, raw []byte) context.Context {
 	s := newBrowserProvenance()
-	s.static = browserStaticPolicy(raw)
+	s.static = browserCapturedPolicy(raw, fp.FromContext(ctx))
 	ctx = service.ContextWith[browserDNSObserver](ctx, s)
 	ctx = service.ContextWith[browserRouteGuard](ctx, s)
 	return service.ContextWith[browserDialGuard](ctx, s)
@@ -349,8 +351,8 @@ func browserBundle(old browserReceipt, six, four browserSet, now time.Time) bool
 // Whitelist freezes the supported policy surface before the real SDK compiles
 // it. Matching is then done on those actual compiled rules, not a second policy
 // model. Any effectful action, process lookup, rule-set/reload or unknown field
-// disables this seam for the run. GEOIP rule-set needs an immutable snapshot
-// adapter; until that exists it deliberately returns UNKNOWN.
+// disables this bare-JSON seam. browserCapturedPolicy separately admits exact
+// compiler-owned inline datasets and literal-only no-op resolve actions.
 func browserStaticPolicy(raw []byte) bool {
 	var root map[string]json.RawMessage
 	if json.Unmarshal(raw, &root) != nil {
@@ -426,12 +428,21 @@ func browserStaticPolicy(raw []byte) bool {
 func browserPureMatch(router adapter.Router, m adapter.InboundContext) (adapter.Rule, int, bool) {
 	// Value copy plus no slice/pointer match fields permitted by the whitelist.
 	// Reset stale v6 geo/cache information before matching the candidate literal.
+	if !m.Destination.Addr.IsValid() || m.Destination.IsDomain() {
+		return nil, -1, false
+	}
 	m.GeoIPCode = ""
 	m.DestinationAddresses = nil
 	m.DNSResponse = nil
 	m.NamedDNSResponses = nil
 	m.DestinationAddressMatchFromResponse = false
 	for i, r := range router.Rules() {
+		// Admission allows only the compiler's exact unconditional resolve action.
+		// SDK v1.14.3 actionResolve is a no-op for literal destinations, regardless
+		// of metadata.Domain. Never skip it for a domain destination.
+		if _, ok := r.Action().(*R.RuleActionResolve); ok {
+			continue
+		}
 		// Only exact generated prefix actions are whitelisted at decode time.
 		if _, ok := r.Action().(*R.RuleActionSniff); ok {
 			if m.Protocol == "" {

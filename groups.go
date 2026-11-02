@@ -216,8 +216,13 @@ func resolveGroupPath(name string, nodes []node, groups []proxyGroup) (string, [
 }
 
 func loadRuleSet(config, name string, spec fileRuleSet) (map[string]any, error) {
+	set, _, err := loadRuleSetCaptured(config, name, spec)
+	return set, err
+}
+
+func loadRuleSetCaptured(config, name string, spec fileRuleSet) (map[string]any, []byte, error) {
 	if spec.Path == "" || len(spec.SHA256) != 64 {
-		return nil, fmt.Errorf("rule-set %q needs path and sha256", name)
+		return nil, nil, fmt.Errorf("rule-set %q needs path and sha256", name)
 	}
 	p := spec.Path
 	if !filepath.IsAbs(p) {
@@ -225,9 +230,10 @@ func loadRuleSet(config, name string, spec fileRuleSet) (map[string]any, error) 
 	}
 	b, err := readSnapshotSource(p, snapshotRuleLimit, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return validateRuleSetBytes(name, spec, b)
+	set, err := validateRuleSetBytes(name, spec, b)
+	return set, b, err
 }
 
 func validateRuleSetBytes(name string, spec fileRuleSet, b []byte) (map[string]any, error) {

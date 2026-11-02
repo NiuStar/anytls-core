@@ -14,7 +14,7 @@ The production invocation is default-on; no YAML switch is added. The SDK accept
 
 Canonical compiler TUN prefixes (port53 hijack, sniff without overrides, protocol-DNS hijack), auto_detect_interface and default_domain_resolver no longer disable the whole guard. Pure matching skips sniff only when protocol is already known; it never reruns sniff/resolve. Simple immutable domain, CIDR, version, network and port rules retain their compiled identities; candidate REJECT denies launch. Domain observed in TLS sniff must agree with the trusted question.
 
-GEOIP/RULE-SET policies, selectors/urltest, arbitrary route options/effectful resolve, unknown sniff protocol, ECS/optimistic-cache/TTL rewriting and EDNS questions remain UNKNOWN. In particular an existing user configuration containing RULE-SET is NOT covered by this scoped implementation. A certified captured-manifest immutable dataset adapter is still required; this change is not complete all-config auto-family support.
+This branch prepares captured-manifest admission for the real compiler's immutable GEOIP/CN CIDRs and SHA-verified inline RULE-SET datasets, including the exact literal-only no-op generated resolve action. See [frozen ruleset candidate contract](browser-frozen-rulesets-candidate.md). Its new Go coverage is NOT_RUN and is not inherited native acceptance. Selectors/urltest, arbitrary route options/effectful resolve, mutable datasets, unknown sniff protocol, ECS/optimistic-cache/TTL rewriting and EDNS questions remain UNKNOWN; this is not complete all-config auto-family support.
 
 ## Real execution evidence
 

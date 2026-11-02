@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 
 	"github.com/NiuStar/anytls-core/internal/engine"
@@ -53,6 +54,7 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 	}
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = fp.WithSnapshot(ctx, compiled.familyPolicy)
 	if command == "run" && dnsMetricsEnabled(ctx) {
 		metrics := new(engine.DNSMetrics)
 		ctx = engine.WithDNSMetrics(ctx, metrics)

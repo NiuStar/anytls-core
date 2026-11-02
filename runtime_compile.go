@@ -8,12 +8,14 @@ import (
 	"strconv"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 )
 
 type compiledRuntime struct {
 	JSON           []byte
 	Manifest       *cr.Manifest
+	familyPolicy   *fp.Snapshot
 	startupContext context.Context
 }
 
@@ -40,7 +42,8 @@ func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (c
 		m.SelectionGeneration = m.Generation
 	}
 	mapSpan := r.Begin("START", "CORE_COMPILE_MAP", st.Fields{})
-	cfg, err := prepareRuntimeMap(o, m)
+	var sources []fp.Source
+	cfg, err := prepareRuntimeMapCaptured(o, m, &sources)
 	r.End(mapSpan, startupCode(err), st.Fields{})
 	if err != nil || cfg == nil {
 		return compiledRuntime{}, err
@@ -89,7 +92,7 @@ func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (c
 			}
 		}
 	}
-	return compiledRuntime{JSON: b, Manifest: m, startupContext: ctx}, nil
+	return compiledRuntime{JSON: b, Manifest: m, familyPolicy: fp.Capture(b, m, sources), startupContext: ctx}, nil
 }
 
 func addCapturedSource(m *cr.Manifest, kind cr.SourceKind, ordinal int, b []byte, present bool) {
