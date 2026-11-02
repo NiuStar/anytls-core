@@ -41,6 +41,7 @@ import (
 // records claim after these substitutions. This is NOT a privileged TUN test.
 type unifiedDNSPeer struct {
 	browser                                           atomic.Bool
+	noACK                                             atomic.Bool
 	healthy                                           atomic.Bool
 	v6, v4                                            atomic.Int64
 	target                                            string
@@ -68,6 +69,10 @@ func (p *unifiedDNSPeer) NewConnectionEx(_ context.Context, c net.Conn, _ M.Sock
 		if p.browser.Load() {
 			if d.Addr.Is6() {
 				p.v6.Add(1)
+				if p.noACK.Load() {
+					io.Copy(io.Discard, c)
+					return
+				}
 				if !p.healthy.Load() {
 					c.(*session.Stream).HandshakeFailure(fmt.Errorf("controlled remote IPv6 connect failure"))
 					return

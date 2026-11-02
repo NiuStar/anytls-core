@@ -9,17 +9,20 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/NiuStar/anytls-core/internal/engine"
 	"github.com/miekg/dns"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/protocol/socks"
@@ -36,8 +39,25 @@ func browserRoots(t *testing.T, ca []byte) *x509.CertPool {
 }
 func containsBrowserBody(b []byte) bool { return bytes.HasSuffix(b, []byte("browser-exact-body")) }
 func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
-	for _, reject := range []bool{false, true} {
-		t.Run(fmt.Sprint("reject=", reject), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, rules, four string
+		reject            bool
+	}{
+		{"basic", "", "127.0.0.1", false},
+		{"node-certificate", "", "127.0.0.1", true},
+		{"node-auth", "", "127.0.0.1", true},
+		{"no-ack", "", "127.0.0.1", true},
+		{"cidr-reject", " - IP-CIDR,127.0.0.0/8,REJECT\n", "127.0.0.1", true},
+		{"ruleset-first-route", " - RULE-SET,local,Q\n", "127.0.0.1", false},
+		{"ruleset-noresolve", " - RULE-SET,local,Q,no-resolve\n", "127.0.0.1", false},
+		{"ruleset-different-rule-same-Q", " - RULE-SET,local,Q,no-resolve\n", "127.0.0.1", true},
+		{"ruleset-reject-noresolve", " - RULE-SET,local,REJECT,no-resolve\n", "127.0.0.1", true},
+		{"geoip-resolve", " - GEOIP,CN,Q\n", "127.0.0.1", false},
+		{"geoip-noresolve", " - GEOIP,CN,Q,no-resolve\n", "127.0.0.1", false},
+		{"geoip-reject", " - GEOIP,CN,REJECT\n", "1.0.1.1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reject := tc.reject
 			ca, cert := runtimeCertificate(t)
 			var business, queries atomic.Int64
 			target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { business.Add(1); io.WriteString(w, "browser-exact-body") }))
@@ -56,7 +76,7 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 				for _, rr := range a.Answer {
 					switch x := rr.(type) {
 					case *dns.A:
-						x.A = net.ParseIP("127.0.0.1")
+						x.A = net.ParseIP(tc.four)
 					case *dns.AAAA:
 						x.AAAA = net.ParseIP("2001:db8::41")
 					}
@@ -71,14 +91,29 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 			p, pp := unifiedDNSStartPeer(t, doh.Listener.Addr().String(), cert)
 			q, qp := unifiedDNSStartPeer(t, target.Listener.Addr().String(), cert)
 			q.browser.Store(true)
+			if tc.name == "no-ack" {
+				q.noACK.Store(true)
+			}
 			dir := t.TempDir()
 			caPath := filepath.Join(dir, "ca.pem")
 			runtimeWrite(t, caPath, ca, 0600)
 			config := fmt.Sprintf("nodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\n - {name: Q, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nrules:\n", pp, caPath, qp, caPath)
-			if reject {
-				config += " - IP-CIDR,127.0.0.0/8,REJECT\n"
+			source := []byte(`{"version":3,"rules":[{"ip_cidr":["127.0.0.0/8","2001:db8::/32"]}]}`)
+			if tc.reject {
+				source = []byte(`{"version":3,"rules":[{"ip_cidr":["127.0.0.0/8"]}]}`)
 			}
+			runtimeWrite(t, filepath.Join(dir, "set.json"), source, 0600)
+			config = strings.Replace(config, "rules:\n", fmt.Sprintf("rule-sets:\n local: {path: set.json, sha256: %s, resolve-ip: true}\nrules:\n", shaHex(source)), 1)
+			config += tc.rules
 			config += " - MATCH,Q\n"
+			if tc.name == "node-certificate" {
+				pos := strings.Index(config, "name: Q")
+				config = config[:pos] + strings.Replace(config[pos:], "sni: g21.invalid", "sni: wrong.invalid", 1)
+			}
+			if tc.name == "node-auth" {
+				pos := strings.Index(config, "name: Q")
+				config = config[:pos] + strings.Replace(config[pos:], "password: synthetic-unified-only", "password: wrong-synthetic", 1)
+			}
 			path := filepath.Join(dir, "config.yaml")
 			runtimeWrite(t, path, []byte(config), 0600)
 			compiled, e := prepareRuntimeWithRecords(&runtimeOptions{Config: path, NodeName: "P", Mode: "tun", LocalPort: 11080})
@@ -107,9 +142,31 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 			l.Close()
 			cfg["inbounds"] = []any{map[string]any{"type": "mixed", "tag": "browser", "listen": "127.0.0.1", "listen_port": proxyPort}}
 			raw, _ := json.Marshal(cfg)
+			// Test-only endpoint/inbound substitutions are re-bound to the real compiler
+			// manifest and exact SHA-checked source; no caller-controlled admission bool.
+			manifest := *compiled.Manifest
+			manifest.RuntimeSHA256 = shaHex(raw)
+			manifest.ManifestID, e = cr.ManifestDigest(manifest, cr.ManifestBudget(&manifest))
+			if e != nil {
+				t.Fatal(e)
+			}
+			var sources []fp.Source
+			if strings.Contains(tc.rules, "RULE-SET") {
+				sources = []fp.Source{{Tag: "local", JSON: source}}
+			}
+			compiled.JSON = raw
+			compiled.Manifest = &manifest
+			compiled.familyPolicy = fp.Capture(raw, &manifest, sources)
+			if compiled.familyPolicy == nil || !compiled.familyPolicy.Matches(raw) {
+				t.Fatal("fixture capture rejected")
+			}
+			if e = os.Remove(filepath.Join(dir, "set.json")); e != nil {
+				t.Fatal(e)
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
-			go func() { done <- engine.Run(ctx, raw) }()
+			compiled.startupContext = ctx
+			go func() { done <- dispatchCompiledEngine("run", compiled, path, "", false) }()
 			defer func() {
 				cancel()
 				select {
@@ -167,7 +224,12 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 				if q.v4.Load() != 0 || business.Load() != 0 {
 					t.Fatal("REJECT alternate launched")
 				}
-				t.Logf("REJECT_NO_ALTERNATE q6=%d q4=%d DNS=%d", q.v6.Load(), q.v4.Load(), queries.Load())
+				if tc.name == "node-certificate" || tc.name == "node-auth" || tc.name == "no-ack" {
+					if queries.Load() != 1 {
+						t.Fatal("security/unknown ACK failure refreshed DNS", queries.Load())
+					}
+				}
+				t.Logf("REJECT_NO_ALTERNATE case=%s q6=%d q4=%d DNS=%d", tc.name, q.v6.Load(), q.v4.Load(), queries.Load())
 				return
 			}
 			if e != nil {

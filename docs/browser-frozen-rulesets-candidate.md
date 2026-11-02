@@ -1,4 +1,4 @@
-# Frozen local datasets: candidate contract (native NOT_RUN)
+# Frozen local datasets: candidate contract
 
 The compiler already converts each SHA-checked local v3 JSON source into SDK
 `type:inline` rules, preserving the original rule-set reference and rule order.
@@ -44,9 +44,26 @@ rules (Rule.Start only, no Box.Start/network) for same v6/v4 rule pointer and na
 ruleset REJECT; metadata/domain guard and reauthenticated unsupported policy
 mutations. Snapshot ownership/runtime drift and changed inline type are covered.
 
-Observed: `git diff --check`; existing offline browser SDK patch/material tests
-(2 PASS). No SDK patch was changed.
+Native integration evidence is retained under
+`/workspace/anytls-address-family-auto-evidence/integrated-r3/`. The development
+fixture's original long subtest name exceeded the Darwin temporary-path fixture
+contract; the test now uses short indexed names without changing policy assertions.
 
-**Go format/build/test/vet/race and all native/protocol execution: NOT_RUN**, per
-ownership/scope. No red/green claim. This is a source candidate for the parent's
-sole Go/native owner, not release acceptance or all-config support.
+A real SDK return-seam regression demonstrated same-tag unregistered DNS transport
+cache laundering. The authenticated browser DNS patch now disables cache and
+optimistic-cache access for caller-provided transports whose exact identity is not
+the registered transport. Normal strict HTTPS sync/async initial returns and cache
+hits retain receipts before delivery. Untrusted same-tag/type stubs, failed returns,
+forged observation calls and cross-client/inbound scopes cannot mint authority.
+The ACK patch is unchanged.
+
+Controlled protocol tests retain actual compiler GEOIP/RULE-SET rules and prefix,
+then substitute only mixed inbound and private TLS endpoints, rebind the manifest
+and exact captured source, delete the original ruleset file, and use the actual
+embedded dispatcher with recording disabled. Candidate rejection and distinct rule
+identity despite the same Q outbound forbid alternate launch. Certificate/auth/ACK
+unknown failures must not refresh DNS. Healthy IPv6 resumes without extra DNS.
+This remains unprivileged synthetic protocol coverage, not production TUN/browser
+acceptance; EDNS and unsupported policy families remain UNKNOWN. Final full/race/
+vet/build/package outcomes belong to the exact frozen-commit evidence, not this
+source document. No release, installation, helper or formal VPN changes are made.
