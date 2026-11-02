@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +15,13 @@ func TestDNSReporterBoundedFailure(t *testing.T) {
 	c.Loaded()
 	w, _ := webFixture(t)
 	ctx := withDNSObservation(context.Background(), strings.Repeat("e", 32), strings.Repeat("f", 32))
+	ctx = context.WithValue(ctx, dnsReporterAuthorityKey{}, dnsReporterAuthority{registration: func() (controlHelperRegistration, error) {
+		return controlHelperRegistration{UID: 501, Config: w.configPath}, nil
+	}, protected: func(string, bool) error { return nil }}) // UNIT-SIMULATED filesystem protection.
+	staged := filepath.Join(filepath.Dir(w.configPath), "service", "config.yaml")
 	entered := make(chan struct{})
 	returned := make(chan struct{})
-	stop := launchDNSReporter(ctx, c, w.configPath, func(work context.Context, q de.Push) error {
+	stop := launchDNSReporter(ctx, c, staged, func(work context.Context, q de.Push) error {
 		close(entered)
 		<-work.Done()
 		close(returned)

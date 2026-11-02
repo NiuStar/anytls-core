@@ -23,6 +23,7 @@ type dnsRuntimeCache struct {
 	run                        *de.Binding
 	snapshot                   *de.Snapshot
 	received                   time.Time
+	boundAt                    time.Time
 }
 
 func (s *controlHelperServer) dnsInvalidate() {
@@ -31,6 +32,15 @@ func (s *controlHelperServer) dnsInvalidate() {
 	s.dns.binding = nil
 	s.dns.run = nil
 	s.dns.snapshot = nil
+}
+func (s *controlHelperServer) dnsInvalidateTarget(target *startupBinding, epoch string) {
+	s.dns.mu.Lock()
+	defer s.dns.mu.Unlock()
+	if s.dns.binding == target && s.dns.epoch == epoch {
+		s.dns.binding = nil
+		s.dns.run = nil
+		s.dns.snapshot = nil
+	}
 }
 func (s *controlHelperServer) dnsBind(b *startupBinding, epoch, operation, identity string) {
 	copy := *b
@@ -42,6 +52,7 @@ func (s *controlHelperServer) dnsBind(b *startupBinding, epoch, operation, ident
 	s.dns.epoch = epoch
 	s.dns.operation = operation
 	s.dns.identity = identity
+	s.dns.boundAt = time.Now()
 	s.dns.run = nil
 	s.dns.snapshot = nil
 }
@@ -112,13 +123,19 @@ func (s *controlHelperServer) dnsRootHandle(c net.Conn) {
 	valid := func() bool {
 		reg, e := registration()
 		if e != nil || reg != s.registration {
+			s.dnsInvalidateTarget(target, epoch)
 			return false
 		}
 		id, e := controlHelperConfigIdentity(reg.Config)
-		return e == nil && id == identity && auth(c, b)
+		if e != nil || id != identity {
+			s.dnsInvalidateTarget(target, epoch)
+			return false
+		}
+		// A stranger's PID/start/argv failure is not evidence that the trusted
+		// binding is invalid. Never let it revoke another process's authority.
+		return auth(c, b)
 	}
 	if !valid() {
-		s.dnsInvalidate()
 		reject()
 		return
 	}
@@ -134,13 +151,14 @@ func (s *controlHelperServer) dnsRootHandle(c net.Conn) {
 		return
 	}
 	if !valid() {
-		s.dnsInvalidate()
 		reject()
 		return
 	}
 	s.dns.mu.Lock()
 	code := "IDENTITY_MISMATCH"
-	if s.dns.binding == target && q.HelperEpoch == epoch && q.OperationID == operation && q.ConfigIdentity == identity {
+	elapsed, _ := strconv.ParseUint(q.Snapshot.ElapsedNS, 10, 64)
+	revision, _ := strconv.ParseUint(q.Snapshot.Revision, 10, 64)
+	if s.dns.binding == target && q.HelperEpoch == epoch && q.OperationID == operation && q.ConfigIdentity == identity && revision <= elapsed && elapsed <= uint64(time.Since(s.dns.boundAt)) {
 		target.process = b.process
 		if s.dns.run == nil {
 			v := q.Binding
@@ -166,6 +184,36 @@ func (s *controlHelperServer) dnsRootHandle(c net.Conn) {
 }
 func dnsSnapshotProgress(a, b de.Snapshot) bool {
 	dec := func(s string) uint64 { n, _ := strconv.ParseUint(s, 10, 64); return n }
+	// Revision is a snapshot counter with a producer-defined nanosecond ceiling,
+	// not a remotely supplied arbitrary high-water mark. Missing reports may skip
+	// revisions; accepting only prev+1 would incorrectly reject ordinary IPC loss.
+	if dec(b.Revision) > dec(b.ElapsedNS) {
+		return false
+	}
+	lost := uint64(0)
+	retained := map[string]de.Event{}
+	for _, event := range b.Events {
+		retained[event.Seq] = event
+	}
+	for i, event := range a.Events {
+		if next, ok := retained[event.Seq]; ok {
+			if !reflect.DeepEqual(event, next) {
+				return false
+			}
+		} else {
+			// Collector eviction removes only an oldest prefix, never holes.
+			if lost != uint64(i) || len(b.Events) == 0 || dec(event.Seq) >= dec(b.Events[0].Seq) {
+				return false
+			}
+			lost++
+		}
+	}
+	if lost > 0 && (!b.Coverage.Gap || len(b.Events) != de.Capacity || dec(b.Coverage.Dropped)-dec(a.Coverage.Dropped) < lost) {
+		return false
+	}
+	if dec(b.Coverage.Dropped) > dec(a.Coverage.Dropped) && (!b.Coverage.Gap || len(b.Events) != de.Capacity) {
+		return false
+	}
 	if dec(b.ElapsedNS) < dec(a.ElapsedNS) || dec(b.Coverage.Dropped) < dec(a.Coverage.Dropped) || a.Coverage.Gap && !b.Coverage.Gap || a.Coverage.Saturated && !b.Coverage.Saturated {
 		return false
 	}
@@ -175,13 +223,6 @@ func dnsSnapshotProgress(a, b de.Snapshot) bool {
 		}
 		if dec(b.Events[len(b.Events)-1].Seq) < dec(a.Events[len(a.Events)-1].Seq) {
 			return false
-		}
-	}
-	for _, old := range a.Events {
-		for _, next := range b.Events {
-			if old.Seq == next.Seq && !reflect.DeepEqual(old, next) {
-				return false
-			}
 		}
 	}
 	return true

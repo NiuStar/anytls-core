@@ -22,8 +22,12 @@ func (w *webConsole) getDNSRuntime(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := de.Read{DNSSchema: 1, Action: "dns.read"}
+	if len(r.URL.RawQuery) > de.ReadBytes {
+		fail(400, "INVALID_REQUEST")
+		return
+	}
 	v, e := url.ParseQuery(r.URL.RawQuery)
-	if e != nil || len(r.URL.RawQuery) > de.ReadBytes {
+	if e != nil {
 		fail(400, "INVALID_REQUEST")
 		return
 	}

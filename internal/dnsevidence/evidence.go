@@ -177,11 +177,21 @@ func Validate(v any) error {
 		if !Decimal(x.Revision) || !Decimal(x.ElapsedNS) || !wall(x.CapturedAt) || !one(x.State, "STARTING LOADED CLOSED") || len(x.Events) > Capacity || x.Events == nil {
 			return Invalid
 		}
-		if x.Coverage.Scope != "HTTPS_TRANSPORT_COMPLETION" || x.Coverage.Missing != Missing || !Decimal(x.Coverage.Dropped) {
+		if x.Coverage.Scope != "HTTPS_TRANSPORT_COMPLETION" || x.Coverage.Missing != Missing || !Decimal(x.Coverage.Dropped) || x.Coverage.Saturated && !x.Coverage.Gap {
 			return Invalid
 		}
 		if e := Validate(x.Policy); e != nil {
 			return e
+		}
+		dropped, _ := strconv.ParseUint(x.Coverage.Dropped, 10, 64)
+		if dropped > 0 && (!x.Coverage.Gap || len(x.Events) != Capacity) {
+			return Invalid
+		}
+		if dropped > 0 {
+			first, _ := strconv.ParseUint(x.Events[0].Seq, 10, 64)
+			if first <= dropped {
+				return Invalid
+			}
 		}
 		var prev uint64
 		for _, e := range x.Events {
@@ -189,7 +199,7 @@ func Validate(v any) error {
 				return Invalid
 			}
 			n, _ := strconv.ParseUint(e.Seq, 10, 64)
-			if n <= prev {
+			if n <= prev || !x.Coverage.Gap && n != prev+1 {
 				return Invalid
 			}
 			prev = n
@@ -568,6 +578,10 @@ func (c *Collector) Snapshot() Snapshot {
 	}
 	c.s.Revision = strconv.FormatUint(c.revision, 10)
 	c.s.CapturedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	c.s.ElapsedNS = strconv.FormatInt(int64(time.Since(c.origin)), 10)
+	elapsed := uint64(time.Since(c.origin))
+	if elapsed < c.revision {
+		elapsed = c.revision
+	}
+	c.s.ElapsedNS = strconv.FormatUint(elapsed, 10)
 	return Clone(c.s)
 }

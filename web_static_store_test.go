@@ -160,13 +160,31 @@ func TestWebStaticWireHTTP(t *testing.T) {
 	}
 }
 
+func TestWebStaticColdBuildContract(t *testing.T) { webStaticColdBuildContract(t) }
+
+func webStaticColdBuildContract(b testing.TB) {
+	want := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/dns.js": "dns.js", "/style.css": "style.css"}
+	var store webStaticStore
+	source := &webStaticCountingFS{FS: webAssets}
+	assets, err := store.load(source)
+	if err != nil || len(assets) != len(want) || source.reads.Load() != int32(len(want)) {
+		b.Fatal("cold build failed", err)
+	}
+	for path, name := range want {
+		expected, err := webAssets.ReadFile("web_assets/" + name)
+		if err != nil || !bytes.Equal(assets[path].identity, expected) {
+			b.Fatal("wrong asset", path)
+		}
+	}
+	_, err = store.load(source)
+	if err != nil || source.reads.Load() != int32(len(want)) {
+		b.Fatal("warm load re-read assets", err)
+	}
+}
+
 func BenchmarkWebStaticColdBuild(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		var store webStaticStore
-		assets, err := store.load(webAssets)
-		if err != nil || len(assets) != 4 {
-			b.Fatal("cold build failed", err)
-		}
+		webStaticColdBuildContract(b)
 	}
 }

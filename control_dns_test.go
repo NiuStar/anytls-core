@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -18,6 +20,22 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 	w, password := webFixture(t)
 	cookie, _ := webLogin(t, w, password)
 	identity, _ := controlHelperConfigIdentity(w.configPath)
+	root := filepath.Join(filepath.Dir(w.configPath), "service")
+	if e := os.Mkdir(root, 0700); e != nil {
+		t.Fatal(e)
+	}
+	staged := filepath.Join(root, "config.yaml")
+	raw, e := os.ReadFile(w.configPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(staged, raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	stagedIdentity, _ := controlHelperConfigIdentity(staged)
+	if identity == stagedIdentity {
+		t.Fatal("source and stage must be independent")
+	}
 	s := &controlHelperServer{registration: controlHelperRegistration{UID: 501, Config: w.configPath}}
 	// UNIT-SIMULATED root/kernel authority. Real Unix framing and HTTP authentication.
 	var peerUID atomic.Uint32
@@ -27,6 +45,8 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 	s.startupAuthenticate = func(net.Conn, *startupBinding) bool { authCalls.Add(1); return true }
 	epoch, operation := strings.Repeat("e", 32), strings.Repeat("f", 32)
 	s.dnsBind(&startupBinding{}, epoch, operation, identity)
+	// The real engine producer may predate this fixture's simulated bind.
+	s.dns.boundAt = time.Now().Add(-time.Minute)
 	b := de.Binding{InstanceID: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32), ManifestID: strings.Repeat("c", 64), RuntimeSHA256: strings.Repeat("d", 64)}
 	collector := de.New(b)
 	collector.Loaded()
@@ -64,9 +84,53 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 		}
 		return ack
 	}
-	q := de.Push{DNSSchema: 1, Action: "dns.push", HelperEpoch: epoch, OperationID: operation, ConfigIdentity: identity, Binding: b, Snapshot: collector.Snapshot()}
-	if a := push(q); a.Code != "OK" || authCalls.Load() != 2 {
-		t.Fatalf("push %s auth %d", a.Code, authCalls.Load())
+	ctx := withDNSObservation(context.Background(), operation, epoch)
+	ctx = context.WithValue(ctx, dnsReporterAuthorityKey{}, dnsReporterAuthority{
+		registration: func() (controlHelperRegistration, error) { return s.registration, nil },
+		protected: func(p string, dir bool) error {
+			if p != staged && !(dir && p == filepath.Dir(staged)) {
+				return errors.New("wrong snapshot")
+			}
+			return nil
+		}, // UNIT-SIMULATED root ownership only.
+	})
+	delivered := make(chan de.Push, 1)
+	stop := launchDNSReporter(ctx, collector, staged, func(_ context.Context, q de.Push) error {
+		ack := push(q)
+		if ack.Code != "OK" {
+			return errors.New(ack.Code)
+		}
+		select {
+		case delivered <- q:
+		default:
+		}
+		return nil
+	})
+	var q de.Push
+	select {
+	case q = <-delivered:
+	case <-time.After(2500 * time.Millisecond):
+		stop()
+		t.Fatal("actual reporter -> Unix helper did not admit source/staged run")
+	}
+	stop()
+	if q.ConfigIdentity != identity || authCalls.Load() != 2 {
+		t.Fatal("reporter identity/composite authority mismatch")
+	}
+	wrong := q
+	wrong.Snapshot.Revision = "18446744073709551615"
+	if a := push(wrong); a.Code != "IDENTITY_MISMATCH" {
+		t.Fatal("future revision accepted")
+	}
+	wrong = q
+	wrong.Snapshot.ElapsedNS = "18446744073709551615"
+	if a := push(wrong); a.Code != "IDENTITY_MISMATCH" {
+		t.Fatal("future elapsed accepted")
+	}
+	wrong = q
+	wrong.ConfigIdentity = stagedIdentity
+	if a := push(wrong); a.Code != "IDENTITY_MISMATCH" {
+		t.Fatal("stage accepted as registration namespace")
 	}
 	if a := push(q); a.Code != "IDENTITY_MISMATCH" {
 		t.Fatal("replay accepted")
@@ -115,7 +179,7 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 		query  string
 		status int
 		change func(*http.Request)
-	}{{"?generation=x", 400, nil}, {query + "&generation=x", 400, nil}, {"?unknown=1", 400, nil}, {query, 403, func(r *http.Request) { r.Header.Del("X-AnyTLS-Origin") }}, {query, 401, func(r *http.Request) { r.Header.Del("Cookie") }}} {
+	}{{"?" + strings.Repeat("k=v&", de.ReadBytes), 400, nil}, {"?generation=x", 400, nil}, {query + "&generation=x", 400, nil}, {"?unknown=1", 400, nil}, {query, 403, func(r *http.Request) { r.Header.Del("X-AnyTLS-Origin") }}, {query, 401, func(r *http.Request) { r.Header.Del("Cookie") }}} {
 		if got := request(x.query, x.change); got.Code != x.status {
 			t.Fatalf("negative %d want %d", got.Code, x.status)
 		}

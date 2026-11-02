@@ -17,6 +17,7 @@ import (
 	"net/http/httptrace"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -73,6 +74,8 @@ func dnsPerfStartFault(t *testing.T, answer func(http.ResponseWriter, *http.Requ
 
 func dnsPerfStartMetrics(t *testing.T, answer func(http.ResponseWriter, *http.Request, *dns.Msg), fault string, enabled bool) *dnsPerfFixture {
 	t.Helper()
+	evidenceEnabled := fault == "evidence" || strings.HasPrefix(fault, "evidence:")
+	fault = strings.TrimPrefix(fault, "evidence:")
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
 		t.Fatal(err)
@@ -210,7 +213,7 @@ func dnsPerfStartMetrics(t *testing.T, answer func(http.ResponseWriter, *http.Re
 		f.metrics = new(engine.DNSMetrics)
 	}
 	ctx = engine.WithDNSMetrics(ctx, f.metrics)
-	if fault == "evidence" {
+	if evidenceEnabled {
 		f.evidence = de.New(de.Binding{InstanceID: m.InstanceID, Generation: m.Generation, ManifestID: m.ManifestID, RuntimeSHA256: shaHex(wire)})
 		ctx = engine.WithDNSEvidence(ctx, f.evidence)
 	}
@@ -726,7 +729,7 @@ func dnsPerfAuthPeer(t *testing.T, target string, cert tls.Certificate, bad *ato
 func TestDNSPerformanceStrictFaultRecovery(t *testing.T) {
 	for _, fault := range []string{"doh_tls", "password"} {
 		t.Run(fault, func(t *testing.T) {
-			f := dnsPerfStartFault(t, nil, fault)
+			f := dnsPerfStartFault(t, nil, "evidence:"+fault)
 			q := f.query("strict-recovery", dns.TypeA)
 			a, elapsed, err := f.exchange(q)
 			if err != nil && !errors.Is(err, io.EOF) {
@@ -752,6 +755,14 @@ func TestDNSPerformanceStrictFaultRecovery(t *testing.T) {
 			dnsPerfRun(t, f, f.query("strict-recovery", dns.TypeA), false)
 			f.shutdown()
 			f.checkMetrics(t, 2)
+			evidence := f.evidence.Snapshot()
+			expected := "OTHER_ERROR"
+			if fault == "doh_tls" {
+				expected = "TLS_FAILURE"
+			}
+			if len(evidence.Events) != 2 || evidence.Events[0].Outcome != expected || evidence.Events[1].Outcome != "NOERROR" {
+				t.Fatalf("collector strict recovery %+v", evidence.Events)
+			}
 			if fault == "doh_tls" && f.metrics.Snapshot().UpstreamExchange.Outcomes[dnsmetrics.TLSFailure] != 1 {
 				t.Errorf("typed cert failure not counted: %+v", f.metrics.Snapshot())
 			}
@@ -765,11 +776,11 @@ func TestDNSPerformanceStrictFaultRecovery(t *testing.T) {
 func TestDNSPerformanceBlockedCancellation(t *testing.T) {
 	entered, canceled := make(chan struct{}), make(chan struct{})
 	var first sync.Once
-	f := dnsPerfStart(t, func(w http.ResponseWriter, r *http.Request, q *dns.Msg) {
+	f := dnsPerfStartMetrics(t, func(w http.ResponseWriter, r *http.Request, q *dns.Msg) {
 		first.Do(func() { close(entered) })
 		<-r.Context().Done()
 		close(canceled)
-	})
+	}, "evidence", true)
 	result := make(chan error, 1)
 	q := f.query("blocked", dns.TypeAAAA)
 	go func() {
@@ -801,6 +812,10 @@ func TestDNSPerformanceBlockedCancellation(t *testing.T) {
 		t.Error("blocked caller not joined")
 	}
 	f.checkMetrics(t, 1)
+	evidence := f.evidence.Snapshot()
+	if len(evidence.Events) != 1 || evidence.Events[0].Outcome != "CANCELED" || evidence.State != "CLOSED" {
+		t.Fatalf("collector canceled completion %+v", evidence)
+	}
 	if f.metrics.Snapshot().UpstreamExchange.Outcomes[dnsmetrics.Canceled] != 1 {
 		t.Errorf("canceled completion missing: %+v", f.metrics.Snapshot())
 	}
