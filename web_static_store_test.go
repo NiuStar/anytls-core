@@ -31,6 +31,7 @@ func (f *webStaticCountingFS) ReadFile(name string) ([]byte, error) {
 func TestWebStaticBuildOnceConcurrent(t *testing.T) {
 	var store webStaticStore
 	source := &webStaticCountingFS{FS: webAssets}
+	want := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/dns.js": "dns.js", "/style.css": "style.css"}
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
@@ -38,11 +39,17 @@ func TestWebStaticBuildOnceConcurrent(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
 				assets, err := store.load(source)
-				if err != nil || len(assets) != 4 {
+				if err != nil || len(assets) != len(want) {
 					t.Errorf("load error=%v count=%d", err, len(assets))
 					return
 				}
 				for path, asset := range assets {
+					name, known := want[path]
+					expected, readErr := fs.ReadFile(webAssets, "web_assets/"+name)
+					if !known || readErr != nil || !bytes.Equal(expected, asset.identity) {
+						t.Errorf("unexpected asset projection: %s", path)
+						return
+					}
 					zr, err := gzip.NewReader(bytes.NewReader(asset.gzip))
 					if err != nil {
 						t.Error(err)
@@ -59,8 +66,8 @@ func TestWebStaticBuildOnceConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n := source.reads.Load(); n != 4 {
-		t.Fatalf("source reads=%d, want exactly four per store lifetime", n)
+	if n := source.reads.Load(); n != int32(len(want)) {
+		t.Fatalf("source reads=%d, want exactly %d distinct approved assets per store lifetime", n, len(want))
 	}
 	assets, _ := store.load(source)
 	again, _ := store.load(source)
@@ -99,7 +106,7 @@ func TestWebStaticWireHTTP(t *testing.T) {
 	transport := &http.Transport{DisableCompression: true}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport}
-	for _, path := range []string{"/", "/app.js", "/startup.js", "/style.css"} {
+	for _, path := range []string{"/", "/app.js", "/startup.js", "/dns.js", "/style.css"} {
 		for _, encoding := range []string{"identity", "gzip"} {
 			r, err := http.NewRequest("GET", server.URL+path, nil)
 			if err != nil {
