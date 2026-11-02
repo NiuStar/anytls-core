@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anytls/sing-anytls/session"
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/service"
 )
 
 func browserConcurrencyFixture(t *testing.T) (*browserProvenance, browserReceipt, M.Socksaddr) {
@@ -243,6 +245,71 @@ func TestBrowserReservationInheritsAbsoluteDeadline(t *testing.T) {
 		t.Fatal("caller deadline reset")
 	}
 }
+
+func TestBrowserAlternateLaunchInvalidation(t *testing.T) {
+	for _, kind := range []string{"epoch", "ttl", "conflict", "capacity", "caller"} {
+		t.Run(kind, func(t *testing.T) {
+			s, r, dst := browserConcurrencyFixture(t)
+			s.static = true
+			var clock atomic.Int64
+			clock.Store(time.Now().UnixNano())
+			s.now = func() time.Time { return time.Unix(0, clock.Load()) }
+			box := recordsBox(t, []byte(`{"outbounds":[{"type":"direct","tag":"P"}],"route":{"final":"P"}}`))
+			out := &browserControlledOutbound{dial: func(context.Context, M.Socksaddr) (net.Conn, error) {
+				return nil, &session.RemoteConnectError{Cause: syscall.ENETUNREACH}
+			}}
+			ctx := service.ContextWithRegistry(context.Background(), service.NewRegistry())
+			resolver := &browserFixtureResolver{}
+			ctx = service.ContextWith[adapter.DNSRouter](ctx, resolver)
+			ctx = service.ContextWith[adapter.OutboundManager](ctx, &browserControlledManager{OutboundManager: box.Outbound(), out: out})
+			s.trust(&browserFixtureTransport{})
+			entered, proceed, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			launches := 0
+			m := adapter.InboundContext{Network: "tcp", Inbound: r.scope.inbound, Source: M.Socksaddr{Addr: r.scope.source}, Destination: dst, IPVersion: 6}
+			d := &browserDialer{Outbound: out, prepared: browserPrepared{owner: s, receipt: r, metadata: m, router: box.Router(), index: -1, outbound: out}, beforeLaunch: func() {
+				launches++
+				if launches == 2 {
+					close(entered)
+					<-proceed
+				}
+			}}
+			parent, cancel := context.WithCancel(ctx)
+			defer cancel()
+			var err error
+			go func() { _, err = d.DialContext(parent, "tcp", dst); close(done) }()
+			browserAwait(t, entered)
+			switch kind {
+			case "epoch":
+				s.InvalidateBrowserDNS()
+			case "ttl":
+				clock.Store(r.expires.UnixNano())
+			case "caller":
+				cancel()
+			default:
+				q, a := browserAnswer("conflict.test", 28, dst.Addr.String(), 30)
+				if kind == "capacity" {
+					s.mu.Lock()
+					s.limit = 1
+					s.mu.Unlock()
+					q, a = browserAnswer("other.test", 28, "2001:db8::2", 30)
+				}
+				s.observe(r.scope, "secure", q, a)
+			}
+			close(proceed)
+			browserAwait(t, done)
+			if !errors.Is(err, context.Canceled) || out.calls.Load() != 1 || browserActive(s) != 0 || resolver.calls != 2 {
+				t.Fatalf("alternate escaped final reservation: calls=%d dns=%d err=%v", out.calls.Load(), resolver.calls, err)
+			}
+		})
+	}
+}
+
+type browserControlledManager struct {
+	adapter.OutboundManager
+	out adapter.Outbound
+}
+
+func (m *browserControlledManager) Default() adapter.Outbound { return m.out }
 
 func TestBrowserOwnedCloseOnce(t *testing.T) {
 	s, r, _ := browserConcurrencyFixture(t)
