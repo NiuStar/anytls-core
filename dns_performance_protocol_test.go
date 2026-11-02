@@ -23,6 +23,7 @@ import (
 	"time"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	"github.com/NiuStar/anytls-core/internal/dnsmetrics"
 	"github.com/NiuStar/anytls-core/internal/engine"
 	anytls "github.com/anytls/sing-anytls"
@@ -54,6 +55,7 @@ type dnsPerfFixture struct {
 	tlsComplete                           atomic.Int64
 	shutdown                              func()
 	metrics                               *engine.DNSMetrics
+	evidence                              *de.Collector
 	traceAcquired, traceReused, traceIdle atomic.Uint64
 	answer                                func(http.ResponseWriter, *http.Request, *dns.Msg)
 	badTLS, badAuth                       atomic.Bool
@@ -208,6 +210,10 @@ func dnsPerfStartMetrics(t *testing.T, answer func(http.ResponseWriter, *http.Re
 		f.metrics = new(engine.DNSMetrics)
 	}
 	ctx = engine.WithDNSMetrics(ctx, f.metrics)
+	if fault == "evidence" {
+		f.evidence = de.New(de.Binding{InstanceID: m.InstanceID, Generation: m.Generation, ManifestID: m.ManifestID, RuntimeSHA256: shaHex(wire)})
+		ctx = engine.WithDNSEvidence(ctx, f.evidence)
+	}
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
 		f.traceAcquired.Add(1)
 		if info.Reused {

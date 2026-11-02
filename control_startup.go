@@ -87,6 +87,7 @@ func (s *controlHelperServer) startupInit() {
 	})
 }
 func (s *controlHelperServer) startupBegin(id, action, identity, source string) *startupOperation {
+	s.dnsInvalidate()
 	s.startupInit()
 	s.startup.mu.Lock()
 	epoch := s.startup.epoch

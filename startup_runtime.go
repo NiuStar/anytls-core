@@ -209,6 +209,16 @@ func (b *startupBinding) check() bool {
 // Composite authentication precedes reading even the request body. One actual
 // work slot owns all blocking identity reads, framing and cache publication.
 func (s *controlHelperServer) startupRootHandle(c net.Conn) {
+	s.dns.mu.Lock()
+	active := s.dns.binding != nil
+	s.dns.mu.Unlock()
+	if active {
+		s.dnsRootHandle(c)
+		return
+	}
+	s.startupRootHandleRaw(c, nil)
+}
+func (s *controlHelperServer) startupRootHandleRaw(c net.Conn, pre []byte) {
 	if !s.startupPushSlot.TryLock() {
 		return
 	}
@@ -253,7 +263,10 @@ func (s *controlHelperServer) startupRootHandle(c net.Conn) {
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	raw, e := io.ReadAll(io.LimitReader(c, st.PushBytes+1))
+	raw := pre
+	if raw == nil {
+		raw, e = io.ReadAll(io.LimitReader(c, st.PushBytes+1))
+	}
 	timeline, frameErr := startupFrame(raw)
 	if e != nil || !timeline || frameErr != nil {
 		reject()
@@ -344,6 +357,9 @@ func (s *controlHelperServer) startupBind(ctx context.Context, root string, args
 	s.startup.mu.Lock()
 	o.binding = b
 	s.startup.mu.Unlock()
+	if o.trace.HelperEpoch != nil && o.trace.ConfigIdentity != nil {
+		s.dnsBind(b, *o.trace.HelperEpoch, o.trace.OperationID, *o.trace.ConfigIdentity)
+	}
 	return true
 }
 

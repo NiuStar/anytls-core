@@ -24,6 +24,7 @@ import (
 	"time"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"gopkg.in/yaml.v3"
 )
@@ -55,6 +56,7 @@ type webConsole struct {
 	importFetch              func(context.Context, string) ([]byte, error)
 	nodeProbe                func(context.Context, node, string) (float64, error)
 	recordsRequest           func(context.Context, cr.PageRequest) (cr.PageResponse, error)
+	dnsRequest               func(context.Context, de.Read) (de.Response, error)
 	startupMu                sync.Mutex
 	startupLatest            *webStartupOperation
 	startupReadRequest       webStartupReadFunc
@@ -353,6 +355,14 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.getStartupTrace(rw, r)
+		return
+	}
+	if r.URL.Path == "/api/v1/dns-runtime" {
+		if r.Method != "GET" {
+			webError(rw, 405, "METHOD_NOT_ALLOWED")
+			return
+		}
+		w.getDNSRuntime(rw, r)
 		return
 	}
 	if r.URL.Path == "/api/v1/connections" {

@@ -194,6 +194,7 @@ func execute(args []string) error {
 	localPort := fs.Int("local-port", 11080, "SOCKS/HTTP listen port")
 	allowInsecure := fs.Bool("allow-insecure", false, "explicitly allow skip-cert-verify (MITM risk)")
 	dnsMetrics := fs.Bool("dns-metrics", false, "emit one completed-run DNS summary to stderr (embedded_core run only)")
+	dnsObserve := fs.Bool("dns-observe-service", false, "internal candidate service DNS evidence marker")
 	recordService := fs.Bool("record-service", false, "internal authorized service recording marker")
 	startupOperation := fs.String("startup-operation", "", "internal auxiliary startup correlation")
 	startupEpoch := fs.String("startup-epoch", "", "internal auxiliary helper epoch")
@@ -220,6 +221,12 @@ func execute(args []string) error {
 		defer stop()
 	}
 	var reporter *startupReporter
+	if *dnsObserve {
+		if !startupCoreFlags(*startupOperation, *startupEpoch, o) {
+			return errors.New("invalid DNS service observation flags")
+		}
+		ctx = withDNSObservation(ctx, *startupOperation, *startupEpoch)
+	}
 	if *startupOperation != "" || *startupEpoch != "" {
 		if !startupCoreFlags(*startupOperation, *startupEpoch, o) {
 			return errors.New("invalid startup correlation flags")

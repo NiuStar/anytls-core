@@ -17,6 +17,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 
+	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	"github.com/NiuStar/anytls-core/internal/dnsmetrics"
 	"github.com/sagernet/sing/service"
 )
@@ -82,7 +83,9 @@ func (m *DNSMetrics) Snapshot() DNSMetricsSnapshot {
 // would silently lose them and alter detour/connection retention semantics.
 type observedHTTPS struct {
 	*transport.HTTPSTransport
-	metrics *DNSMetrics
+	metrics     *DNSMetrics
+	evidence    *de.Collector
+	transportID string
 }
 
 var (
@@ -98,6 +101,14 @@ func newObservedHTTPS(ctx context.Context, logger log.ContextLogger, tag string,
 	}
 	metrics, _ := ctx.Value(dnsMetricsContextKey{}).(*DNSMetrics)
 	result, err := wrapHTTPS(upstream, metrics)
+	if c := dnsEvidence(ctx); c != nil && err == nil {
+		id := evidenceFactory(c, options)
+		if w, ok := result.(*observedHTTPS); ok {
+			w.evidence, w.transportID = c, id
+		} else if concrete, ok := upstream.(*transport.HTTPSTransport); ok {
+			result = &observedHTTPS{HTTPSTransport: concrete, evidence: c, transportID: id}
+		}
+	}
 	if err == nil && (options.TLS == nil || (!options.TLS.Insecure && options.TLS.Engine == "")) {
 		if observer, ok := service.FromContext[browserDNSObserver](ctx).(*browserProvenance); ok {
 			observer.trust(result)
@@ -119,7 +130,12 @@ func wrapHTTPS(upstream adapter.DNSTransport, metrics *DNSMetrics) (adapter.DNST
 
 func (t *observedHTTPS) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	start, qtype := time.Now(), dnsMetricQType(q)
-	response, err := t.HTTPSTransport.Exchange(t.metrics.traceContext(ctx), q)
+	ctx, observation := beginEvidence(t.evidence, t.transportID, q, ctx)
+	if t.metrics != nil {
+		ctx = t.metrics.traceContext(ctx)
+	}
+	response, err := t.HTTPSTransport.Exchange(ctx, q)
+	observation.finish(response, err)
 	t.metrics.complete(qtype, response, err, time.Since(start))
 	return response, err
 }
@@ -128,7 +144,12 @@ func (t *observedHTTPS) ExchangeAsync(ctx context.Context, q *dns.Msg, callback 
 	start, qtype := time.Now(), dnsMetricQType(q)
 	// Delegate directly to the SDK async method, not to our Exchange: exactly
 	// one observation at completion, before forwarding the untouched callback.
-	t.HTTPSTransport.ExchangeAsync(t.metrics.traceContext(ctx), q, func(response *dns.Msg, err error) {
+	ctx, observation := beginEvidence(t.evidence, t.transportID, q, ctx)
+	if t.metrics != nil {
+		ctx = t.metrics.traceContext(ctx)
+	}
+	t.HTTPSTransport.ExchangeAsync(ctx, q, func(response *dns.Msg, err error) {
+		observation.finish(response, err)
 		t.metrics.complete(qtype, response, err, time.Since(start))
 		callback(response, err)
 	})

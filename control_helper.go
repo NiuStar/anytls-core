@@ -17,6 +17,7 @@ import (
 	"time"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 )
 
@@ -148,6 +149,7 @@ type controlHelperServer struct {
 	startupPushSlot     sync.Mutex
 	startupRegistration func() (controlHelperRegistration, error)
 	startupAuthenticate func(net.Conn, *startupBinding) bool
+	dns                 dnsRuntimeCache
 }
 
 func (s *controlHelperServer) handle(c net.Conn) {
@@ -174,6 +176,15 @@ func (s *controlHelperServer) handle(c net.Conn) {
 	// Bound before dispatch; legacy decoding still has its unchanged 4096-byte
 	// budget. Dispatch must allow reordered/whitespace-padded 8KiB records frames.
 	raw, readErr := io.ReadAll(io.LimitReader(c, st.PushBytes+1))
+	if dnsFrame(raw) {
+		var q de.Read
+		if readErr != nil || de.Decode(raw, &q) != nil {
+			dnsWrite(c, de.Response{DNSSchema: 1, Code: "INVALID_REQUEST", Availability: "UNAVAILABLE"})
+		} else {
+			dnsWrite(c, s.dnsRead(q))
+		}
+		return
+	}
 	timeline, frameErr := startupFrame(raw)
 	if timeline {
 		s.startupHandle(c, uid, raw, readErr, frameErr)

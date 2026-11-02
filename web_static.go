@@ -32,6 +32,7 @@ func (s *webStaticStore) load(source fs.FS) (map[string]webStaticAsset, error) {
 			{"/", "index.html", "text/html; charset=utf-8"},
 			{"/app.js", "app.js", "text/javascript; charset=utf-8"},
 			{"/startup.js", "startup.js", "text/javascript; charset=utf-8"},
+			{"/dns.js", "dns.js", "text/javascript; charset=utf-8"},
 			{"/style.css", "style.css", "text/css; charset=utf-8"},
 		} {
 			body, err := fs.ReadFile(source, "web_assets/"+spec.name)
@@ -61,7 +62,7 @@ func (s *webStaticStore) load(source fs.FS) (map[string]webStaticAsset, error) {
 func webServeStatic(rw http.ResponseWriter, r *http.Request) {
 	// Reject unknown paths before initializing even the bounded static store.
 	switch r.URL.Path {
-	case "/", "/app.js", "/startup.js", "/style.css":
+	case "/", "/app.js", "/startup.js", "/dns.js", "/style.css":
 	default:
 		http.NotFound(rw, r)
 		return

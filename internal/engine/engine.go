@@ -69,6 +69,7 @@ func Run(ctx context.Context, runtimeJSON []byte) error {
 }
 
 func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInput) (err error) {
+	ctx = evidenceRuntime(ctx, runtimeJSON)
 	if records != nil {
 		if reporter, ok := records.Sink.(cr.ProvenanceReporter); ok {
 			reporter.SetProvenanceStatus(cr.ProvenanceUnknown)
@@ -92,6 +93,7 @@ func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInp
 		return err
 	}
 	caVerified := false
+	evidenceDecoded(ctx, options)
 	if records != nil && (records.Sink != nil || records.OpenSink != nil) {
 		span = recorder.Begin("START", "CORE_PIN_CA", st.Fields{})
 		caVerified = pinRecordsCA(&options, records.Manifest)
@@ -157,6 +159,8 @@ func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start
 		return err
 	}
 	recorder.Observe("START", "CORE_WAIT", "OK", st.Fields{})
+	dnsEvidence(ctx).Loaded()
+	defer dnsEvidence(ctx).Closed()
 	<-ctx.Done()
 	return ctx.Err()
 }

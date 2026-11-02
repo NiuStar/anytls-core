@@ -15,7 +15,9 @@ import (
 	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 
+	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	"github.com/NiuStar/anytls-core/internal/engine"
+	"net"
 )
 
 func externalCoreRequired() bool { return false }
@@ -55,6 +57,25 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx = fp.WithSnapshot(ctx, compiled.familyPolicy)
+	if _, enabled := ctx.Value(dnsObservationKey{}).(dnsObservation); enabled && compiled.Manifest != nil && command == "run" {
+		m := compiled.Manifest
+		collector := de.New(de.Binding{InstanceID: m.InstanceID, Generation: m.Generation, ManifestID: m.ManifestID, RuntimeSHA256: m.RuntimeSHA256})
+		if collector != nil {
+			ctx = engine.WithDNSEvidence(ctx, collector)
+			defer launchDNSReporter(ctx, collector, config, func(work context.Context, q de.Push) error {
+				if e := startupReporterSocket(); e != nil {
+					return e
+				}
+				c, e := (&net.Dialer{}).DialContext(work, "unix", controlHelperSocketPath)
+				if e != nil {
+					return e
+				}
+				defer c.Close()
+				var ack de.Ack
+				return dnsExchange(work, c, q, &ack, controlHelperPeerUID)
+			})()
+		}
+	}
 	if command == "run" && dnsMetricsEnabled(ctx) {
 		metrics := new(engine.DNSMetrics)
 		ctx = engine.WithDNSMetrics(ctx, metrics)

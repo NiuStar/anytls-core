@@ -77,6 +77,7 @@ func serviceArgs(binary, config, core string, insecure bool, operation, epoch st
 	}
 	if operation != "" && epoch != "" && !externalCoreRequired() {
 		args = append(args, "-startup-operation", operation, "-startup-epoch", epoch)
+		args = append(args, "-dns-observe-service")
 	}
 	return append(args, "run")
 }
