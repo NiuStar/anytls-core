@@ -13,6 +13,7 @@ def certified_sources(root,receipt):
  leaf,leaf_patch=wrapper.leaf_identity(root)
  retry,retry_patch=wrapper.retry_identity(root)
  doh,doh_patch=wrapper.doh_identity(root)
+ stream,stream_patch=wrapper.dns_stream_identity(root)
  ack,ack_patch=wrapper.ack_identity(root)
  if not re.search(r'^go 1\.27\.3$',(root/'go.mod').read_text(),re.M):raise ValueError('root module requires Go 1.27.3')
  if receipt.get('go_version','').split()[2:3]!=[wrapper.CURRENT_GO]:raise ValueError('certified toolchain mismatch')
@@ -24,16 +25,19 @@ def certified_sources(root,receipt):
            'leaf_certificate':wrapper.leaf_receipt(leaf,leaf_patch),
            'transient_retry':wrapper.retry_receipt(retry,retry_patch),
            'doh_deadline_isolation':wrapper.doh_receipt(doh,doh_patch),
+           'dns_stream_close':wrapper.dns_stream_receipt(stream,stream_patch),
            'stream_connect_ack':wrapper.ack_receipt(ack,ack_patch),
            'browser_provenance':wrapper.browser_receipt(wrapper.browser_identity(root))}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
  if receipt.get('original_ack_sources_unchanged') is not True or receipt.get('original_ack_zip_unchanged') is not True:raise ValueError('certified ACK cache invariants missing')
+ if receipt.get('original_dns_stream_sources_unchanged') is not True:raise ValueError('certified DNS stream cache invariants missing')
  return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
          'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json',
          'patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json',
          'patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json',
          'patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json',
          'patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json',
+         'patches/sing-box/dns-stream-close.identity.json','patches/sing-box/dns-stream-close.patch.json','patches/sing-box/dns-stream-close.patch',
          'patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch',
          'patches/sing-box/browser.identity.json','patches/sing-box/browser-dns.patch.json','patches/sing-box/browser-route.patch.json']
 

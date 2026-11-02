@@ -29,6 +29,8 @@ class LeafPatchTests(unittest.TestCase):
                     chrome_backend=w.chrome_receipt(chrome, chp),
                     transient_retry=w.retry_receipt(*w.retry_identity()),
                     doh_deadline_isolation=w.doh_receipt(*w.doh_identity()),
+                    dns_stream_close=w.dns_stream_receipt(*w.dns_stream_identity()),
+                    original_dns_stream_sources_unchanged=True,
                     stream_connect_ack=w.ack_receipt(*w.ack_identity()),
                     browser_provenance=w.browser_receipt(w.browser_identity()),
                     original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)

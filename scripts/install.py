@@ -291,6 +291,9 @@ def certified_build(stdout, wrapper, source, output):
             if line.startswith("PATCHED_GO_END ")]
     require(len(ends) == 1, "source build missing unique certified END")
     r = ends[0]
+    stream_m, stream_patch = ns["dns_stream_identity"](source)
+    require(r.get("dns_stream_close") == ns["dns_stream_receipt"](stream_m, stream_patch),
+            "source build DNS stream identity mismatch")
     m, patch = ns["doh_identity"](source)
     require(r.get("doh_deadline_isolation") == ns["doh_receipt"](m, patch),
             "source build DoH identity mismatch")
@@ -302,6 +305,7 @@ def certified_build(stdout, wrapper, source, output):
     require(r.get("rc") == 0 and r.get("ephemeral_cleanup") == "ok"
             and r.get("root_inputs_unchanged") is True and r.get("original_doh_source_unchanged") is True
             and r.get("original_module_zip_unchanged") is True
+            and r.get("original_dns_stream_sources_unchanged") is True
             and r.get("original_ack_sources_unchanged") is True and r.get("original_ack_zip_unchanged") is True
             and r.get("wrapper_sha256") == hashlib.sha256(wrapper).hexdigest()
             and r.get("output_sha256") == hashlib.sha256(output.read_bytes()).hexdigest()

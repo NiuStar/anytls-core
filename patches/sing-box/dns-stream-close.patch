@@ -1,0 +1,142 @@
+--- a/protocol/dns/handle.go
++++ b/protocol/dns/handle.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"encoding/binary"
+ 	"net"
++	"sync"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	C "github.com/sagernet/sing-box/constant"
+@@ -19,6 +20,75 @@
+ 	mDNS "github.com/miekg/dns"
+ )
+ 
++// NewStreamDNSConn transfers route replay buffers before asynchronous DNS
++// callbacks can close their CachedConn owner. Only the finite memory reads are
++// locked; closing the upstream must always be able to wake a network read.
++func NewStreamDNSConn(conn net.Conn) net.Conn {
++	if _, ok := conn.(*streamDNSConn); ok {
++		return conn
++	}
++	reader := conn
++	var buffers []*buf.Buffer
++	for {
++		cached, ok := reader.(*bufio.CachedConn)
++		if !ok {
++			break
++		}
++		if buffer := cached.ReadCached(); buffer != nil {
++			buffers = append(buffers, buffer)
++		}
++		reader = cached.Conn
++	}
++	return &streamDNSConn{Conn: conn, reader: reader, buffers: buffers}
++}
++
++type streamDNSConn struct {
++	net.Conn
++	reader   net.Conn
++	access   sync.Mutex
++	buffers  []*buf.Buffer
++	closed   bool
++	once     sync.Once
++	closeErr error
++}
++
++func (c *streamDNSConn) Read(p []byte) (int, error) {
++	c.access.Lock()
++	if c.closed {
++		c.access.Unlock()
++		return 0, net.ErrClosed
++	}
++	for len(c.buffers) > 0 {
++		buffer := c.buffers[0]
++		if !buffer.IsEmpty() {
++			n, err := buffer.Read(p)
++			c.access.Unlock()
++			return n, err
++		}
++		c.buffers = c.buffers[1:]
++		buffer.Release()
++	}
++	c.access.Unlock()
++	return c.reader.Read(p)
++}
++
++func (c *streamDNSConn) Close() error {
++	c.once.Do(func() {
++		c.closeErr = c.Conn.Close()
++		c.access.Lock()
++		c.closed = true
++		for _, buffer := range c.buffers {
++			buffer.Release()
++		}
++		c.buffers = nil
++		c.access.Unlock()
++	})
++	return c.closeErr
++}
++
++func (c *streamDNSConn) Upstream() any {
++	return c.Conn
++}
+ func HandleStreamDNSRequest(ctx context.Context, router adapter.DNSRouter, conn net.Conn, metadata adapter.InboundContext) error {
+ 	var queryLength uint16
+ 	err := binary.Read(conn, binary.BigEndian, &queryLength)
+--- a/route/dns.go
++++ b/route/dns.go
+@@ -18,6 +18,7 @@
+ )
+ 
+ func (r *Router) hijackDNSStream(ctx context.Context, conn net.Conn, metadata adapter.InboundContext) error {
++	conn = dnsOutbound.NewStreamDNSConn(conn)
+ 	r.searchProcessInfo(ctx, &metadata)
+ 	metadata.Destination = M.Socksaddr{}
+ 	err := N.ReportConnHandshakeSuccess(conn, conn)
+--- a/route/route.go
++++ b/route/route.go
+@@ -12,6 +12,7 @@
+ 	"github.com/sagernet/sing-box/common/sniff"
+ 	C "github.com/sagernet/sing-box/constant"
+ 	"github.com/sagernet/sing-box/log"
++	dnsOutbound "github.com/sagernet/sing-box/protocol/dns"
+ 	R "github.com/sagernet/sing-box/route/rule"
+ 	"github.com/sagernet/sing-mux"
+ 	"github.com/sagernet/sing-tun"
+@@ -100,6 +101,7 @@
+ 		return E.New("global UoT (legacy) not supported since sing-box v1.7.0.")
+ 	}
+ 	if metadata.InboundType == C.TypeTun && metadata.Protocol == C.ProtocolDNS {
++		conn = dnsOutbound.NewStreamDNSConn(conn)
+ 		N.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))
+ 		return nil
+ 	}
+@@ -149,6 +151,7 @@
+ 			for _, buffer := range buffers {
+ 				conn = bufio.NewCachedConn(conn, buffer)
+ 			}
++			conn = dnsOutbound.NewStreamDNSConn(conn)
+ 			N.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))
+ 			return nil
+ 		}
+--- a/protocol/dns/outbound.go
++++ b/protocol/dns/outbound.go
+@@ -44,6 +44,7 @@
+ }
+ 
+ func (d *Outbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
++	conn = NewStreamDNSConn(conn)
+ 	metadata.Destination = M.Socksaddr{}
+ 	for {
+ 		conn.SetReadDeadline(time.Now().Add(C.DNSTimeout))
+--- a/service/resolved/service.go
++++ b/service/resolved/service.go
+@@ -130,6 +130,7 @@
+ }
+ 
+ func (i *Service) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
++	conn = dnsOutbound.NewStreamDNSConn(conn)
+ 	metadata.Inbound = i.Tag()
+ 	metadata.InboundType = i.Type()
+ 	metadata.Destination = M.Socksaddr{}

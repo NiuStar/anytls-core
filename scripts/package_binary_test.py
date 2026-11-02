@@ -51,6 +51,7 @@ class PackagingTests(unittest.TestCase):
    materials+=['patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json']
    materials+=['patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json']
    materials+=['patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
+   materials+=['patches/sing-box/dns-stream-close.identity.json','patches/sing-box/dns-stream-close.patch.json','patches/sing-box/dns-stream-close.patch']
    materials+=['patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch']
    materials+=['patches/sing-box/browser.identity.json','patches/sing-box/browser-dns.patch.json','patches/sing-box/browser-route.patch.json']
    for name in materials:
@@ -60,6 +61,8 @@ class PackagingTests(unittest.TestCase):
    receipt['leaf_certificate']=w.leaf_receipt(leaf,leaf_patch)
    receipt['transient_retry']=w.retry_receipt(*w.retry_identity())
    receipt['doh_deadline_isolation']=w.doh_receipt(*w.doh_identity())
+   receipt['dns_stream_close']=w.dns_stream_receipt(*w.dns_stream_identity())
+   receipt['original_dns_stream_sources_unchanged']=True
    receipt['stream_connect_ack']=w.ack_receipt(*w.ack_identity())
    receipt['browser_provenance']=w.browser_receipt(w.browser_identity())
    receipt.update(original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)

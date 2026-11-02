@@ -67,6 +67,7 @@ class ACKTests(unittest.TestCase):
                 mapping={'box.go':'box.go.txt','debug_http.go':'debug_http.go.txt','protocol/anytls/outbound.go':'anytls-outbound.go.txt','dns/transport/https.go':'https.go.txt'}
                 mapping.update({pin['file']:pin['fixture'] for pin in w.leaf_identity()[0]['files']})
                 mapping.update({'dns/router.go':'browser-dns-router.go.txt','route/route.go':'browser-route.go.txt'})
+                mapping.update({n:'dns-stream-'+n.replace('/','-')+'.txt' for n in w.DNS_STREAM_FILES if n!='route/route.go'})
                 for name,fn in mapping.items():
                     target=box/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((fixture/fn).read_bytes())
                 # Synthetic archive, authenticated with its own independent h1 below.
@@ -100,6 +101,8 @@ class ACKTests(unittest.TestCase):
                 def compile_fixture(cmd,**kw):
                     self.assertEqual(set(replacements),{w.MODULE,w.ACK_MODULE})
                     self.assertTrue(all(Path(path).is_dir() for path in replacements.values()))
+                    sm,sp=w.dns_stream_identity()
+                    self.assertTrue(all(w.sha((Path(replacements[w.MODULE])/pin['file']).read_bytes())==pin['result_sha256'] for pin in sm['files']))
                     if rc=='exception':raise OSError('UNIT compiler launch failure')
                     return rc
                 out=io.StringIO()
@@ -116,6 +119,8 @@ class ACKTests(unittest.TestCase):
                 self.assertEqual([s.split(' ',1)[0] for s in lines],['PATCHED_GO_BEGIN','PATCHED_GO_END'])
                 end=json.loads(lines[-1].split(' ',1)[1]);self.assertEqual(end['rc'],rc)
                 self.assertTrue(end['original_ack_sources_unchanged']);self.assertTrue(end['original_ack_zip_unchanged'])
+                self.assertTrue(end['original_dns_stream_sources_unchanged'])
+                self.assertEqual(end['dns_stream_close'],w.dns_stream_receipt(*w.dns_stream_identity()))
                 self.assertEqual(end['stream_connect_ack'],w.ack_receipt(am,ap))
                 self.assertTrue(all(not path.exists() for path in workpaths))
                 self.assertEqual(originals,{name:Path(name).read_bytes() for name in originals})

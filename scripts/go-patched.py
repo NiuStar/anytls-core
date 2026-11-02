@@ -37,6 +37,55 @@ ACK_VERSION = "v0.0.11"
 ACK_IDENTITY_SHA = "5e25227ce112c3c6a2f5416a284516430259eb7d16e49f41b217bc35a2987005"
 BROWSER_IDENTITY_SHA = "0b536fea8c8ecc308e52bbe3625da68110affef1ccfbd43a3854fc826e1b1a48"
 
+DNS_STREAM_IDENTITY_SHA = "b615d0ff76c4fbd5861bf645e7bd884f6d41d6c11772c23321b67d93025e9171"
+DNS_STREAM_FILES = ("protocol/dns/handle.go", "route/dns.go", "route/route.go",
+                    "protocol/dns/outbound.go", "service/resolved/service.go")
+
+
+def dns_stream_identity(root=ROOT):
+    raw = (root / "patches/sing-box/dns-stream-close.identity.json").read_bytes()
+    require(sha(raw) == DNS_STREAM_IDENTITY_SHA, "DNS stream identity SHA mismatch")
+    m = json.loads(raw)
+    start, _ = identity(root)
+    require(all(m[k] == start[k] for k in ("module", "version", "commit", "module_sum", "go_mod_sum"))
+            and m["toolchain"] == CURRENT_GO and m["browser_identity_sha256"] == BROWSER_IDENTITY_SHA,
+            "DNS stream upstream chain mismatch")
+    require(tuple(p["file"] for p in m["files"]) == DNS_STREAM_FILES, "DNS stream file set mismatch")
+    browser = browser_identity(root)
+    require(m["files"][2]["source_sha256"] == browser["files"][1]["result_sha256"],
+            "DNS stream browser intermediate mismatch")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "DNS stream patch SHA mismatch")
+    require(sha((root / "patches/sing-box" / m["upstream_diff"]).read_bytes()) == m["upstream_diff_sha256"],
+            "DNS stream upstream diff SHA mismatch")
+    return m, patch
+
+
+def apply_dns_stream(replacement, m, patch):
+    ops = json.loads(patch)
+    require(set(ops) == {"files"} and tuple(p["file"] for p in ops["files"]) == DNS_STREAM_FILES,
+            "DNS stream operation set mismatch")
+    for entry, pin in zip(ops["files"], m["files"]):
+        p = replacement / pin["file"]
+        source = p.read_bytes()
+        require(sha(source) == pin["source_sha256"], "DNS stream source SHA mismatch")
+        text = source.decode()
+        require(set(entry) == {"file", "replacements"}, "DNS stream operation mismatch")
+        for op in entry["replacements"]:
+            require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1,
+                    "DNS stream exact replacement mismatch")
+            text = text.replace(op["old"], op["new"], 1)
+        result = text.encode()
+        require(sha(result) == pin["result_sha256"], "DNS stream result SHA mismatch")
+        p.write_bytes(result)
+
+
+def dns_stream_receipt(m, patch):
+    return dict(identity_sha256=DNS_STREAM_IDENTITY_SHA, module=MODULE, version=VERSION,
+                module_sum=m["module_sum"], go_mod_sum=m["go_mod_sum"], patch_sha256=sha(patch),
+                upstream_diff_sha256=m["upstream_diff_sha256"], files=m["files"], toolchain=CURRENT_GO)
+
+
 def browser_identity(root=ROOT):
     raw = (root / "patches/sing-box/browser.identity.json").read_bytes()
     require(sha(raw) == BROWSER_IDENTITY_SHA, "browser identity SHA mismatch")
@@ -451,6 +500,7 @@ def main(argv):
     doh_m, doh_patch = doh_identity()
     ack_m, ack_patch = ack_identity()
     browser_m = browser_identity()
+    dns_stream_m, dns_stream_patch = dns_stream_identity()
     require(all(retry_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum"))
             and retry_m["source_sha256"] == chrome_m["result_sha256"], "retry upstream chain mismatch")
     require(all(leaf_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
@@ -494,6 +544,9 @@ def main(argv):
     original_doh = cache_doh.read_bytes()
     patched_doh = transform_doh(original_doh, doh_m, doh_patch)
     original_leaf = {name: (directory / name).read_bytes() for name in LEAF_FILES}
+    original_dns_stream = {name: (directory / name).read_bytes() for name in DNS_STREAM_FILES}
+    require(all(sha(original_dns_stream[p["file"]]) == p["original_sha256"]
+                for p in dns_stream_m["files"]), "module-cache DNS stream source SHA mismatch")
     require(all(sha(original_leaf[pin["file"]]) == pin["source_sha256"] for pin in leaf_m["files"]),
             "module-cache leaf source SHA mismatch")
     ack_selected = json.loads(read("list", "-m", "-json", ACK_MODULE))
@@ -556,6 +609,10 @@ def main(argv):
         receipt["doh_deadline_isolation"] = doh_receipt(doh_m, doh_patch)
         apply_browser(replacement, browser_m)
         receipt["browser_provenance"] = browser_receipt(browser_m)
+        apply_dns_stream(replacement, dns_stream_m, dns_stream_patch)
+        receipt["dns_stream_close"] = dns_stream_receipt(dns_stream_m, dns_stream_patch)
+        receipt["dns_stream_staged_paths"] = {n: str(replacement / n) for n in DNS_STREAM_FILES}
+        receipt["browser_result_sha256_scope"] = "intermediate route/route.go; dns_stream_close binds final"
         ack_replacement = work / "sing-anytls"
         ack_replacement.mkdir()
         receipt["ack_archive"] = stage_archive(ack_zip, ack_replacement, ack_m["module_sum"], ACK_MODULE, ACK_VERSION)
@@ -609,7 +666,11 @@ def main(argv):
         require(staged_chrome.read_bytes() == patched_retry, "final staged retry source changed")
         require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")
         require(staged_doh.read_bytes() == patched_doh, "final staged DoH source changed")
-        require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"] for pin in browser_m["files"]), "final staged browser source changed")
+        require(sha((replacement / "dns/router.go").read_bytes()) == browser_m["files"][0]["result_sha256"], "final staged browser DNS source changed")
+        require(all(sha((replacement / p["file"]).read_bytes()) == p["result_sha256"]
+                    for p in dns_stream_m["files"]), "final staged DNS stream sources changed")
+        require(all((directory / n).read_bytes() == b for n, b in original_dns_stream.items()),
+                "module-cache DNS stream sources changed")
         require(sha(cache_zip.read_bytes()) == original_zip_sha, "module-cache ZIP changed during command")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
@@ -646,6 +707,8 @@ def main(argv):
                 "module-cache leaf sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
         require(sha(ack_zip.read_bytes()) == ack_m["zip_sha256"], "ACK module-cache ZIP changed")
+        require(all((directory / n).read_bytes() == b for n, b in original_dns_stream.items()),
+                "module-cache DNS stream sources changed")
         require(all(((ack_directory / name).read_bytes() if (ack_directory / name).exists() else None) == data
                     for name, data in ack_original.items()), "ACK module-cache sources changed")
     receipt.update(rc=rc, ephemeral_cleanup="ok", root_inputs_unchanged=True,
@@ -653,6 +716,7 @@ def main(argv):
                    original_anytls_outbound_unchanged=True)
     receipt["original_leaf_sources_unchanged"] = True
     receipt["original_doh_source_unchanged"] = True
+    receipt["original_dns_stream_sources_unchanged"] = True
     receipt["original_module_zip_unchanged"] = True
     receipt["original_ack_sources_unchanged"] = True
     receipt["original_ack_zip_unchanged"] = True

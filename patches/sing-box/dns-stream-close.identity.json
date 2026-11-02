@@ -1,0 +1,46 @@
+{
+  "module": "github.com/sagernet/sing-box",
+  "version": "v1.14.3",
+  "commit": "7054cac5124465ffdb145870d7c01885566711b1",
+  "module_sum": "h1:cBg8TP5SPWoMAlWqTqbSNdHGKPUciZisjQbLtqFlMZA=",
+  "go_mod_sum": "h1:Yei01EtPLnLTpLho05THCbqUwfidsaE/0vm1oSu+XQA=",
+  "toolchain": "go1.27.3",
+  "browser_identity_sha256": "0b536fea8c8ecc308e52bbe3625da68110affef1ccfbd43a3854fc826e1b1a48",
+  "patch": "dns-stream-close.patch.json",
+  "patch_sha256": "9078048d26b9e9ef5967d47fad4cfb584b7a56c7c5810c49bdd5e84b9b2a48e0",
+  "upstream_diff": "dns-stream-close.patch",
+  "upstream_diff_sha256": "98c235507c4a9c1746ad23ede928f40e3c02b8b4bcd6308e128df04baf2db661",
+  "files": [
+    {
+      "file": "protocol/dns/handle.go",
+      "original_sha256": "11b7eeb74f0725ff58ac25e9b8bba5d54665511aa80c4efa45e82ea121edc775",
+      "source_sha256": "11b7eeb74f0725ff58ac25e9b8bba5d54665511aa80c4efa45e82ea121edc775",
+      "result_sha256": "77e3b551e34effbf19636b8380de83d21ab53f5e0c0616f49183fb95ee3b96de"
+    },
+    {
+      "file": "route/dns.go",
+      "original_sha256": "d7bb7e8e5fe5db34a56f83382cb23d0edbe5537a21b847688c14d6f1d2db99d2",
+      "source_sha256": "d7bb7e8e5fe5db34a56f83382cb23d0edbe5537a21b847688c14d6f1d2db99d2",
+      "result_sha256": "d73ade98f4c689d7998480c176d1cf6688561812eb56277da29d757f4eb11807"
+    },
+    {
+      "file": "route/route.go",
+      "original_sha256": "0ceebe2b5ef5985fd8fcac3c59c8d6b3bd3bbcdbfd2c24404a7756f494c6485a",
+      "source_sha256": "d24b411723a45c068bf3c8e024b2c67f4a80bc9765349fe9d5c6529cd80de6a5",
+      "result_sha256": "f5d1ddbf99ac709c688c76638253e9a5e115f5b2fea90a0daef7d1acb2084279"
+    },
+    {
+      "file": "protocol/dns/outbound.go",
+      "original_sha256": "bd92164d63269176e287412567f4ad6565063635fdd8df44a45ccd373c01d819",
+      "source_sha256": "bd92164d63269176e287412567f4ad6565063635fdd8df44a45ccd373c01d819",
+      "result_sha256": "b0ae67600b3d740c4f2802f6ae94e4206b04b3828d818203faf12c33c582adef"
+    },
+    {
+      "file": "service/resolved/service.go",
+      "original_sha256": "c588e79e2fbf6badb21ee40e36cbd411132e9873f7249beefdda736072e1efa7",
+      "source_sha256": "c588e79e2fbf6badb21ee40e36cbd411132e9873f7249beefdda736072e1efa7",
+      "result_sha256": "addf6c1cc1f7a5ed0cf1d1e16b49000bbbde778877a00a58cf1044462495c805"
+    }
+  ],
+  "status": "INTEGRATED_PRERELEASE_NOT_RELEASED"
+}

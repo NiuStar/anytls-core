@@ -232,7 +232,7 @@ class InstallerTests(unittest.TestCase):
             prefix = "anytls-core-" + tag
             fixture = app / "fixture.tar.gz"
             materials = [str(p.relative_to(Path(i.__file__).resolve().parent.parent))
-                         for p in (Path(i.__file__).resolve().parent.parent / "patches/sing-box").glob("*.json")]
+                         for p in (Path(i.__file__).resolve().parent.parent / "patches/sing-box").glob("*")]
             materials += [str(p.relative_to(Path(i.__file__).resolve().parent.parent))
                           for p in (Path(i.__file__).resolve().parent.parent / "patches/sing-anytls").glob("*")]
             root = Path(i.__file__).resolve().parent.parent
@@ -310,6 +310,8 @@ class InstallerTests(unittest.TestCase):
                        output_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
                        target={'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0'},
                        doh_deadline_isolation=ns['doh_receipt'](*ns['doh_identity'](source)),
+                       dns_stream_close=ns['dns_stream_receipt'](*ns['dns_stream_identity'](source)),
+                       original_dns_stream_sources_unchanged=True,
                        stream_connect_ack=ns['ack_receipt'](*ns['ack_identity'](source)),
                        browser_provenance=ns['browser_receipt'](ns['browser_identity'](source)))
         return i.subprocess.CompletedProcess([], 0, ('PATCHED_GO_END '+json.dumps(receipt)+'\n').encode(), b'')
@@ -324,7 +326,7 @@ class InstallerTests(unittest.TestCase):
             for bad in (b'',good+good):
                 with self.assertRaisesRegex(ValueError,'unique certified END'):i.certified_build(bad,wrapper,root,output)
             r=json.loads(good.decode().split(' ',1)[1])
-            for field in ('browser_provenance','doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
+            for field in ('dns_stream_close','original_dns_stream_sources_unchanged','browser_provenance','doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
                 bad=dict(r);bad.pop(field)
                 with self.assertRaisesRegex(ValueError,'identity|output'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
             import copy
@@ -345,7 +347,7 @@ class InstallerTests(unittest.TestCase):
                                (prefix + "/scripts/go-patched.py", tarfile.REGTYPE, b"UNTRUSTED ARCHIVE PYTHON"),
                                (prefix + "/scripts/json.py", tarfile.REGTYPE, b"raise RuntimeError('archive import must not run')")] +
                      [(prefix + "/" + str(p.relative_to(root)), tarfile.REGTYPE, p.read_bytes())
-                      for p in list((root / "patches/sing-box").glob("*.json")) + list((root / "patches/sing-anytls").glob("*"))])
+                      for p in list((root / "patches/sing-box").glob("*")) + list((root / "patches/sing-anytls").glob("*"))])
         data = archive.read_bytes()
         name = prefix + "-source.tar.gz"
         sums = (("0" * 64 if failure == "checksum" else hashlib.sha256(data).hexdigest()) + "  " + name + "\n").encode()
@@ -367,6 +369,9 @@ class InstallerTests(unittest.TestCase):
             Path(command[command.index("-o") + 1]).write_bytes(b"BUILT FIXTURE NOT EXECUTED")
             result = self.certified_result(Path(kwargs['cwd']), Path(command[command.index('-o') + 1]), wrapper.read_bytes())
             if failure == 'receipt':result.stdout = b''
+            elif failure == 'dns-stream':
+                r=json.loads(result.stdout.decode().split(' ',1)[1]);r.pop('dns_stream_close')
+                result.stdout=('PATCHED_GO_END '+json.dumps(r)).encode()
             elif failure == 'doh':
                 r=json.loads(result.stdout.decode().split(' ',1)[1]);r.pop('doh_deadline_isolation')
                 result.stdout=('PATCHED_GO_END '+json.dumps(r)).encode()
@@ -405,7 +410,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_initial_and_update_failures_never_publish(self):
         for update in (False, True):
-            for failure in ("checksum", "build", "wrong-version", "no-version", "receipt", "doh", "ack", "digest"):
+            for failure in ("checksum", "build", "wrong-version", "no-version", "receipt", "dns-stream", "doh", "ack", "digest"):
                 with self.subTest(update=update, failure=failure), self.temp() as tmp:
                     home = Path(tmp); app = home / ".anytls"; app.mkdir()
                     (app / "anytls-macos").write_bytes(b"original executable")

@@ -39,6 +39,10 @@ ack_spec = importlib.util.spec_from_file_location("ack_patch_tests", SCRIPT.pare
 ack_tests = importlib.util.module_from_spec(ack_spec)
 ack_spec.loader.exec_module(ack_tests)
 ACKTests = ack_tests.ACKTests
+stream_spec = importlib.util.spec_from_file_location("dns_stream_tests", SCRIPT.parent / "tests/test-dns-stream-patched.py")
+stream_tests = importlib.util.module_from_spec(stream_spec)
+stream_spec.loader.exec_module(stream_tests)
+DNSStreamPatchTests = stream_tests.DNSStreamPatchTests
 
 
 class ValidationTests(unittest.TestCase):
@@ -228,6 +232,7 @@ class OutputReservationTests(unittest.TestCase):
                         cache_debug=source, original_debug=b"unchanged",
                         cache_chrome=source, original_chrome=b"unchanged",
                         cache_doh=source, original_doh=b"unchanged",
+                        original_dns_stream={"source": b"unchanged"},
                         cache_zip=source, original_zip_sha=wrapper.sha(b"unchanged"),
                         ack_zip=source, ack_m={"zip_sha256":wrapper.sha(b"unchanged")}, ack_original={}, ack_directory=root,
                         root_inputs={}, ROOT=root, original_leaf={"source": b"unchanged"}, directory=root, os=os, shutil=shutil,

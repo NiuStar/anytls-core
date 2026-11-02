@@ -1,0 +1,61 @@
+{
+  "files": [
+    {
+      "file": "protocol/dns/handle.go",
+      "replacements": [
+        {
+          "old": "\t\"net\"",
+          "new": "\t\"net\"\n\t\"sync\""
+        },
+        {
+          "old": "func HandleStreamDNSRequest(",
+          "new": "// NewStreamDNSConn transfers route replay buffers before asynchronous DNS\n// callbacks can close their CachedConn owner. Only the finite memory reads are\n// locked; closing the upstream must always be able to wake a network read.\nfunc NewStreamDNSConn(conn net.Conn) net.Conn {\n\tif _, ok := conn.(*streamDNSConn); ok {\n\t\treturn conn\n\t}\n\treader := conn\n\tvar buffers []*buf.Buffer\n\tfor {\n\t\tcached, ok := reader.(*bufio.CachedConn)\n\t\tif !ok {\n\t\t\tbreak\n\t\t}\n\t\tif buffer := cached.ReadCached(); buffer != nil {\n\t\t\tbuffers = append(buffers, buffer)\n\t\t}\n\t\treader = cached.Conn\n\t}\n\treturn &streamDNSConn{Conn: conn, reader: reader, buffers: buffers}\n}\n\ntype streamDNSConn struct {\n\tnet.Conn\n\treader   net.Conn\n\taccess   sync.Mutex\n\tbuffers  []*buf.Buffer\n\tclosed   bool\n\tonce     sync.Once\n\tcloseErr error\n}\n\nfunc (c *streamDNSConn) Read(p []byte) (int, error) {\n\tc.access.Lock()\n\tif c.closed {\n\t\tc.access.Unlock()\n\t\treturn 0, net.ErrClosed\n\t}\n\tfor len(c.buffers) > 0 {\n\t\tbuffer := c.buffers[0]\n\t\tif !buffer.IsEmpty() {\n\t\t\tn, err := buffer.Read(p)\n\t\t\tc.access.Unlock()\n\t\t\treturn n, err\n\t\t}\n\t\tc.buffers = c.buffers[1:]\n\t\tbuffer.Release()\n\t}\n\tc.access.Unlock()\n\treturn c.reader.Read(p)\n}\n\nfunc (c *streamDNSConn) Close() error {\n\tc.once.Do(func() {\n\t\tc.closeErr = c.Conn.Close()\n\t\tc.access.Lock()\n\t\tc.closed = true\n\t\tfor _, buffer := range c.buffers {\n\t\t\tbuffer.Release()\n\t\t}\n\t\tc.buffers = nil\n\t\tc.access.Unlock()\n\t})\n\treturn c.closeErr\n}\n\nfunc (c *streamDNSConn) Upstream() any {\n\treturn c.Conn\n}\nfunc HandleStreamDNSRequest("
+        }
+      ]
+    },
+    {
+      "file": "route/dns.go",
+      "replacements": [
+        {
+          "old": "func (r *Router) hijackDNSStream(ctx context.Context, conn net.Conn, metadata adapter.InboundContext) error {",
+          "new": "func (r *Router) hijackDNSStream(ctx context.Context, conn net.Conn, metadata adapter.InboundContext) error {\n\tconn = dnsOutbound.NewStreamDNSConn(conn)"
+        }
+      ]
+    },
+    {
+      "file": "route/route.go",
+      "replacements": [
+        {
+          "old": "\tR \"github.com/sagernet/sing-box/route/rule\"",
+          "new": "\tdnsOutbound \"github.com/sagernet/sing-box/protocol/dns\"\n\tR \"github.com/sagernet/sing-box/route/rule\""
+        },
+        {
+          "old": "\n\t\tN.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))",
+          "new": "\n\t\tconn = dnsOutbound.NewStreamDNSConn(conn)\n\t\tN.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))"
+        },
+        {
+          "old": "\n\t\t\tN.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))",
+          "new": "\n\t\t\tconn = dnsOutbound.NewStreamDNSConn(conn)\n\t\t\tN.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))"
+        }
+      ]
+    },
+    {
+      "file": "protocol/dns/outbound.go",
+      "replacements": [
+        {
+          "old": "func (d *Outbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {",
+          "new": "func (d *Outbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {\n\tconn = NewStreamDNSConn(conn)"
+        }
+      ]
+    },
+    {
+      "file": "service/resolved/service.go",
+      "replacements": [
+        {
+          "old": "func (i *Service) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {",
+          "new": "func (i *Service) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {\n\tconn = dnsOutbound.NewStreamDNSConn(conn)"
+        }
+      ]
+    }
+  ]
+}
