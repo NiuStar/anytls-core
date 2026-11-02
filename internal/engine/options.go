@@ -16,6 +16,7 @@ import (
 // sing registries/services cannot widen the supported surface or be mutated by New.
 func decodeOptions(ctx context.Context, runtimeJSON []byte) (context.Context, option.Options, error) {
 	ctx = Context(service.ContextWithRegistry(ctx, service.NewRegistry()))
+	ctx = installBrowserProvenance(ctx, runtimeJSON)
 	decoded, err := json.UnmarshalExtendedContext[preallocatedOptions](ctx, runtimeJSON)
 	options := option.Options(decoded)
 	if err != nil {

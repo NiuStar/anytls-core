@@ -1,0 +1,16 @@
+{
+  "replacements": [
+    {
+      "old": "\t\"github.com/sagernet/sing/common/uot\"",
+      "new": "\t\"github.com/sagernet/sing/common/uot\"\n\t\"github.com/sagernet/sing/service\""
+    },
+    {
+      "old": "selectedRule, _, buffers, _, err := r.matchRule(ctx, &metadata, conn, nil)",
+      "new": "selectedRule, selectedRuleIndex, buffers, _, err := r.matchRule(ctx, &metadata, conn, nil)\n if selectedRule == nil { selectedRuleIndex = -1 }"
+    },
+    {
+      "old": "\tmetadata.RouteOutbound = selectedOutbound.Tag()\n\tfor _, tracker := range r.trackers {\n\t\tconn = tracker.RoutedConnection",
+      "new": "\tmetadata.RouteOutbound = selectedOutbound.Tag()\n if guard := service.FromContext[interface {\n  PrepareBrowserCandidate(context.Context, adapter.Router, adapter.InboundContext, adapter.Rule, int, adapter.Outbound) context.Context\n }](r.ctx); guard != nil {\n  ctx = guard.PrepareBrowserCandidate(ctx, r, metadata, selectedRule, selectedRuleIndex, selectedOutbound)\n }\n\tfor _, tracker := range r.trackers {\n\t\tconn = tracker.RoutedConnection"
+    }
+  ]
+}

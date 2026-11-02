@@ -18,6 +18,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 
 	"github.com/NiuStar/anytls-core/internal/dnsmetrics"
+	"github.com/sagernet/sing/service"
 )
 
 type dnsMetricsContextKey struct{}
@@ -96,10 +97,13 @@ func newObservedHTTPS(ctx context.Context, logger log.ContextLogger, tag string,
 		return nil, err
 	}
 	metrics, _ := ctx.Value(dnsMetricsContextKey{}).(*DNSMetrics)
-	if metrics == nil {
-		return upstream, nil
+	result, err := wrapHTTPS(upstream, metrics)
+	if err == nil && (options.TLS == nil || (!options.TLS.Insecure && options.TLS.Engine == "")) {
+		if observer, ok := service.FromContext[browserDNSObserver](ctx).(*browserProvenance); ok {
+			observer.trust(result)
+		}
 	}
-	return wrapHTTPS(upstream, metrics)
+	return result, err
 }
 
 func wrapHTTPS(upstream adapter.DNSTransport, metrics *DNSMetrics) (adapter.DNSTransport, error) {
