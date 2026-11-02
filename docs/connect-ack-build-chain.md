@@ -8,7 +8,7 @@ The second patched module is `github.com/anytls/sing-anytls@v0.0.11`.
 `patches/sing-anytls/identity.json` pins the root go.sum h1/go.mod h1,
 original ZIP SHA256, every original/result file, exact transformation JSON and
 original reviewed-input unified diff. The diff SHA256 is
-`0e660f750fb598f86b3da13c377240450bd42087bb541a9f471d71523c6147b7`.
+`94ffccd6b02d84ec65bff58c6f9e5e7b3e09e7b4180bb9bb8810d9bc24db69fc`.
 This is the current review input, **not a claim that review passed**. A revised
 payload requires an explicit successor identity/wrapper and new evidence; never
 replace this frozen candidate silently.
@@ -56,3 +56,21 @@ Go HashZip includes explicit directory entries in its sorted full-name digest;
 staging now matches this contract for both modules. Existing real module file
 pins and sing-box patch files are unchanged. Python grammar is checked against
 3.9; target interpreter/native execution is still pending.
+
+## ACK P1 successor r2
+
+Negative SYNACK preserves legacy closure before settings and with v1; only empty
+success requires authenticated known-v2 capability. All waiter returns use one
+return-point context classification. Unknown deadlines consistently include
+Unconfirmed, pure cancellation never does; canceling a waiter never closes the
+shared stream. A cancellation after the final observation remains concurrent.
+RemoteConnectError deliberately sanitizes legacy Read/Write display too: original
+peer text remains available via Unwrap but must not be logged. Exact legacy error
+text/type compatibility is not promised. The local 3s budget starts per wait call;
+callers must retain the total dial deadline. No auto fallback/runtime integration.
+
+Identical new Go contracts run on fresh authenticated ZIP expansions, not the
+historical baseline tree whose LAB hook drifted. The baseline-only pure policy
+projection is explicitly LAB evidence; real old/new WaitConnect entry/read paths
+and authenticated TLS negative reports independently demonstrate business RED.
+Evidence lives outside this repository in ack-fix-r2. Publication remains blocked.

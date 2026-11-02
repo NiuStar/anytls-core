@@ -34,7 +34,7 @@ DOH_IDENTITY_SHA = "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33c
 
 ACK_MODULE = "github.com/anytls/sing-anytls"
 ACK_VERSION = "v0.0.11"
-ACK_IDENTITY_SHA = "8e9b745ebbb03f41fd2db29a50f62d64d8feb502786d31f6d506613b11d784c8"
+ACK_IDENTITY_SHA = "5e25227ce112c3c6a2f5416a284516430259eb7d16e49f41b217bc35a2987005"
 ACK_FILES = ("session/session.go", "session/stream.go", "session/connect_ack.go")
 
 

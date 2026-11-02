@@ -6,17 +6,17 @@
   "zip_sha256": "5b588f1a803956f48efa5ee3b0bc7bd95df894ebb647e383e3ed4660b83589d2",
   "toolchain": "go1.27.3",
   "patch": "connect-ack.patch.json",
-  "patch_sha256": "4652114dc5a0713a24a834c1b428c67e0f7749e863f712bc32ee31a259473acd",
+  "patch_sha256": "2f6d364cb57bc675a5315231d2ef046fa827553fe0f3267260dbe1d20daeff72",
   "upstream_diff": "connect-ack.patch",
-  "upstream_diff_sha256": "0e660f750fb598f86b3da13c377240450bd42087bb541a9f471d71523c6147b7",
-  "parent_build_commit": "cc69b28605e933b3f534a0f8f5d9a790384a17e6",
+  "upstream_diff_sha256": "94ffccd6b02d84ec65bff58c6f9e5e7b3e09e7b4180bb9bb8810d9bc24db69fc",
+  "parent_build_commit": "4de654ffce2f925e2b798e5b8ec585181798ac71",
   "sing_box_doh_identity_sha256": "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33cc7ff",
   "review_status": "PRERELEASE_BLOCKED_PENDING_INDEPENDENT_REVIEW",
   "files": [
     {
       "file": "session/session.go",
       "source_sha256": "14e27f2cca6118a3025b1875ffe8963d2fe840f5554bd2ff4464dd0a5f162fb8",
-      "result_sha256": "0a5080ecafb8b126d0f8ef27f52df98a2b3b625a89508f3e72ee2c11fbd65b35"
+      "result_sha256": "75e9de403e31897c5c57b138705824cb4bd6520dbef7bee384f06378e83ce909"
     },
     {
       "file": "session/stream.go",
@@ -26,7 +26,7 @@
     {
       "file": "session/connect_ack.go",
       "source_sha256": null,
-      "result_sha256": "2d05fbd98032ae15f319d4c64211788ec0f68d6fea027d07672ef58cc9f74812"
+      "result_sha256": "8f371a030fff3977a0330fb227dc39c3f629f4738e7cbc77f8edf218a1e1cc44"
     }
   ]
 }

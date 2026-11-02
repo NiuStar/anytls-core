@@ -37,7 +37,7 @@
  		s.synDoneLock.Lock()
  		if s.synDone != nil {
  			s.synDone()
-@@ -229,20 +234,24 @@
+@@ -229,20 +234,26 @@
  					s.synDone = nil
  				}
  				s.synDoneLock.Unlock()
@@ -61,15 +61,17 @@
 +				s.streamLock.RLock()
 +				stream, ok := s.streams[sid]
 +				s.streamLock.RUnlock()
-+				if ok && s.isClient && s.peerSettingsKnown.Load() && s.peerVersion.Load() >= 2 {
-+					stream.completeConnect(ackErr)
++				if ok {
++					// Negative reports preserve legacy stream closure regardless of capability.
 +					if ackErr != nil {
 +						stream.closeWithError(ackErr)
++					} else if s.isClient && s.peerSettingsKnown.Load() && s.peerVersion.Load() >= 2 {
++						stream.completeConnect(nil)
 +					}
  				}
  			case cmdFIN:
  				s.streamLock.Lock()
-@@ -283,7 +292,7 @@
+@@ -283,7 +294,7 @@
  						}
  						// check client's version
  						if v, err := strconv.Atoi(m["v"]); err == nil && v >= 2 {
@@ -78,7 +80,7 @@
  							// send cmdServerSettings
  							f := newFrame(cmdServerSettings, 0)
  							f.data = util.StringMap{
-@@ -343,8 +352,10 @@
+@@ -343,8 +354,10 @@
  					if s.isClient {
  						// check server's version
  						m := util.StringMapFromBytes(buffer)
@@ -199,7 +201,7 @@
  		}
 --- /dev/null
 +++ b/session/connect_ack.go
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,77 @@
 +package session
 +
 +import (
@@ -225,13 +227,26 @@
 +	s.connectOnce.Do(func() { s.connectErr = err; close(s.connectDone) })
 +}
 +
++// classifyConnectExit is the return-point policy for every waiter exit.
++// Pure cancellation stays cancellation; only unknown-capability deadlines are
++// unconfirmed. A cancellation after this final observation is inherently concurrent.
++func (s *Stream) classifyConnectExit(ctx context.Context, result error) error {
++	if err := ctx.Err(); err != nil {
++		result = err
++	}
++	if !s.sess.peerSettingsKnown.Load() && (errors.Is(result, context.DeadlineExceeded) || errors.Is(result, os.ErrDeadlineExceeded)) {
++		return errors.Join(ErrConnectACKUnconfirmed, result)
++	}
++	return result
++}
++
 +// WaitConnect waits for this stream's remote TCP CONNECT report, not target TLS.
 +// Call ONLY after successfully writing the target address, before business data.
 +// It never retries, writes payload, closes a stream or resets a session. The owner
-+// must close losing/failed streams. Repeated/concurrent waits share one result;
-+// cancellation affects only that waiter. The existing 3s SYN watchdog bounds an
-+// otherwise deadline-free call; context/read deadlines may shorten that budget.
-+func (s *Stream) WaitConnect(ctx context.Context) error {
++// must close losing/failed streams. Cancellation affects only that waiter.
++// Each call has a local 3s budget; reuse the caller's total dial deadline.
++func (s *Stream) WaitConnect(ctx context.Context) (result error) {
++	defer func() { result = s.classifyConnectExit(ctx, result) }()
 +	if err := ctx.Err(); err != nil {
 +		return err
 +	}
@@ -252,23 +267,14 @@
 +		}
 +		select {
 +		case <-ctx.Done():
-+			if !s.sess.peerSettingsKnown.Load() {
-+				return errors.Join(ErrConnectACKUnconfirmed, ctx.Err())
-+			}
 +			return ctx.Err()
 +		case <-s.connectDeadline.Wait():
 +			return os.ErrDeadlineExceeded
 +		case <-timer.C:
-+			if !s.sess.peerSettingsKnown.Load() {
-+				return errors.Join(ErrConnectACKUnconfirmed, os.ErrDeadlineExceeded)
-+			}
 +			return os.ErrDeadlineExceeded
 +		case <-capability:
 +			capability = nil
 +		case <-s.connectDone:
-+			if err := ctx.Err(); err != nil {
-+				return err
-+			}
 +			return s.connectErr
 +		}
 +	}
