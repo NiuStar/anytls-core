@@ -168,7 +168,7 @@ func TestBrowserSDKDNSReturnSyncAsyncCacheIdentity(t *testing.T) {
 					// The cache entry was produced by the untrusted same-tag stub.
 					// A later default lookup must not launder it into strict TLS authority.
 					injected, m2 := adapter.ExtendContext(ctx)
-					m2.Inbound = "cache-injection"
+					m2.Inbound = fmt.Sprintf("cache-injection-%t", async)
 					m2.Source = M.ParseSocksaddr("192.0.2.77:53")
 					before := requests.Load()
 					router.Exchange(injected, q.Copy(), adapter.DNSQueryOptions{})
