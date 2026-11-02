@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -19,10 +20,11 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 	identity, _ := controlHelperConfigIdentity(w.configPath)
 	s := &controlHelperServer{registration: controlHelperRegistration{UID: 501, Config: w.configPath}}
 	// UNIT-SIMULATED root/kernel authority. Real Unix framing and HTTP authentication.
-	s.peer = func(net.Conn) (uint32, error) { return 0, nil }
+	var peerUID atomic.Uint32
+	s.peer = func(net.Conn) (uint32, error) { return peerUID.Load(), nil }
 	s.startupRegistration = func() (controlHelperRegistration, error) { return s.registration, nil }
-	authCalls := 0
-	s.startupAuthenticate = func(net.Conn, *startupBinding) bool { authCalls++; return true }
+	var authCalls atomic.Int32
+	s.startupAuthenticate = func(net.Conn, *startupBinding) bool { authCalls.Add(1); return true }
 	epoch, operation := strings.Repeat("e", 32), strings.Repeat("f", 32)
 	s.dnsBind(&startupBinding{}, epoch, operation, identity)
 	b := de.Binding{InstanceID: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32), ManifestID: strings.Repeat("c", 64), RuntimeSHA256: strings.Repeat("d", 64)}
@@ -63,8 +65,8 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 		return ack
 	}
 	q := de.Push{DNSSchema: 1, Action: "dns.push", HelperEpoch: epoch, OperationID: operation, ConfigIdentity: identity, Binding: b, Snapshot: collector.Snapshot()}
-	if a := push(q); a.Code != "OK" || authCalls != 2 {
-		t.Fatalf("push %s auth %d", a.Code, authCalls)
+	if a := push(q); a.Code != "OK" || authCalls.Load() != 2 {
+		t.Fatalf("push %s auth %d", a.Code, authCalls.Load())
 	}
 	if a := push(q); a.Code != "IDENTITY_MISMATCH" {
 		t.Fatal("replay accepted")
@@ -74,7 +76,7 @@ func dnsRuntimeUnixHTTP(t *testing.T, producer *de.Collector) {
 	if a := push(q); a.Code != "IDENTITY_MISMATCH" {
 		t.Fatal("run rewrite")
 	}
-	s.peer = func(net.Conn) (uint32, error) { return 501, nil }
+	peerUID.Store(501)
 	w.dnsRequest = func(ctx context.Context, q de.Read) (de.Response, error) {
 		c, e := net.Dial("unix", path)
 		if e != nil {
