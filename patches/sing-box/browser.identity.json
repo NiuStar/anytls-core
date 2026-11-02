@@ -1,5 +1,5 @@
 {
-  "status": "CANDIDATE_NOT_BUILD_WRAPPER_INTEGRATED",
+  "status": "INTEGRATED_PRERELEASE",
   "module": "github.com/sagernet/sing-box",
   "version": "v1.14.3",
   "files": [
@@ -13,9 +13,9 @@
     {
       "file": "route/route.go",
       "source_sha256": "0ceebe2b5ef5985fd8fcac3c59c8d6b3bd3bbcdbfd2c24404a7756f494c6485a",
-      "result_sha256": "522fc57af572a11e1884a4690074bc1c7943bb8cabda659a21154e978e511319",
+      "result_sha256": "d24b411723a45c068bf3c8e024b2c67f4a80bc9765349fe9d5c6529cd80de6a5",
       "patch": "browser-route.patch.json",
-      "patch_sha256": "927e0a27de0116348c732abc2f0a93e1abf0d9defd7d0cfbdd8b30e16a052013"
+      "patch_sha256": "046ba1a12776994301281ae02785736bb623584e4ccd813f1b681b29242ee962"
     }
   ]
 }

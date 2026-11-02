@@ -135,6 +135,7 @@ func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start
 		if stopAdmission != nil {
 			stopAdmission()
 		}
+		closeBrowserProvenance(ctx)
 		span := recorder.Begin("FINALIZE", "CORE_CLOSE", st.Fields{})
 		closeErr := instance.Close()
 		recorder.End(span, timelineCode(closeErr), st.Fields{})

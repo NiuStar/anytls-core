@@ -27,6 +27,7 @@ import (
 	"github.com/NiuStar/anytls-core/internal/engine"
 	anytls "github.com/anytls/sing-anytls"
 	"github.com/anytls/sing-anytls/padding"
+	"github.com/anytls/sing-anytls/session"
 	"github.com/miekg/dns"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -39,6 +40,8 @@ import (
 // never repaired here. Run (not RunWithRecords) deliberately makes no runtime
 // records claim after these substitutions. This is NOT a privileged TUN test.
 type unifiedDNSPeer struct {
+	browser                                           atomic.Bool
+	v6, v4                                            atomic.Int64
 	target                                            string
 	accepted, authenticated, streams, payload, denied atomic.Int64
 	mu                                                sync.Mutex
@@ -61,6 +64,14 @@ func (p *unifiedDNSPeer) NewConnectionEx(_ context.Context, c net.Conn, _ M.Sock
 	go func() {
 		defer p.wg.Done()
 		defer c.Close()
+		if p.browser.Load() {
+			if d.Addr.Is6() {
+				p.v6.Add(1)
+				c.(*session.Stream).HandshakeFailure(fmt.Errorf("controlled remote IPv6 connect failure"))
+				return
+			}
+			p.v4.Add(1)
+		}
 		// This also rejects AnyTLS UoT magic addresses: no UDP/plain-DNS forwarding.
 		if d.String() != p.target {
 			p.denied.Add(1)
@@ -71,6 +82,12 @@ func (p *unifiedDNSPeer) NewConnectionEx(_ context.Context, c net.Conn, _ M.Sock
 			return
 		}
 		p.track(up)
+		if p.browser.Load() {
+			if err := c.(*session.Stream).HandshakeSuccess(); err != nil {
+				up.Close()
+				return
+			}
+		}
 		defer up.Close()
 		done := make(chan struct{})
 		go func() {

@@ -11,6 +11,10 @@
     {
       "old": "\tmetadata.RouteOutbound = selectedOutbound.Tag()\n\tfor _, tracker := range r.trackers {\n\t\tconn = tracker.RoutedConnection",
       "new": "\tmetadata.RouteOutbound = selectedOutbound.Tag()\n if guard := service.FromContext[interface {\n  PrepareBrowserCandidate(context.Context, adapter.Router, adapter.InboundContext, adapter.Rule, int, adapter.Outbound) context.Context\n }](r.ctx); guard != nil {\n  ctx = guard.PrepareBrowserCandidate(ctx, r, metadata, selectedRule, selectedRuleIndex, selectedOutbound)\n }\n\tfor _, tracker := range r.trackers {\n\t\tconn = tracker.RoutedConnection"
+    },
+    {
+      "old": "r.connection.NewConnection(ctx, selectedOutbound, conn, metadata, onClose)",
+      "new": "dial := N.Dialer(selectedOutbound)\n        if guard := service.FromContext[interface { BrowserDialer(context.Context, adapter.Outbound) N.Dialer }](r.ctx); guard != nil {dial = guard.BrowserDialer(ctx, selectedOutbound)}\n        r.connection.NewConnection(ctx, dial, conn, metadata, onClose)"
     }
   ]
 }

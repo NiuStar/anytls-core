@@ -35,6 +35,34 @@ DOH_IDENTITY_SHA = "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33c
 ACK_MODULE = "github.com/anytls/sing-anytls"
 ACK_VERSION = "v0.0.11"
 ACK_IDENTITY_SHA = "5e25227ce112c3c6a2f5416a284516430259eb7d16e49f41b217bc35a2987005"
+BROWSER_IDENTITY_SHA = "7cbfd31f5349dd9d71bb68f22eea70bb01cd3ee856ef06585d8ea55892d1f669"
+
+def browser_identity(root=ROOT):
+    raw = (root / "patches/sing-box/browser.identity.json").read_bytes()
+    require(sha(raw) == BROWSER_IDENTITY_SHA, "browser identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION and
+            tuple(p["file"] for p in m["files"]) == ("dns/router.go", "route/route.go"), "browser module/files mismatch")
+    for pin in m["files"]:
+        require(sha((root / "patches/sing-box" / pin["patch"]).read_bytes()) == pin["patch_sha256"], "browser patch SHA mismatch")
+    return m
+
+def apply_browser(replacement, m, root=ROOT):
+    for pin in m["files"]:
+        p = replacement / pin["file"]
+        raw = p.read_bytes()
+        require(sha(raw) == pin["source_sha256"], "browser source SHA mismatch")
+        text = raw.decode()
+        for op in json.loads((root / "patches/sing-box" / pin["patch"]).read_bytes())["replacements"]:
+            require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1, "browser exact replacement mismatch")
+            text = text.replace(op["old"], op["new"], 1)
+        result = text.encode()
+        require(sha(result) == pin["result_sha256"], "browser result SHA mismatch")
+        p.write_bytes(result)
+
+def browser_receipt(m):
+    return dict(identity_sha256=BROWSER_IDENTITY_SHA, files=m["files"], toolchain=CURRENT_GO)
+
 ACK_FILES = ("session/session.go", "session/stream.go", "session/connect_ack.go")
 
 
@@ -422,6 +450,7 @@ def main(argv):
     retry_m, retry_patch = retry_identity()
     doh_m, doh_patch = doh_identity()
     ack_m, ack_patch = ack_identity()
+    browser_m = browser_identity()
     require(all(retry_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum"))
             and retry_m["source_sha256"] == chrome_m["result_sha256"], "retry upstream chain mismatch")
     require(all(leaf_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
@@ -525,6 +554,8 @@ def main(argv):
         require(staged_doh.read_bytes() == original_doh, "archive/cache DoH source mismatch")
         staged_doh.write_bytes(patched_doh)
         receipt["doh_deadline_isolation"] = doh_receipt(doh_m, doh_patch)
+        apply_browser(replacement, browser_m)
+        receipt["browser_provenance"] = browser_receipt(browser_m)
         ack_replacement = work / "sing-anytls"
         ack_replacement.mkdir()
         receipt["ack_archive"] = stage_archive(ack_zip, ack_replacement, ack_m["module_sum"], ACK_MODULE, ACK_VERSION)
@@ -578,6 +609,7 @@ def main(argv):
         require(staged_chrome.read_bytes() == patched_retry, "final staged retry source changed")
         require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")
         require(staged_doh.read_bytes() == patched_doh, "final staged DoH source changed")
+        require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"] for pin in browser_m["files"]), "final staged browser source changed")
         require(sha(cache_zip.read_bytes()) == original_zip_sha, "module-cache ZIP changed during command")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
