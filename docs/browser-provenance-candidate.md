@@ -1,35 +1,33 @@
-# Browser provenance SDK candidate (integration HOLD)
+# Default browser family coordinator: scoped integration
 
-Base: `cc69b28605e933b3f534a0f8f5d9a790384a17e6`.
-This is real Go implementation and SDK source transformations, **not compiled or run**. No Mac, SSH, Go process, public probe, install or release was performed. Test-first files were prepared; RED/GREEN was NOT observed.
+The production invocation is default-on; no YAML switch is added. The SDK accepted-DNS-return and selected-route transformations are now consumed by `scripts/go-patched.py` from authenticated private module extraction, together with the existing CONNECT ACK module patch. Their identity is bound into BEGIN/END, corresponding-source material validation, and source-installer output validation. No module cache source is edited.
 
-## Implemented seam
+## Runtime contract
 
-- `decodeOptions` always creates a private per-box provenance service after the fresh service registry. No YAML mode or global state. Check constructs only, never queries.
-- The existing concrete HTTPS factory registers only strict default-TLS transport identities; metrics wrapper capability preservation is unchanged. No response-supplied trust flag. Unknown/insecure/custom TLS engines do not mint authority.
-- SDK `dns/router.go` hooks actual accepted response return (sync and async, including cache responses), before delivering browser bytes. Records original IN AAAA, ingress+source client scope, question, CNAME terminal, original TTL, strict transport identity and epoch. Refresh responses must pass the same SDK seam for the same owned operation and exact transport; a resolver return alone is not certification.
-- 512 total leases, 32 RR limit, 8 CNAME hops, 32 trusted transports, 8 simultaneous refreshes, 2-second inherited refresh budget. No LRU: TTL claims survive negative responses; capacity overflow imposes a global finite quarantine extended over every retained/refused/newly observed lease. Reset/clear invalidates tickets and claims without shortening quarantine.
-- SDK `route/route.go` invokes the guard only after actual TCP rule/outbound selection, preserving original metadata/tracker fields and all client bytes. Guard pins a private additional AAAA+A lookup to the original secure HTTPS transport/detour and current business question. Original AAAA must still occur in refreshed AAAA; IN class, question and CNAME terminal must agree, with intersected semantic TTL leases. Independent browser A responses are never combined.
-- Pure shadow matching uses actual compiled immutable SDK rule objects over value-copied, reset metadata, not `Router.matchRule`, `prepareMatchMetadata`, sniff or resolve. It requires the same actual rule object/index, same concrete selected outbound leaf, fixed run policy and no action effects. Same outbound tag alone is insufficient. Candidate REJECT denies.
-- The private context launch ticket is consumed via `browserAlternate(ctx, selectedOutbound)` and rechecks TTL/client ambiguity/network epoch/leaf identity. The parent coordinator still must atomically reserve launch relative to invalidation; this is NOT an atomic dial reservation.
+- Only strict engine-registered HTTPS DNS transports mint client-scoped AAAA receipts. An owned refresh binds fresh AAAA and A questions to that exact transport/detour and matching original question, CNAME terminal, epoch and TTL intersection.
+- Preparing route metadata does not query DNS. Original IPv6 is always attempted first; only typed remote CONNECT failure (or typed DIRECT TCP dial failure) permits the refresh. TLS/auth/transport failure, cancellation, unknown and unsupported ACK capability are not family evidence.
+- At most one candidate A is tried on the same concrete immutable outbound and same actual compiled rule object/index. Original metadata and application bytes are unchanged. The original failed stream closes before the alternate. The alternate must have a successful remote TCP ACK before delivery. Target TLS remains end-to-end.
+- Unsupported/unknown peers retain their original early stream and never trigger an alternate. Each ACK wait retains the SDK's three-second limit; a refresh has its own maximum two-second child budget, clamped by any inherited caller deadline. This is an additional failure-only refresh budget, not a global timeout change or a healthy-IPv6 delay.
+- Admission and each attempt validate under the provenance mutex. Epoch reset/conflicting observations cancel registered contexts and close their attached streams; run close also invalidates before closing the Box. No per-connection background probing is introduced. A later connection starts IPv6 first, with no persistent node/family disable flag.
 
-## Deliberate UNKNOWN ceilings
+## Supported policy and deliberate UNKNOWN ceiling
 
-Supported frozen rules: simple default DOMAIN/domain-suffix, CIDR, IP-version, ingress, network and port/source matches, route/reject with no extra effects. Unknown fields, sniff/resolve/route-options, process lookups, rule sets/GEOIP, selectors/urltest, ECS, optimistic cache config and TTL rewriting disable certification. Browser queries with EDNS additional data are conservatively unsupported. No attempt to skip effectful rules based on their current match result. Pure IPv6 literals without trusted receipt, stale/shared addresses, separate client scopes, DNS failures and UDP preserve the old path.
+Canonical compiler TUN prefixes (port53 hijack, sniff without overrides, protocol-DNS hijack), auto_detect_interface and default_domain_resolver no longer disable the whole guard. Pure matching skips sniff only when protocol is already known; it never reruns sniff/resolve. Simple immutable domain, CIDR, version, network and port rules retain their compiled identities; candidate REJECT denies launch. Domain observed in TLS sniff must agree with the trusted question.
 
-A static controlled GEOIP prefix fixture can be expressed using CIDR and exercised through actual compiled rules; production GEOIP rule sets are deliberately unsupported until an immutable ruleset/generation adapter exists. This narrower ceiling avoids falsely advertising pure matching of mutable remote datasets.
+GEOIP/RULE-SET policies, selectors/urltest, arbitrary route options/effectful resolve, unknown sniff protocol, ECS/optimistic-cache/TTL rewriting and EDNS questions remain UNKNOWN. In particular an existing user configuration containing RULE-SET is NOT covered by this scoped implementation. A certified captured-manifest immutable dataset adapter is still required; this change is not complete all-config auto-family support.
 
-## Integration still required
+## Real execution evidence
 
-`patches/sing-box/browser.identity.json` pins the two exact source inputs, JSON transformations and output bytes. `scripts/validate-browser-sdk.py` authenticates all 35 exported source files and applies both transformations without module cache writes. Existing `scripts/go-patched.py` is **not modified**: parent must add these two transformations to authenticated private extraction/receipt generation before native tests. Until then the SDK callbacks are absent and no browser candidate is issued.
+Evidence root: `/workspace/anytls-address-family-auto-evidence/integrated-r1`.
 
-The parent ACK-gated alternate CONNECT coordinator is not implemented here. No destination is replaced, no alternate CONNECT is launched and no health state is inferred. Ticket availability does not mean remote TCP ACK, target TLS, or browser end-to-end success. Keep strict TLS/DoH detours and original client bytes; never replay application data. This branch cannot claim browser auto-family repaired or release acceptance.
+- `attempt-2`: native Mac Go 1.27.3 official-wrapper tests first demonstrated actual compiler policy → DNS via P → browser AAAA wire response → IPv6 literal CONNECT via Q → explicit remote failure → certified refresh → IPv4 via same Q → exact HTTPS body, business request count one. Candidate CIDR REJECT launches zero IPv4 attempts.
+- `attempt-3`: adds natural next-connection IPv6 recovery, zero additional DNS on the healthy connection, coordinator/ACK tests, engine vet, clean native candidate build. The controlled peer maps recovered synthetic IPv6 to the loopback HTTPS server; it is not public IPv6 egress evidence.
+- `old-contract`: identical final business test/helper bytes placed on production base `3e00592` (evidence-only commit) use the old `engine.Run` interface and fail the expected HTTPS fallback assertion with Q IPv6 one, IPv4 zero and DNS one. This is business RED, not missing-API compilation failure.
+- Earlier first integration failure is retained: DNS question did not equal actual TLS SNI. The fixture was corrected, not the security check.
+- `final-targeted` accidentally expanded to the complete engine package under a 45-second test deadline; it timed out during an existing retry fixture after 290 test passes. `final-scoped` combined the negative DNS matrix under the same too-short 45-second deadline and timed out after the browser positive/recovery checks passed. These logs are retained and are not full-suite acceptance or diagnosed product regressions.
 
-## Owner native commands (NOT RUN here)
+Tests use private authenticated AnyTLS and HTTPS DNS/target fixtures, preserving compiler DNS detour P versus business Q and the actual compiled TUN route rules. Only TUN inbound and controlled endpoint/trust material are substituted. This is unprivileged mixed-loopback validation, NOT privileged TUN/browser-site acceptance. Formal installation, VPN/helper/config/network changes and GitHub writes were not performed.
 
-1. Integrate the two pinned transformations into `scripts/go-patched.py` extraction+receipt chain and format new Go files with native gofmt.
-2. `python3 scripts/go-patched.py test -tags with_utls ./internal/engine -run TestBrowser -count=1`
-3. Repeat with `-race`, then full test/vet/build via the approved native wrapper.
-4. Add real sync/async accepted-response hook fixtures, malicious custom transport rejection, concurrent invalidation/atomic reservation, actual GEOIP snapshot tests if support is expanded, and controlled browser HTTPS→literal→ACK-gated A fallback with zero pre-ACK application bytes.
+## Remaining release gates
 
-Local source application output is in `/workspace/anytls-address-family-auto-evidence/browser-integration-r1/applied/report.json`; it is SOURCE_APPLICATION_ONLY_GO_NOT_RUN, never a Go/runtime PASS.
+Final full suite with adequate unchanged policy deadline, race/concurrent launch barrier cases, complete negative coordinator matrix, immutable GEOIP/RULE-SET support, full vet/package and independent final integrated review remain separate gates. No formal installation or release is authorized by this scoped result.
