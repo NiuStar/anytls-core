@@ -35,7 +35,7 @@ DOH_IDENTITY_SHA = "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33c
 ACK_MODULE = "github.com/anytls/sing-anytls"
 ACK_VERSION = "v0.0.11"
 ACK_IDENTITY_SHA = "5e25227ce112c3c6a2f5416a284516430259eb7d16e49f41b217bc35a2987005"
-BROWSER_IDENTITY_SHA = "c28e53da22451e7d5c67ac8e9941d9b752d369b5103a7b2549028ce58fafef00"
+BROWSER_IDENTITY_SHA = "0b536fea8c8ecc308e52bbe3625da68110affef1ccfbd43a3854fc826e1b1a48"
 
 def browser_identity(root=ROOT):
     raw = (root / "patches/sing-box/browser.identity.json").read_bytes()

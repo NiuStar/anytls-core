@@ -19,6 +19,10 @@
     {
       "old": "\t\ttransport = options.Transport\n\t\tresponse, err = r.client.Exchange",
       "new": "\t\ttransport = options.Transport\n\t\t// Caller-provided transports must not read/write a registered transport cache by tag.\n\t\tregistered, registeredOK := r.transport.Transport(transport.Tag())\n\t\tif !registeredOK || registered != transport {\n\t\t\toptions.DisableCache = true\n\t\t\toptions.DisableOptimisticCache = true\n\t\t}\n\t\tresponse, err = r.client.Exchange"
+    },
+    {
+      "old": "\t\ttransport := options.Transport\n\t\tif options.Strategy == C.DomainStrategyAsIS {",
+      "new": "\t\ttransport := options.Transport\n\t\t// Caller-provided transports must not read/write a registered transport cache by tag.\n\t\tregistered, registeredOK := r.transport.Transport(transport.Tag())\n\t\tif !registeredOK || registered != transport {\n\t\t\toptions.DisableCache = true\n\t\t\toptions.DisableOptimisticCache = true\n\t\t}\n\t\tif options.Strategy == C.DomainStrategyAsIS {"
     }
   ]
 }

@@ -181,6 +181,22 @@ func TestBrowserSDKDNSReturnSyncAsyncCacheIdentity(t *testing.T) {
 			}
 		}
 	}
+	// Lookup shares the same SDK cache; it must not inject an unregistered
+	// transport answer that a later registered Exchange could certify.
+	{
+		stub := &browserUntrustedDNS{TransportAdapter: sdns.NewTransportAdapter(C.DNSTypeHTTPS, "fixture", nil)}
+		qctx, m := adapter.ExtendContext(ctx)
+		m.Inbound = "lookup-injection"
+		m.Source = M.ParseSocksaddr("192.0.2.66:53")
+		router.Lookup(qctx, "lookup-injection.invalid", adapter.DNSQueryOptions{Transport: stub, Strategy: C.DomainStrategyIPv6Only})
+		before := requests.Load()
+		question := new(dns.Msg).SetQuestion("lookup-injection.invalid.", dns.TypeAAAA)
+		response, err := router.Exchange(qctx, question, adapter.DNSQueryOptions{})
+		scope, _ := browserScope(*m)
+		if _, ok := s.receipt(scope, ip); err != nil || response == nil || !ok || requests.Load()-before != 1 {
+			t.Fatal("Lookup unregistered cache injection", ok, requests.Load()-before, err)
+		}
+	}
 	// Even a direct forged observer invocation with a same-tag HTTPS stub is not
 	// authority; standard EDNS remains deliberately UNKNOWN in the bounded parser.
 	q, r := browserAnswer("forged.invalid", dns.TypeAAAA, "2001:db8::1", 60)

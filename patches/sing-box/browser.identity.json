@@ -6,9 +6,9 @@
     {
       "file": "dns/router.go",
       "source_sha256": "7cf95734bdcc709725629b4d529f37f85079c7559ee0f725b9f675988a5f8c27",
-      "result_sha256": "5c01765701df913d3aa53afff8ccfbe122e6250f503d3f8901713e0ff52f2cfd",
+      "result_sha256": "a72e68940b169e1c07ec0556d5663f44c0e6bf8685b4a2871efb1654c206c968",
       "patch": "browser-dns.patch.json",
-      "patch_sha256": "dcfe0ef8965e588d35e8db3e8d3b50bc665eba79114b639ec04392d675dac084"
+      "patch_sha256": "2c110d29ac6e399864bb7e4f90724a2aa39295d0eff1550ba716987f4e4d33ae"
     },
     {
       "file": "route/route.go",
