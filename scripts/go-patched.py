@@ -32,6 +32,56 @@ RETRY_IDENTITY_SHA = "0d0c382ffa625c89bc044294a2cd07b6e1c65d8b1878c56a1bc7c98ed8
 DOH_IDENTITY_SHA = "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33cc7ff"
 
 
+ACK_MODULE = "github.com/anytls/sing-anytls"
+ACK_VERSION = "v0.0.11"
+ACK_IDENTITY_SHA = "8e9b745ebbb03f41fd2db29a50f62d64d8feb502786d31f6d506613b11d784c8"
+ACK_FILES = ("session/session.go", "session/stream.go", "session/connect_ack.go")
+
+
+def ack_identity(root=ROOT):
+    raw = (root / "patches/sing-anytls/identity.json").read_bytes()
+    require(sha(raw) == ACK_IDENTITY_SHA, "ACK identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == ACK_MODULE and m["version"] == ACK_VERSION and
+            m["toolchain"] == CURRENT_GO and m["sing_box_doh_identity_sha256"] == DOH_IDENTITY_SHA,
+            "unsupported ACK revision/toolchain/chain")
+    require(tuple(p["file"] for p in m["files"]) == ACK_FILES, "invalid ACK file set")
+    patch = (root / "patches/sing-anytls" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "ACK patch SHA mismatch")
+    require(sha((root / "patches/sing-anytls" / m["upstream_diff"]).read_bytes()) ==
+            m["upstream_diff_sha256"], "ACK upstream diff SHA mismatch")
+    return m, patch
+
+
+def apply_ack(replacement, m, patch):
+    ops = json.loads(patch)
+    require(set(ops) == {"files"} and tuple(e["file"] for e in ops["files"]) == ACK_FILES,
+            "invalid ACK patch file set")
+    results = []
+    for entry, pin in zip(ops["files"], m["files"]):
+        require(set(entry) == {"file", "old", "new"}, "invalid ACK operation")
+        p = replacement / pin["file"]
+        source = p.read_bytes() if p.exists() else None
+        require((sha(source) if source is not None else None) == pin["source_sha256"],
+                "ACK source SHA mismatch")
+        require(source == (entry["old"].encode() if entry["old"] is not None else None),
+                "ACK exact replacement mismatch")
+        result = entry["new"].encode()
+        require(sha(result) == pin["result_sha256"], "ACK result SHA mismatch")
+        with p.open("xb" if source is None else "wb") as out:
+            out.write(result)
+        results.append(dict(pin))
+    return results
+
+
+def ack_receipt(m, patch):
+    return dict(identity_sha256=ACK_IDENTITY_SHA, module=ACK_MODULE, version=ACK_VERSION,
+                module_sum=m["module_sum"], go_mod_sum=m["go_mod_sum"],
+                zip_sha256=m["zip_sha256"], patch_sha256=sha(patch),
+                upstream_diff_sha256=m["upstream_diff_sha256"], files=m["files"],
+                toolchain=CURRENT_GO, review_status=m["review_status"])
+
+
 def doh_identity(root=ROOT):
     raw = (root / "patches/sing-box/doh-deadline-isolation.identity.json").read_bytes()
     require(sha(raw) == DOH_IDENTITY_SHA, "DoH identity SHA mismatch")
@@ -302,22 +352,22 @@ def arguments(argv, environ):
 
 
 def metadata(info, m):
-    require(info.get("Path", MODULE) == MODULE and info.get("Version") == VERSION
+    require(info.get("Path", m["module"]) == m["module"] and info.get("Version") == m["version"]
             and not info.get("Replace") and not info.get("Error"), "unsupported upstream module/replacement")
     require(info.get("Sum") == m["module_sum"] and info.get("GoModSum") == m["go_mod_sum"],
             "module checksums mismatch")
     origin = info.get("Origin", {})
-    require(not origin.get("Hash") or origin["Hash"] == m["commit"], "upstream commit mismatch")
+    require(not m.get("commit") or not origin.get("Hash") or origin["Hash"] == m["commit"], "upstream commit mismatch")
 
 
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_FILES = 10000
 
 
-def stage_archive(archive, destination, expected_sum):
+def stage_archive(archive, destination, expected_sum, module=MODULE, version=VERSION):
     """Validate all paths/bounds and Go dirhash before writing any ZIP member."""
     require(archive.stat().st_size <= MAX_ARCHIVE_BYTES, "archive size limit")
-    prefix = MODULE + "@" + VERSION + "/"
+    prefix = module + "@" + version + "/"
     with zipfile.ZipFile(archive) as z:
         entries = z.infolist()
         require(len(entries) <= MAX_ARCHIVE_FILES, "archive entry limit")
@@ -347,9 +397,9 @@ def stage_archive(archive, destination, expected_sum):
                     "archive file/directory conflict")
             require(not name.endswith("/") or name[:-1] not in file_names, "archive file/directory conflict")
         # Go dirhash.Hash1: sorted *full ZIP names*, individual hex SHA256,
-        # then SHA256 of 'hex  filename\n'. Directory entries are excluded.
+        # then SHA256 of 'hex  filename\n', including explicit directories.
         digest = hashlib.sha256()
-        for entry in sorted(files, key=lambda e: e.filename):
+        for entry in sorted(entries, key=lambda e: e.filename):
             content = z.read(entry)
             require(len(content) == entry.file_size, "archive member size mismatch")
             digest.update((sha(content) + "  " + entry.filename + "\n").encode())
@@ -371,6 +421,7 @@ def main(argv):
     leaf_m, leaf_patch = leaf_identity()
     retry_m, retry_patch = retry_identity()
     doh_m, doh_patch = doh_identity()
+    ack_m, ack_patch = ack_identity()
     require(all(retry_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum"))
             and retry_m["source_sha256"] == chrome_m["result_sha256"], "retry upstream chain mismatch")
     require(all(leaf_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum")),
@@ -416,6 +467,22 @@ def main(argv):
     original_leaf = {name: (directory / name).read_bytes() for name in LEAF_FILES}
     require(all(sha(original_leaf[pin["file"]]) == pin["source_sha256"] for pin in leaf_m["files"]),
             "module-cache leaf source SHA mismatch")
+    ack_selected = json.loads(read("list", "-m", "-json", ACK_MODULE))
+    require(ack_selected.get("Version") == ACK_VERSION and not ack_selected.get("Replace"),
+            "unsupported selected ACK revision")
+    require(f'{ACK_MODULE} {ACK_VERSION} {ack_m["module_sum"]}' in sums and
+            f'{ACK_MODULE} {ACK_VERSION}/go.mod {ack_m["go_mod_sum"]}' in sums, "ACK go.sum identity mismatch")
+    ack_info = json.loads(read("mod", "download", "-json", ACK_MODULE + "@" + ACK_VERSION))
+    metadata(ack_info, ack_m)
+    ack_zip = Path(ack_info["Zip"])
+    require(sha(ack_zip.read_bytes()) == ack_m["zip_sha256"], "ACK ZIP SHA mismatch")
+    ack_directory = Path(ack_info["Dir"]).resolve()
+    require(not ack_selected.get("Dir") or Path(ack_selected["Dir"]).resolve() == ack_directory,
+            "selected ACK module Dir mismatch")
+    ack_original = {pin["file"]: ((ack_directory / pin["file"]).read_bytes()
+                    if (ack_directory / pin["file"]).exists() else None) for pin in ack_m["files"]}
+    require(all((sha(ack_original[pin["file"]]) if ack_original[pin["file"]] is not None else None)
+                == pin["source_sha256"] for pin in ack_m["files"]), "ACK cache source SHA mismatch")
     # Snapshot root inputs: only private copies are ever passed to go mod edit.
     root_inputs = {name: (ROOT / name).read_bytes() for name in ("go.mod", "go.sum")}
     base = Path(os.environ.get("TMPDIR") or Path.home() / ".hermes/cache/scratch")
@@ -458,11 +525,26 @@ def main(argv):
         require(staged_doh.read_bytes() == original_doh, "archive/cache DoH source mismatch")
         staged_doh.write_bytes(patched_doh)
         receipt["doh_deadline_isolation"] = doh_receipt(doh_m, doh_patch)
+        ack_replacement = work / "sing-anytls"
+        ack_replacement.mkdir()
+        receipt["ack_archive"] = stage_archive(ack_zip, ack_replacement, ack_m["module_sum"], ACK_MODULE, ACK_VERSION)
+        require(receipt["ack_archive"]["zip_sha256"] == ack_m["zip_sha256"], "ACK ZIP changed before staging")
+        apply_ack(ack_replacement, ack_m, ack_patch)
+        receipt["stream_connect_ack"] = ack_receipt(ack_m, ack_patch)
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
         read("mod", "edit", "-modfile=" + str(modfile),
              "-replace=" + MODULE + "@" + VERSION + "=" + str(replacement))
+        read("mod", "edit", "-modfile=" + str(modfile),
+             "-replace=" + ACK_MODULE + "@" + ACK_VERSION + "=" + str(ack_replacement))
+        ack_actual = json.loads(read("list", "-modfile=" + str(modfile), "-m", "-json", ACK_MODULE))
+        ack_replace = ack_actual.get("Replace", {})
+        require(ack_actual.get("Path") == ACK_MODULE and ack_actual.get("Version") == ACK_VERSION and
+                ack_replace.get("Path") == str(ack_replacement) and ack_replace.get("Dir") == str(ack_replacement)
+                and not ack_replace.get("Version"), "temporary ACK replacement mismatch")
+        receipt.update(ack_replace={"module": ACK_MODULE, "version": ACK_VERSION, "path": str(ack_replacement)},
+                       ack_selected=ack_actual, original_ack_dir=str(ack_directory), original_ack_zip=str(ack_zip))
         actual = json.loads(read("list", "-modfile=" + str(modfile), "-m", "-json", MODULE))
         replace = actual.get("Replace", {})
         require(actual.get("Path") == MODULE and actual.get("Version") == VERSION and
@@ -499,6 +581,11 @@ def main(argv):
         require(sha(cache_zip.read_bytes()) == original_zip_sha, "module-cache ZIP changed during command")
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
+        require(all(sha((ack_replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
+                    for pin in ack_m["files"]), "final staged ACK sources changed")
+        require(sha(ack_zip.read_bytes()) == ack_m["zip_sha256"], "ACK module-cache ZIP changed before publication")
+        require(all(((ack_directory / name).read_bytes() if (ack_directory / name).exists() else None) == data
+                    for name, data in ack_original.items()), "ACK module-cache sources changed before publication")
         if output and rc == 0:
             require(output.lstat().st_ino == os.fstat(reservation.fileno()).st_ino,
                     "output reservation changed")
@@ -526,12 +613,17 @@ def main(argv):
         require(all((directory / name).read_bytes() == data for name, data in original_leaf.items()),
                 "module-cache leaf sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
+        require(sha(ack_zip.read_bytes()) == ack_m["zip_sha256"], "ACK module-cache ZIP changed")
+        require(all(((ack_directory / name).read_bytes() if (ack_directory / name).exists() else None) == data
+                    for name, data in ack_original.items()), "ACK module-cache sources changed")
     receipt.update(rc=rc, ephemeral_cleanup="ok", root_inputs_unchanged=True,
                    original_box_unchanged=True, original_debug_unchanged=True,
                    original_anytls_outbound_unchanged=True)
     receipt["original_leaf_sources_unchanged"] = True
     receipt["original_doh_source_unchanged"] = True
     receipt["original_module_zip_unchanged"] = True
+    receipt["original_ack_sources_unchanged"] = True
+    receipt["original_ack_zip_unchanged"] = True
     print("PATCHED_GO_END " + json.dumps(receipt, sort_keys=True), flush=True)
     return rc
 

@@ -294,9 +294,13 @@ def certified_build(stdout, wrapper, source, output):
     m, patch = ns["doh_identity"](source)
     require(r.get("doh_deadline_isolation") == ns["doh_receipt"](m, patch),
             "source build DoH identity mismatch")
+    ack_m, ack_patch = ns["ack_identity"](source)
+    require(r.get("stream_connect_ack") == ns["ack_receipt"](ack_m, ack_patch),
+            "source build ACK identity mismatch")
     require(r.get("rc") == 0 and r.get("ephemeral_cleanup") == "ok"
             and r.get("root_inputs_unchanged") is True and r.get("original_doh_source_unchanged") is True
             and r.get("original_module_zip_unchanged") is True
+            and r.get("original_ack_sources_unchanged") is True and r.get("original_ack_zip_unchanged") is True
             and r.get("wrapper_sha256") == hashlib.sha256(wrapper).hexdigest()
             and r.get("output_sha256") == hashlib.sha256(output.read_bytes()).hexdigest()
             and r.get("argv") == ["build", "-p", "2", "-tags", TAGS, "-trimpath", "-o", str(output), "."]

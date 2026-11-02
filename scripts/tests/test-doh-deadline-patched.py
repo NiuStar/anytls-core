@@ -41,7 +41,7 @@ class DoHDeadlineTests(unittest.TestCase):
  def test_ccs_requires_complete_doh_receipt_and_materials(self):
   fixture=load('doh_package_fixture',ROOT/'scripts/package_binary_test.py').PackagingTests()
   with fixture.package_fixture('arm64') as (root,settings,receipt,invoke):
-   self.assertEqual(invoke()['modules'],37)
+   self.assertEqual(invoke()['modules'],38)
    materials=p.certified_sources(root,receipt)
    for name in ('doh-deadline-isolation.identity.json','doh-deadline-isolation.patch.json'):
     self.assertIn('patches/sing-box/'+name,materials)

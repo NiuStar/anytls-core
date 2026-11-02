@@ -1,0 +1,275 @@
+--- a/session/session.go
++++ b/session/session.go
+@@ -39,7 +39,10 @@
+ 	padding   *atomic.TypedValue[*padding.PaddingFactory]
+ 	logger    logger.Logger
+ 
+-	peerVersion byte
++	peerVersion       atomic.Uint32
++	peerSettings      chan struct{}
++	peerSettingsOnce  sync.Once
++	peerSettingsKnown atomic.Bool
+ 
+ 	// client
+ 	isClient    bool
+@@ -61,6 +64,7 @@
+ 		logger:      logger,
+ 	}
+ 	s.die = make(chan struct{})
++	s.peerSettings = make(chan struct{})
+ 	s.streams = make(map[uint32]*Stream)
+ 	return s
+ }
+@@ -73,6 +77,7 @@
+ 		logger:      logger,
+ 	}
+ 	s.die = make(chan struct{})
++	s.peerSettings = make(chan struct{})
+ 	s.streams = make(map[uint32]*Stream)
+ 	return s
+ }
+@@ -139,7 +144,7 @@
+ 	sid := s.streamId.Add(1)
+ 	stream := newStream(sid, s)
+ 
+-	if sid >= 2 && s.peerVersion >= 2 {
++	if sid >= 2 && s.peerVersion.Load() >= 2 {
+ 		s.synDoneLock.Lock()
+ 		if s.synDone != nil {
+ 			s.synDone()
+@@ -229,20 +234,24 @@
+ 					s.synDone = nil
+ 				}
+ 				s.synDoneLock.Unlock()
++				var ackErr error
+ 				if hdr.Length() > 0 {
+ 					buffer := buf.Get(int(hdr.Length()))
+ 					if _, err := io.ReadFull(s.conn, buffer); err != nil {
+ 						buf.Put(buffer)
+ 						return err
+ 					}
+-					// report error
+-					s.streamLock.RLock()
+-					stream, ok := s.streams[sid]
+-					s.streamLock.RUnlock()
+-					if ok {
+-						stream.closeWithError(fmt.Errorf("remote: %s", string(buffer)))
+-					}
++					ackErr = &RemoteConnectError{Cause: fmt.Errorf("remote: %s", string(buffer))}
+ 					buf.Put(buffer)
++				}
++				s.streamLock.RLock()
++				stream, ok := s.streams[sid]
++				s.streamLock.RUnlock()
++				if ok && s.isClient && s.peerSettingsKnown.Load() && s.peerVersion.Load() >= 2 {
++					stream.completeConnect(ackErr)
++					if ackErr != nil {
++						stream.closeWithError(ackErr)
++					}
+ 				}
+ 			case cmdFIN:
+ 				s.streamLock.Lock()
+@@ -283,7 +292,7 @@
+ 						}
+ 						// check client's version
+ 						if v, err := strconv.Atoi(m["v"]); err == nil && v >= 2 {
+-							s.peerVersion = byte(v)
++							s.peerVersion.Store(uint32(v))
+ 							// send cmdServerSettings
+ 							f := newFrame(cmdServerSettings, 0)
+ 							f.data = util.StringMap{
+@@ -343,8 +352,10 @@
+ 					if s.isClient {
+ 						// check server's version
+ 						m := util.StringMapFromBytes(buffer)
+-						if v, err := strconv.Atoi(m["v"]); err == nil {
+-							s.peerVersion = byte(v)
++						if v, err := strconv.Atoi(m["v"]); err == nil && v >= 1 && v <= 255 {
++							s.peerVersion.Store(uint32(v))
++							s.peerSettingsKnown.Store(true)
++							s.peerSettingsOnce.Do(func() { close(s.peerSettings) })
+ 						}
+ 					}
+ 					buf.Put(buffer)
+--- a/session/stream.go
++++ b/session/stream.go
+@@ -20,9 +20,14 @@
+ 	pipeW         *pipe.PipeWriter
+ 	writeDeadline pipe.PipeDeadline
+ 
+-	dieOnce sync.Once
+-	dieHook func()
+-	dieErr  error
++	dieOnce         sync.Once
++	dieHook         func()
++	dieErr          error
++	stateLock       sync.RWMutex
++	connectDone     chan struct{}
++	connectOnce     sync.Once
++	connectErr      error
++	connectDeadline pipe.PipeDeadline
+ 
+ 	reportOnce sync.Once
+ }
+@@ -34,12 +39,16 @@
+ 	s.sess = sess
+ 	s.pipeR, s.pipeW = pipe.Pipe()
+ 	s.writeDeadline = pipe.MakePipeDeadline()
++	s.connectDeadline = pipe.MakePipeDeadline()
++	s.connectDone = make(chan struct{})
+ 	return s
+ }
+ 
+ // Read implements net.Conn
+ func (s *Stream) Read(b []byte) (n int, err error) {
+ 	n, err = s.pipeR.Read(b)
++	s.stateLock.RLock()
++	defer s.stateLock.RUnlock()
+ 	if n == 0 && s.dieErr != nil {
+ 		err = s.dieErr
+ 	}
+@@ -53,8 +62,11 @@
+ 		return 0, os.ErrDeadlineExceeded
+ 	default:
+ 	}
+-	if s.dieErr != nil {
+-		return 0, s.dieErr
++	s.stateLock.RLock()
++	dieErr := s.dieErr
++	s.stateLock.RUnlock()
++	if dieErr != nil {
++		return 0, dieErr
+ 	}
+ 	n, err = s.sess.writeDataFrame(s.id, b)
+ 	return
+@@ -69,7 +81,10 @@
+ func (s *Stream) closeLocally() {
+ 	var once bool
+ 	s.dieOnce.Do(func() {
++		s.stateLock.Lock()
+ 		s.dieErr = net.ErrClosed
++		s.stateLock.Unlock()
++		s.completeConnect(net.ErrClosed)
+ 		s.pipeR.Close()
+ 		once = true
+ 	})
+@@ -84,7 +99,10 @@
+ func (s *Stream) closeWithError(err error) error {
+ 	var once bool
+ 	s.dieOnce.Do(func() {
++		s.stateLock.Lock()
+ 		s.dieErr = err
++		s.stateLock.Unlock()
++		s.completeConnect(err)
+ 		s.pipeR.Close()
+ 		once = true
+ 	})
+@@ -95,11 +113,14 @@
+ 		}
+ 		return s.sess.streamClosed(s.id)
+ 	} else {
++		s.stateLock.RLock()
++		defer s.stateLock.RUnlock()
+ 		return s.dieErr
+ 	}
+ }
+ 
+ func (s *Stream) SetReadDeadline(t time.Time) error {
++	s.connectDeadline.Set(t)
+ 	return s.pipeR.SetReadDeadline(t)
+ }
+ 
+@@ -139,7 +160,7 @@
+ 	s.reportOnce.Do(func() {
+ 		once = true
+ 	})
+-	if once && err != nil && s.sess.peerVersion >= 2 {
++	if once && err != nil && s.sess.peerVersion.Load() >= 2 {
+ 		f := newFrame(cmdSYNACK, s.id)
+ 		f.data = []byte(err.Error())
+ 		if _, err := s.sess.writeControlFrame(f); err != nil {
+@@ -155,7 +176,7 @@
+ 	s.reportOnce.Do(func() {
+ 		once = true
+ 	})
+-	if once && s.sess.peerVersion >= 2 {
++	if once && s.sess.peerVersion.Load() >= 2 {
+ 		if _, err := s.sess.writeControlFrame(newFrame(cmdSYNACK, s.id)); err != nil {
+ 			return err
+ 		}
+--- /dev/null
++++ b/session/connect_ack.go
+@@ -0,0 +1,73 @@
++package session
++
++import (
++	"context"
++	"errors"
++	"os"
++	"time"
++)
++
++// ErrConnectACKUnsupported means the authenticated peer explicitly advertised v1.
++// A silent peer cannot be distinguished from delayed negotiation.
++var ErrConnectACKUnsupported = errors.New("anytls: peer does not support CONNECT ACK")
++var ErrConnectACKUnconfirmed = errors.New("anytls: CONNECT ACK capability unconfirmed")
++
++// RemoteConnectError is safe to format. Unwrap exposes the original peer error,
++// which may contain sensitive untrusted text and must not be logged verbatim.
++type RemoteConnectError struct{ Cause error }
++
++func (*RemoteConnectError) Error() string   { return "anytls: remote CONNECT failed" }
++func (e *RemoteConnectError) Unwrap() error { return e.Cause }
++
++func (s *Stream) completeConnect(err error) {
++	s.connectOnce.Do(func() { s.connectErr = err; close(s.connectDone) })
++}
++
++// WaitConnect waits for this stream's remote TCP CONNECT report, not target TLS.
++// Call ONLY after successfully writing the target address, before business data.
++// It never retries, writes payload, closes a stream or resets a session. The owner
++// must close losing/failed streams. Repeated/concurrent waits share one result;
++// cancellation affects only that waiter. The existing 3s SYN watchdog bounds an
++// otherwise deadline-free call; context/read deadlines may shorten that budget.
++func (s *Stream) WaitConnect(ctx context.Context) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	timer := time.NewTimer(3 * time.Second)
++	defer timer.Stop()
++	capability := s.sess.peerSettings
++	for {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		select {
++		case <-s.connectDone:
++			return s.connectErr
++		default:
++		}
++		if s.sess.peerSettingsKnown.Load() && s.sess.peerVersion.Load() < 2 {
++			return ErrConnectACKUnsupported
++		}
++		select {
++		case <-ctx.Done():
++			if !s.sess.peerSettingsKnown.Load() {
++				return errors.Join(ErrConnectACKUnconfirmed, ctx.Err())
++			}
++			return ctx.Err()
++		case <-s.connectDeadline.Wait():
++			return os.ErrDeadlineExceeded
++		case <-timer.C:
++			if !s.sess.peerSettingsKnown.Load() {
++				return errors.Join(ErrConnectACKUnconfirmed, os.ErrDeadlineExceeded)
++			}
++			return os.ErrDeadlineExceeded
++		case <-capability:
++			capability = nil
++		case <-s.connectDone:
++			if err := ctx.Err(); err != nil {
++				return err
++			}
++			return s.connectErr
++		}
++	}
++}

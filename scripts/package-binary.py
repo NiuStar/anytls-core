@@ -13,6 +13,7 @@ def certified_sources(root,receipt):
  leaf,leaf_patch=wrapper.leaf_identity(root)
  retry,retry_patch=wrapper.retry_identity(root)
  doh,doh_patch=wrapper.doh_identity(root)
+ ack,ack_patch=wrapper.ack_identity(root)
  if not re.search(r'^go 1\.27\.3$',(root/'go.mod').read_text(),re.M):raise ValueError('root module requires Go 1.27.3')
  if receipt.get('go_version','').split()[2:3]!=[wrapper.CURRENT_GO]:raise ValueError('certified toolchain mismatch')
  expected={'identity_sha256':wrapper.IDENTITY_SHA,'wrapper_sha256':wrapper.sha((root/'scripts/go-patched.py').read_bytes()),
@@ -22,14 +23,17 @@ def certified_sources(root,receipt):
            'chrome_backend':wrapper.chrome_receipt(chrome,chrome_patch),
            'leaf_certificate':wrapper.leaf_receipt(leaf,leaf_patch),
            'transient_retry':wrapper.retry_receipt(retry,retry_patch),
-           'doh_deadline_isolation':wrapper.doh_receipt(doh,doh_patch)}
+           'doh_deadline_isolation':wrapper.doh_receipt(doh,doh_patch),
+           'stream_connect_ack':wrapper.ack_receipt(ack,ack_patch)}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
+ if receipt.get('original_ack_sources_unchanged') is not True or receipt.get('original_ack_zip_unchanged') is not True:raise ValueError('certified ACK cache invariants missing')
  return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
          'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json',
          'patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json',
          'patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json',
          'patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json',
-         'patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
+         'patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json',
+         'patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch']
 
 
 def source_notice(data):
@@ -130,6 +134,9 @@ def package(root,binary,out,tag,go,cache,receipt,arch='arm64'):
   if not licenses:raise ValueError('no license material in exact module: '+mod)
   modules.append({'module':mod,'version':version,'go_sum':expected,'zip_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'zip':str(p),'licenses':licenses})
  if not modules:raise ValueError('no linked modules')
+ ack=json.loads((root/'patches/sing-anytls/identity.json').read_bytes())
+ linked_ack=[row for row in modules if row['module']==ack['module']]
+ if len(linked_ack)!=1 or linked_ack[0]['version']!=ack['version'] or linked_ack[0]['go_sum']!=ack['module_sum'] or linked_ack[0]['zip_sha256']!=ack['zip_sha256']:raise ValueError('missing or mismatched authenticated ACK module source')
  prefix='anytls-core-'+tag
  source=out/(prefix+'-source.tar.gz')
  with source.open('wb') as f:subprocess.run(['git','archive','--format=tar.gz','--prefix='+prefix+'/','HEAD'],cwd=root,stdout=f,check=True)

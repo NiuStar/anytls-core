@@ -35,6 +35,10 @@ retry_spec = importlib.util.spec_from_file_location("retry_patch_tests", SCRIPT.
 retry_tests = importlib.util.module_from_spec(retry_spec)
 retry_spec.loader.exec_module(retry_tests)
 RetryPatchTests = retry_tests.RetryPatchTests
+ack_spec = importlib.util.spec_from_file_location("ack_patch_tests", SCRIPT.parent / "tests/test-ack-patched.py")
+ack_tests = importlib.util.module_from_spec(ack_spec)
+ack_spec.loader.exec_module(ack_tests)
+ACKTests = ack_tests.ACKTests
 
 
 class ValidationTests(unittest.TestCase):
@@ -144,7 +148,7 @@ class ArchiveTests(unittest.TestCase):
         # Independent, explicit dirhash formula for synthetic content.
         if expected is None:
             lines = b"".join((hashlib.sha256(content).hexdigest() + "  " + name + "\n").encode()
-                             for name, content, _ in sorted(entries) if not name.endswith("/"))
+                             for name, content, _ in sorted(entries))
             expected = "h1:" + base64.b64encode(hashlib.sha256(lines).digest()).decode()
         base = os.environ.get("TMPDIR") or str(Path.home() / ".hermes/cache/scratch")
         with tempfile.TemporaryDirectory(prefix="anytls-archive-test-", dir=base) as tmp:
@@ -155,7 +159,7 @@ class ArchiveTests(unittest.TestCase):
             result = wrapper.stage_archive(archive, dest, expected)
             return result, {str(p.relative_to(dest)): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
 
-    def test_synthetic_sorted_h1_and_directory_exclusion(self):
+    def test_synthetic_sorted_h1_includes_explicit_directories(self):
         prefix = wrapper.MODULE + "@" + wrapper.VERSION + "/"
         result, files = self.check([(prefix + "z", b"last", stat.S_IFREG | 0o644),
                                     (prefix + "dir/", b"", stat.S_IFDIR | 0o755),
@@ -225,6 +229,7 @@ class OutputReservationTests(unittest.TestCase):
                         cache_chrome=source, original_chrome=b"unchanged",
                         cache_doh=source, original_doh=b"unchanged",
                         cache_zip=source, original_zip_sha=wrapper.sha(b"unchanged"),
+                        ack_zip=source, ack_m={"zip_sha256":wrapper.sha(b"unchanged")}, ack_original={}, ack_directory=root,
                         root_inputs={}, ROOT=root, original_leaf={"source": b"unchanged"}, directory=root, os=os, shutil=shutil,
                         require=wrapper.require, sha=wrapper.sha)
 

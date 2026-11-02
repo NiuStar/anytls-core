@@ -33,6 +33,12 @@ class PackagingTests(unittest.TestCase):
     modfile=z.with_suffix('.mod');modfile.write_text('module '+mod+'\n')
     modsum='h1:'+base64.b64encode(hashlib.sha256((hashlib.sha256(modfile.read_bytes()).hexdigest()+'  go.mod\n').encode()).digest()).decode()
     sums.extend([mod+' '+version+' '+p.zip_h1(z),mod+' '+version+'/go.mod '+modsum]);deps.append('\tdep\t'+mod+' '+version+' '+p.zip_h1(z)+'\n')
+   # Exact second SDK ZIP: authentication is real; compiler/binary remain unit fixtures.
+   ack,ap=w.ack_identity();mod=ack['module'];version=ack['version']
+   z=cache/'cache/download'/mod/'@v'/(version+'.zip');z.parent.mkdir(parents=True)
+   z.write_bytes((w.ROOT/'scripts/tests/fixtures/sing-anytls-v0.0.11.zip').read_bytes())
+   with zipfile.ZipFile(z) as f:z.with_suffix('.mod').write_bytes(f.read(mod+'@'+version+'/go.mod'))
+   sums.extend([mod+' '+version+' '+ack['module_sum'],mod+' '+version+'/go.mod '+ack['go_mod_sum']]);deps.append('\tdep\t'+mod+' '+version+' '+ack['module_sum']+'\n')
    (root/'go.sum').write_text('\n'.join(sums)+'\n')
    (root/'go.mod').write_text('module example.com/test\n\ngo 1.27.3\n')
    settings={'GOOS':'darwin','GOARCH':arch,'CGO_ENABLED':'0','-trimpath':'true','vcs.revision':'a'*40,'vcs.modified':'false','-tags':'with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core'}
@@ -45,6 +51,7 @@ class PackagingTests(unittest.TestCase):
    materials+=['patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json']
    materials+=['patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json']
    materials+=['patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
+   materials+=['patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch']
    for name in materials:
     target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
    receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']},chrome_backend=w.chrome_receipt(chrome,chrome_patch))
@@ -52,6 +59,8 @@ class PackagingTests(unittest.TestCase):
    receipt['leaf_certificate']=w.leaf_receipt(leaf,leaf_patch)
    receipt['transient_retry']=w.retry_receipt(*w.retry_identity())
    receipt['doh_deadline_isolation']=w.doh_receipt(*w.doh_identity())
+   receipt['stream_connect_ack']=w.ack_receipt(*w.ack_identity())
+   receipt.update(original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)
    def output(args,**kwargs):
     if args[1:]==['version']:return (root/'packaging-go-version').read_text()
     if args[1:3]==['version','-m']:return 'unit: go1.27.3\n'+''.join(deps)+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in settings.items())
@@ -82,7 +91,7 @@ class PackagingTests(unittest.TestCase):
      prefix='anytls-core-v1.0.0';platform='darwin-'+arch;bp=prefix+'-'+platform
      ccs=prefix+('-corresponding-source.tar.gz' if arch=='arm64' else '-darwin-amd64-corresponding-source.tar.gz')
      expected=[prefix+'-source.tar.gz',ccs,bp+'.tar.gz','SHA256SUMS']
-     self.assertEqual(result['assets'],expected);self.assertEqual(result['modules'],37)
+     self.assertEqual(result['assets'],expected);self.assertEqual(result['modules'],38)
      out=root/'out'
      self.assertEqual((out/'SHA256SUMS').read_text(),''.join(hashlib.sha256((out/name).read_bytes()).hexdigest()+'  '+name+'\n' for name in expected[:-1]))
      with tarfile.open(out/(bp+'.tar.gz')) as t:
@@ -94,7 +103,7 @@ class PackagingTests(unittest.TestCase):
       self.assertEqual(identity['settings']['GOARCH'],arch);self.assertEqual(identity['certified_build'],receipt)
       with tarfile.open(fileobj=io.BytesIO(t.extractfile(prefix+'/application-source.tar.gz').read()),mode='r:gz') as app:
        for name in p.certified_sources(root,receipt):self.assertEqual(app.extractfile(prefix+'/'+name).read(),(root/name).read_bytes())
-      self.assertEqual(len(json.load(t.extractfile(prefix+'/MODULES.json'))),37)
+      self.assertEqual(len(json.load(t.extractfile(prefix+'/MODULES.json'))),38)
       self.assertIn(('darwin/'+arch).encode(),t.extractfile(prefix+'/BUILD.txt').read())
       self.assertEqual(t.extractfile(prefix+'/go-toolchain/LICENSE').read(),b'Go license fixture')
       self.assertIn(b'package runtime',t.extractfile(prefix+'/go-toolchain/src/runtime.go').read())
@@ -132,7 +141,7 @@ class PackagingTests(unittest.TestCase):
  def test_accepts_same_compiler_bytes_at_another_path(self):
   with self.package_fixture('arm64') as (root,settings,receipt,invoke):
    other=root/'packaging-go';other.write_bytes((root/'go/bin/go').read_bytes());other.chmod(0o755)
-   self.assertEqual(invoke(go=other)['modules'],37)
+   self.assertEqual(invoke(go=other)['modules'],38)
 
  def test_independent_outputs_share_only_byte_identical_application_source(self):
   archives={}

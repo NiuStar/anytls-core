@@ -28,7 +28,9 @@ class LeafPatchTests(unittest.TestCase):
                     core_slim=dict(identity_sha256=w.CORE_IDENTITY_SHA, patch_sha256=w.sha(cp), files=core['files']),
                     chrome_backend=w.chrome_receipt(chrome, chp),
                     transient_retry=w.retry_receipt(*w.retry_identity()),
-                    doh_deadline_isolation=w.doh_receipt(*w.doh_identity()))
+                    doh_deadline_isolation=w.doh_receipt(*w.doh_identity()),
+                    stream_connect_ack=w.ack_receipt(*w.ack_identity()),
+                    original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)
 
     def stage(self, root):
         m, patch = w.leaf_identity()
