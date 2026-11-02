@@ -5,10 +5,13 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/anytls/sing-anytls/session"
 	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
+
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
@@ -29,10 +32,21 @@ func (s *browserProvenance) BrowserDialer(ctx context.Context, outbound adapter.
 type browserDialer struct {
 	adapter.Outbound
 	prepared browserPrepared
+	// Test-only synchronization seam, before the final launch reservation.
+	beforeLaunch func()
 }
 
 func browserGeneratedRule(raw string) bool {
 	return raw == `{"action":"sniff"}` || raw == `{"action":"hijack-dns","port":53}` || raw == `{"action":"hijack-dns","protocol":["dns"]}`
+}
+func browserNetworkFailure(err error) bool {
+	// A dial OpError alone is not evidence of address-family failure.
+	for _, cause := range []error{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ECONNREFUSED, syscall.ETIMEDOUT, syscall.EAFNOSUPPORT} {
+		if errors.Is(err, cause) {
+			return true
+		}
+	}
+	return false
 }
 func (s *browserProvenance) validLocked(old browserReceipt) bool {
 	now := s.now()
@@ -57,7 +71,9 @@ func (s *browserProvenance) reserve(ctx context.Context, old browserReceipt) (co
 	if ctx.Err() != nil || !s.validLocked(old) {
 		return ctx, nil, false
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	// Reuse the SDK default and inherit any shorter caller deadline. All
+	// CONNECT attempts and the refresh share this one absolute deadline.
+	ctx, cancel := context.WithTimeout(ctx, C.TCPConnectTimeout)
 	launch := &browserLaunch{cancel: cancel, receipt: old}
 	if s.active == nil {
 		s.active = make(map[*browserLaunch]struct{})
@@ -67,15 +83,17 @@ func (s *browserProvenance) reserve(ctx context.Context, old browserReceipt) (co
 }
 func (s *browserProvenance) attach(ctx context.Context, l *browserLaunch, c net.Conn) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ctx.Err() != nil {
-		if c != nil {
-			c.Close()
-		}
-		return false
+	_, active := s.active[l]
+	allowed := active && ctx.Err() == nil
+	if allowed {
+		l.conn = c
 	}
-	l.conn = c
-	return true
+	s.mu.Unlock()
+	// Close may block or reenter the observer; never call it under s.mu.
+	if !allowed && c != nil {
+		c.Close()
+	}
+	return allowed
 }
 func (s *browserProvenance) release(l *browserLaunch) {
 	s.mu.Lock()
@@ -87,14 +105,18 @@ func (s *browserProvenance) release(l *browserLaunch) {
 type browserOwnedConn struct {
 	net.Conn
 	once   sync.Once
+	err    error
 	owner  *browserProvenance
 	launch *browserLaunch
 }
 
+func (c *browserOwnedConn) closeStream() error {
+	c.once.Do(func() { c.err = c.Conn.Close() })
+	return c.err
+}
 func (c *browserOwnedConn) Close() error {
-	err := c.Conn.Close()
-	c.once.Do(func() { c.owner.release(c.launch) })
-	return err
+	c.owner.release(c.launch)
+	return c.closeStream()
 }
 func (d *browserDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	p := d.prepared
@@ -102,9 +124,21 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 	if network != "tcp" || destination != p.metadata.Destination {
 		return d.Outbound.DialContext(ctx, network, destination)
 	}
+
 	launchCtx, l, ok := s.reserve(ctx, p.receipt)
 	if !ok {
-		return nil, context.Canceled
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		invalidated := p.receipt.epoch != s.epoch
+		s.mu.Unlock()
+		if invalidated {
+			return nil, context.Canceled
+		}
+		// Expiry/ambiguity is UNKNOWN, not caller cancellation. Preserve the
+		// original outbound without enabling an alternate.
+		return d.Outbound.DialContext(ctx, network, destination)
 	}
 	keep := false
 	defer func() {
@@ -114,6 +148,17 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 	}()
 	var candidateExpires time.Time
 	attempt := func(dest M.Socksaddr) (net.Conn, error) {
+		// Preliminary eligibility is not the launch reservation. Invalidation
+		// may win while control is outside the lock; revalidate at admission.
+		s.mu.Lock()
+		eligible := s.validLocked(p.receipt) && launchCtx.Err() == nil
+		s.mu.Unlock()
+		if !eligible {
+			return nil, context.Canceled
+		}
+		if d.beforeLaunch != nil {
+			d.beforeLaunch()
+		}
 		s.mu.Lock()
 		allowed := s.validLocked(p.receipt) && launchCtx.Err() == nil && (dest == destination || s.now().Before(candidateExpires))
 		if !allowed {
@@ -130,7 +175,8 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 		if err != nil {
 			return nil, err
 		}
-		if !s.attach(launchCtx, l, c) {
+		owned := &browserOwnedConn{Conn: c, owner: s, launch: l}
+		if !s.attach(launchCtx, l, owned) {
 			return nil, launchCtx.Err()
 		}
 		if w, ok := c.(interface{ WaitConnect(context.Context) error }); ok {
@@ -141,16 +187,23 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 			}
 		}
 		if err != nil {
-			c.Close()
+			// An unsuccessful original may still be followed by one alternate;
+			// close its stream without releasing the shared launch reservation.
+			owned.closeStream()
+			s.mu.Lock()
+			if l.conn == owned {
+				l.conn = nil
+			}
+			s.mu.Unlock()
 			return nil, err
 		}
-		return c, nil
+		return owned, nil
 	}
 	c, err := attempt(destination)
 	if err != nil && launchCtx.Err() == nil {
 		var remote *session.RemoteConnectError
 		var connect *net.OpError
-		eligible := errors.As(err, &remote) || (d.Outbound.Type() == "direct" && errors.As(err, &connect) && connect.Op == "dial")
+		eligible := errors.As(err, &remote) || (d.Outbound.Type() == "direct" && errors.As(err, &connect) && connect.Op == "dial" && browserNetworkFailure(connect.Err))
 		if eligible && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			ip, expires, certified := s.BrowserCandidate(launchCtx, p.router, p.metadata, p.selected, p.index, p.outbound)
 			if certified {
@@ -173,7 +226,7 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 		return nil, launchCtx.Err()
 	}
 	keep = true
-	return &browserOwnedConn{Conn: c, owner: s, launch: l}, nil
+	return c, nil
 }
 func closeBrowserProvenance(ctx context.Context) {
 	if s, ok := service.FromContext[browserDNSObserver](ctx).(*browserProvenance); ok {
