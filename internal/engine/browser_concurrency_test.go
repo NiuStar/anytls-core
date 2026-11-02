@@ -219,7 +219,7 @@ func TestBrowserLaunchBarrierInvalidation(t *testing.T) {
 }
 
 func TestBrowserDialErrorQualification(t *testing.T) {
-	for _, err := range []error{syscall.EACCES, syscall.EPERM, context.Canceled, context.DeadlineExceeded, x509.UnknownAuthorityError{}, errors.New("auth failed"), &net.DNSError{IsNotFound: true}} {
+	for _, err := range []error{syscall.EACCES, syscall.EPERM, context.Canceled, context.DeadlineExceeded, x509.UnknownAuthorityError{}, errors.Join(syscall.ENETUNREACH, x509.UnknownAuthorityError{}), errors.Join(syscall.ECONNREFUSED, context.Canceled), errors.New("auth failed"), &net.DNSError{IsNotFound: true}} {
 		if browserNetworkFailure(&net.OpError{Op: "dial", Err: err}) {
 			t.Fatalf("unsafe error qualified: %T", err)
 		}

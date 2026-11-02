@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -40,10 +41,24 @@ func browserGeneratedRule(raw string) bool {
 	return raw == `{"action":"sniff"}` || raw == `{"action":"hijack-dns","port":53}` || raw == `{"action":"hijack-dns","protocol":["dns"]}`
 }
 func browserNetworkFailure(err error) bool {
-	// A dial OpError alone is not evidence of address-family failure.
-	for _, cause := range []error{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ECONNREFUSED, syscall.ETIMEDOUT, syscall.EAFNOSUPPORT} {
-		if errors.Is(err, cause) {
-			return true
+	// Accept only a single typed connect-error chain, not an errors.Join
+	// containing a network sentinel alongside security/cancellation failures.
+	for depth := 0; err != nil && depth < 8; depth++ {
+		switch e := err.(type) {
+		case *net.OpError:
+			if e.Op != "dial" {
+				return false
+			}
+			err = e.Err
+		case *os.SyscallError:
+			if e.Syscall != "connect" {
+				return false
+			}
+			err = e.Err
+		case syscall.Errno:
+			return e == syscall.ENETUNREACH || e == syscall.EHOSTUNREACH || e == syscall.ECONNREFUSED || e == syscall.ETIMEDOUT || e == syscall.EAFNOSUPPORT
+		default:
+			return false
 		}
 	}
 	return false
