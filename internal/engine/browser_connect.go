@@ -57,7 +57,7 @@ func (s *browserProvenance) reserve(ctx context.Context, old browserReceipt) (co
 		return ctx, nil, false
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	launch := &browserLaunch{cancel: cancel}
+	launch := &browserLaunch{cancel: cancel, receipt: old}
 	if s.active == nil {
 		s.active = make(map[*browserLaunch]struct{})
 	}
@@ -140,7 +140,7 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 		var remote *session.RemoteConnectError
 		var connect *net.OpError
 		eligible := errors.As(err, &remote) || (d.Outbound.Type() == "direct" && errors.As(err, &connect) && connect.Op == "dial")
-		if eligible {
+		if eligible && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			ip, expires, certified := s.BrowserCandidate(launchCtx, p.router, p.metadata, p.selected, p.index, p.outbound)
 			if certified {
 				s.mu.Lock()

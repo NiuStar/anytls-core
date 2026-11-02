@@ -66,6 +66,7 @@ class ACKTests(unittest.TestCase):
                 fixture=ROOT/'scripts/tests/fixtures/sing-box-v1.14.3'
                 mapping={'box.go':'box.go.txt','debug_http.go':'debug_http.go.txt','protocol/anytls/outbound.go':'anytls-outbound.go.txt','dns/transport/https.go':'https.go.txt'}
                 mapping.update({pin['file']:pin['fixture'] for pin in w.leaf_identity()[0]['files']})
+                mapping.update({'dns/router.go':'browser-dns-router.go.txt','route/route.go':'browser-route.go.txt'})
                 for name,fn in mapping.items():
                     target=box/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((fixture/fn).read_bytes())
                 # Synthetic archive, authenticated with its own independent h1 below.

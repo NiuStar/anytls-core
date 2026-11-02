@@ -24,7 +24,8 @@ def certified_sources(root,receipt):
            'leaf_certificate':wrapper.leaf_receipt(leaf,leaf_patch),
            'transient_retry':wrapper.retry_receipt(retry,retry_patch),
            'doh_deadline_isolation':wrapper.doh_receipt(doh,doh_patch),
-           'stream_connect_ack':wrapper.ack_receipt(ack,ack_patch)}
+           'stream_connect_ack':wrapper.ack_receipt(ack,ack_patch),
+           'browser_provenance':wrapper.browser_receipt(wrapper.browser_identity(root))}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
  if receipt.get('original_ack_sources_unchanged') is not True or receipt.get('original_ack_zip_unchanged') is not True:raise ValueError('certified ACK cache invariants missing')
  return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
@@ -33,7 +34,8 @@ def certified_sources(root,receipt):
          'patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json',
          'patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json',
          'patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json',
-         'patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch']
+         'patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch',
+         'patches/sing-box/browser.identity.json','patches/sing-box/browser-dns.patch.json','patches/sing-box/browser-route.patch.json']
 
 
 def source_notice(data):

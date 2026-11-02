@@ -41,6 +41,7 @@ import (
 // records claim after these substitutions. This is NOT a privileged TUN test.
 type unifiedDNSPeer struct {
 	browser                                           atomic.Bool
+	healthy                                           atomic.Bool
 	v6, v4                                            atomic.Int64
 	target                                            string
 	accepted, authenticated, streams, payload, denied atomic.Int64
@@ -67,10 +68,17 @@ func (p *unifiedDNSPeer) NewConnectionEx(_ context.Context, c net.Conn, _ M.Sock
 		if p.browser.Load() {
 			if d.Addr.Is6() {
 				p.v6.Add(1)
-				c.(*session.Stream).HandshakeFailure(fmt.Errorf("controlled remote IPv6 connect failure"))
-				return
+				if !p.healthy.Load() {
+					c.(*session.Stream).HandshakeFailure(fmt.Errorf("controlled remote IPv6 connect failure"))
+					return
+				}
+			} else {
+				p.v4.Add(1)
 			}
-			p.v4.Add(1)
+			// Controlled server forwarding represents recovered node IPv6 egress.
+			if d.Addr.Is6() {
+				d = M.ParseSocksaddr(p.target)
+			}
 		}
 		// This also rejects AnyTLS UoT magic addresses: no UDP/plain-DNS forwarding.
 		if d.String() != p.target {

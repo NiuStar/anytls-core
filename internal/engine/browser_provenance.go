@@ -54,8 +54,9 @@ type browserProvenance struct {
 	active       map[*browserLaunch]struct{}
 }
 type browserLaunch struct {
-	cancel context.CancelFunc
-	conn   net.Conn
+	cancel  context.CancelFunc
+	conn    net.Conn
+	receipt browserReceipt
 }
 type browserPrepared struct {
 	owner    *browserProvenance
@@ -227,7 +228,21 @@ func (s *browserProvenance) ObserveBrowserDNS(ctx context.Context, q, r *dns.Msg
 }
 func (s *browserProvenance) observe(scope browserClientScope, transport string, q, r *dns.Msg) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		var closing []net.Conn
+		for launch := range s.active {
+			if !s.validLocked(launch.receipt) {
+				launch.cancel()
+				if launch.conn != nil {
+					closing = append(closing, launch.conn)
+				}
+			}
+		}
+		s.mu.Unlock()
+		for _, c := range closing {
+			c.Close()
+		}
+	}()
 	now := s.now()
 	set, ok := browserRRSet(q, r, now)
 	if !ok {
@@ -303,18 +318,21 @@ func (s *browserProvenance) receipt(scope browserClientScope, ip netip.Addr) (br
 }
 func (s *browserProvenance) InvalidateBrowserDNS() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	clear(s.claims)
 	s.claims = nil
 	s.epoch++
+	var conns []net.Conn
 	for launch := range s.active {
 		launch.cancel()
 		if launch.conn != nil {
-			launch.conn.Close()
+			conns = append(conns, launch.conn)
 		}
 	}
-	// Keep quarantine through its full original horizon; invalidation must not
-	// erase conflicts and accidentally rehabilitate an in-flight old ticket.
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
+	// Retain conflict quarantine through its semantic TTL horizon.
 }
 func browserBundle(old browserReceipt, six, four browserSet, now time.Time) bool {
 	if !now.Before(old.expires) || !now.Before(six.expires) || !now.Before(four.expires) || old.name != six.name || old.name != four.name || old.terminal != six.terminal || old.terminal != four.terminal || len(four.ips) == 0 {

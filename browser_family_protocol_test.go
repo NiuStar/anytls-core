@@ -158,9 +158,6 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 			c.SetDeadline(time.Now().Add(6 * time.Second))
 			// TLS ClientHello supplies canonical sniff metadata, but no business bytes
 			// can leave the proxy before ACK-selected winner.
-			roots := target.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-			// httptest's client root is the server leaf we supplied.
-			_ = roots
 			tlsClient := tls.Client(c, &tls.Config{RootCAs: browserRoots(t, ca), ServerName: "g21.invalid"})
 			e = tlsClient.Handshake()
 			if reject {
@@ -182,6 +179,24 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 				t.Fatalf("wrong exact business result: %s %v counts %d %d %d %d", body, e, business.Load(), q.v6.Load(), q.v4.Load(), queries.Load())
 			}
 			t.Logf("REAL_DEFAULT_FALLBACK HTTPS_BODY_EXACT business=1 Q_v6=1 Q_v4=1 DNS_P=3 P_streams=%d", p.streams.Load())
+			q.healthy.Store(true)
+			recovered, e := client.DialContext(ctx, "tcp", M.ParseSocksaddr(net.JoinHostPort(six, targetPort)))
+			if e != nil {
+				t.Fatal(e)
+			}
+			recovered.SetDeadline(time.Now().Add(4 * time.Second))
+			tlsRecovered := tls.Client(recovered, &tls.Config{RootCAs: browserRoots(t, ca), ServerName: "g21.invalid"})
+			if e = tlsRecovered.Handshake(); e != nil {
+				recovered.Close()
+				t.Fatal("recovery TLS", e)
+			}
+			fmt.Fprintf(tlsRecovered, "GET /recovery HTTP/1.1\r\nHost: g21.invalid\r\nConnection: close\r\n\r\n")
+			body, e = io.ReadAll(tlsRecovered)
+			recovered.Close()
+			if e != nil || !containsBrowserBody(body) || business.Load() != 2 || q.v6.Load() != 2 || q.v4.Load() != 1 || queries.Load() != 3 {
+				t.Fatal("natural v6 recovery or zero extra DNS failed", e, business.Load(), q.v6.Load(), q.v4.Load(), queries.Load())
+			}
+			t.Log("NATURAL_V6_RECOVERY exact HTTPS body; healthy connection zero extra DNS")
 		})
 	}
 }

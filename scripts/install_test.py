@@ -310,7 +310,8 @@ class InstallerTests(unittest.TestCase):
                        output_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
                        target={'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0'},
                        doh_deadline_isolation=ns['doh_receipt'](*ns['doh_identity'](source)),
-                       stream_connect_ack=ns['ack_receipt'](*ns['ack_identity'](source)))
+                       stream_connect_ack=ns['ack_receipt'](*ns['ack_identity'](source)),
+                       browser_provenance=ns['browser_receipt'](ns['browser_identity'](source)))
         return i.subprocess.CompletedProcess([], 0, ('PATCHED_GO_END '+json.dumps(receipt)+'\n').encode(), b'')
 
     def test_certified_build_rejects_missing_end_doh_and_output_drift(self):
@@ -323,7 +324,7 @@ class InstallerTests(unittest.TestCase):
             for bad in (b'',good+good):
                 with self.assertRaisesRegex(ValueError,'unique certified END'):i.certified_build(bad,wrapper,root,output)
             r=json.loads(good.decode().split(' ',1)[1])
-            for field in ('doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
+            for field in ('browser_provenance','doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
                 bad=dict(r);bad.pop(field)
                 with self.assertRaisesRegex(ValueError,'identity|output'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
             import copy

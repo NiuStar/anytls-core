@@ -30,6 +30,7 @@ class LeafPatchTests(unittest.TestCase):
                     transient_retry=w.retry_receipt(*w.retry_identity()),
                     doh_deadline_isolation=w.doh_receipt(*w.doh_identity()),
                     stream_connect_ack=w.ack_receipt(*w.ack_identity()),
+                    browser_provenance=w.browser_receipt(w.browser_identity()),
                     original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)
 
     def stage(self, root):

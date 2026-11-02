@@ -52,6 +52,7 @@ class PackagingTests(unittest.TestCase):
    materials+=['patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json']
    materials+=['patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
    materials+=['patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch']
+   materials+=['patches/sing-box/browser.identity.json','patches/sing-box/browser-dns.patch.json','patches/sing-box/browser-route.patch.json']
    for name in materials:
     target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
    receipt.update(identity_sha256=w.IDENTITY_SHA,wrapper_sha256=w.sha((root/'scripts/go-patched.py').read_bytes()),module=w.MODULE,version=w.VERSION,commit=start['commit'],source_sha256=start['source_sha256'],patch_sha256=w.sha(patch),result_sha256=start['result_sha256'],core_slim={'identity_sha256':w.CORE_IDENTITY_SHA,'patch_sha256':w.sha(core_patch),'files':core['files']},chrome_backend=w.chrome_receipt(chrome,chrome_patch))
@@ -60,6 +61,7 @@ class PackagingTests(unittest.TestCase):
    receipt['transient_retry']=w.retry_receipt(*w.retry_identity())
    receipt['doh_deadline_isolation']=w.doh_receipt(*w.doh_identity())
    receipt['stream_connect_ack']=w.ack_receipt(*w.ack_identity())
+   receipt['browser_provenance']=w.browser_receipt(w.browser_identity())
    receipt.update(original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)
    def output(args,**kwargs):
     if args[1:]==['version']:return (root/'packaging-go-version').read_text()

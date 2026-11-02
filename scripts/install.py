@@ -297,6 +297,8 @@ def certified_build(stdout, wrapper, source, output):
     ack_m, ack_patch = ns["ack_identity"](source)
     require(r.get("stream_connect_ack") == ns["ack_receipt"](ack_m, ack_patch),
             "source build ACK identity mismatch")
+    require(r.get("browser_provenance") == ns["browser_receipt"](ns["browser_identity"](source)),
+            "source build browser identity mismatch")
     require(r.get("rc") == 0 and r.get("ephemeral_cleanup") == "ok"
             and r.get("root_inputs_unchanged") is True and r.get("original_doh_source_unchanged") is True
             and r.get("original_module_zip_unchanged") is True
