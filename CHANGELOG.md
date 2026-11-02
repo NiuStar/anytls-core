@@ -1,5 +1,13 @@
 # Changelog
 
+## v2026-11-02-02（发布前证据快照）
+
+- DNS运行证据一期：绑定同次已加载策略／注册实例，保留最多64条实际HTTPS Exchange／ExchangeAsync完成及GotConn取得计数，经过助手运行身份认证和现有控制台认证读取；过期／缺口显式呈现，不把缓存读取当持续存活证明。不采集查询名、答案、客户端或原始错误／凭据。
+- 修复DNS stream具体CachedConn层的缓冲所有权与异步Close竞争；wrapper认证补丁、原模块身份和输出，打包／源码安装器要求对应收据。SDK仍为sing-box v1.14.3，既有严格TLS、DNS失败关闭、缓存／超时／重试和安全换族策略不变；隐藏CachedConn的任意不透明包装不在修复范围，Linux resolved仅源码审查。
+- 已审实现 `907319e763574e4053b821de495c3bf6b45155c6` 已验Mac ARM64完整699顶层／2336子PASS、7顶层SKIP、0FAIL、9包，定向84／167 PASS与2顶层SKIP、限定race45／59 PASS与1顶层SKIP、最大帧定向1项PASS及vet/build/package；这些是隔离实现证据，不是最终发行身份验收。相同最终夹具旧版业务RED／候选GREEN保留。
+- 相对已审实现仅五个明确元数据路径变化，其余跟踪文件blob／mode／SHA256／bytes不变。最终发行native／独立审查／分支、main、标签CI／公开双架构六附件审计及独立版本执行PENDING，结果另存绑定收据，不倒填快照；不表示永久禁止已获授权的后续发布。
+- 不提供完整query／capture／cache／coalesced账本、HTTP状态、新TLS握手、实际叶证书或具体detour证明；不宣称Google、目标站点、既有status／Shutdown问题或正式TUN已修复。普通update不替换root助手；新观测须用户本机完整安装／系统授权更新配套助手后自行显式重连，发布不执行这些操作。见[版本说明](docs/releases/v2026-11-02-02.md)。
+
 ## v2026-11-02-01（发布前证据快照）
 
 - 默认逐连接IPv6→IPv4安全换族，无需修改YAML：保留原IPv6尝试，只在业务载荷前取得明确CONNECT失败证据，并确认IPv4候选命中同一实际编译规则与同一具体出口时才允许备用连接。不是全局禁IPv6／AAAA，也不擅换节点或分流。

@@ -1,8 +1,8 @@
 # anytls-core
 
-> `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；真实日志需本机授权更新配套助手并显式重连新版 VPN。目标测试机 `172.16.51.184` 尚未由本任务安装或验收。
+> `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；新运行证据需用户本机授权更新配套助手并显式重连新版 VPN。本版发布不安装或验收目标机，不代表正式 TUN 或目标站点已恢复。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-11-02-01（发布前证据快照）** 新增默认启用的逐连接 IPv6→IPv4 安全换族：保留原 IPv6 尝试，仅在业务载荷发送前取得明确、可归因的 CONNECT 失败证据，且 IPv4 候选命中同一实际编译规则与同一具体出口时才允许备用连接；不需要修改 YAML、不全局屏蔽 AAAA。严格 DoH／TLS 与默认监听 `0.0.0.0:18089`／`0.0.0.0:11080` 保持。实现 `35bb6329902412cf54878c50b9baa312cbb8f71e` 已通过独立实现及限定原生证据审查：完整675顶层／2305子PASS、7顶层SKIP、0FAIL、8包及vet/build/package；这不是最终发行提交验收。最终发行原生、CI与公开附件结果另存身份绑定收据。EDNS、自定义TLS／动态selector等未支持路径保留UNKNOWN；用户实际Chrome商店、站点与正式TUN体验仍待验收，不宣称普遍WAN提速或所有IPv6故障已修复。普通update不替换root助手；经助手启动的VPN从助手自身程序暂存核心，启用新版须由用户在本机通过完整安装／系统授权更新配套助手，再自行显式重连，本次冻结不激活。见[版本说明](docs/releases/v2026-11-02-01.md)、[CLI契约](docs/doh-performance-report.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-11-02-02（发布前证据快照）** 新增 DNS 运行证据一期：已加载策略与实际 HTTPS Exchange／ExchangeAsync 完成、GotConn 连接取得计数，经认证助手和控制台按运行身份读取；不是完整查询／缓存账本。同时修复 DNS stream 具体 CachedConn 缓冲所有权与异步 Close 竞争，保持 sing-box v1.14.3、严格 DoH／TLS 与既有默认逐连接安全换族。已审实现 `907319e763574e4053b821de495c3bf6b45155c6` 已获独立源码及隔离原生验收；完整699顶层／2336子PASS、7顶层SKIP、0FAIL，vet/build/package通过，不是最终发行身份验收。最终发行原生、CI、公开六附件与独立版本执行结果须另存精确身份绑定收据。未观测缓存命中／合并、HTTP状态、新TLS握手或实际叶证书；不宣称Google、目标站点或正式TUN已恢复。普通update不替换root助手；经助手启动的VPN从助手自身程序暂存核心，新观测须由用户本机完整安装／系统授权更新配套助手，再自行显式重连，发布不执行安装或VPN切换。见[版本说明](docs/releases/v2026-11-02-02.md)、[DNS证据边界](docs/dns-runtime-evidence.md)及[托管说明](docs/webui-autorestart.md)。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -93,7 +93,7 @@ SOCKS／HTTP 代理模式默认监听 `0.0.0.0:11080`；使用 `--local-listen 1
 
 双架构 Release 提供 macOS arm64 / amd64 预编译程序，普通用户使用上方一键安装即可。以下为开发者源码构建方式：需要 Python 3 和 **Go 1.27.3**，首次构建需能取得 go.mod 锁定的依赖。
 
-必须使用附带 wrapper 应用已认证的 sing-box Box.Start 清理错误补丁和核心链接裁剪（缓存／调试 HTTP 的显式拒绝）；不能用普通 `go build` 替代发布构建：
+必须使用附带 wrapper 应用已认证的 sing-box 补丁，包括 Box.Start 清理、DNS stream 缓冲所有权修复和核心链接裁剪（缓存／调试 HTTP 的显式拒绝）；不能用普通 `go build` 替代发布构建：
 
 ```sh
 export GOTOOLCHAIN=local GOWORK=off GOFLAGS=
@@ -158,9 +158,9 @@ anytls stop
 
 ## 本版验证与已知限制
 
-- 本版说明为冻结的发布前证据快照：已审实现 `35bb6329902412cf54878c50b9baa312cbb8f71e` 的Mac ARM64完整675顶层／2305子PASS、7顶层SKIP、0FAIL、8包及vet/build/package通过；定向与限定race各38顶层／67子PASS。以上为继承并认证的实现证据，不是本次重跑或最终发行身份验收。最终发行完整native／vet／build／package、独立发行审查、分支／main／标签CI及公开双架构附件仍PENDING，后续另存绑定收据。
+- 本版说明为冻结的发布前证据快照：已审实现 `907319e763574e4053b821de495c3bf6b45155c6` 的Mac ARM64完整699顶层／2336子PASS、7顶层SKIP、0FAIL、9包及vet/build/package通过；定向84顶层／167子PASS、2顶层SKIP，限定race45顶层／59子PASS、1顶层SKIP；另有最大合法帧定向1项PASS。相同最终夹具保留旧版业务RED／候选GREEN。以上为已认证实现证据，不是本次重跑或最终发行身份验收。最终发行native、独立发行审查、分支／main／标签CI、公开双架构六附件审计及独立版本执行仍PENDING，后续另存绑定收据，不追改本快照。
 - 默认逐连接换族保留IPv6优先尝试、同一实际编译规则与同一具体出口约束；证书／认证／取消／ACK未确认不触发换族，备用连接也须ACK成功后才能发送业务载荷。EDNS、自定义TLS、ECS／optimistic／rewrite、动态selector、应用自带DNS及其他未支持路径保持UNKNOWN，不全局禁用IPv6、不添加明文DNS回退。用户真实Chrome商店／站点／正式TUN体验仍待验，不宣称所有故障已修复或普遍WAN提速。
-- `--dns-metrics` 默认关闭，只有嵌入核心前台 `run` 显式启用后在返回时尝试写一次stderr JSON；没有WebUI实时指标、持久化开关或自动给正式daemon启用。缓存命中／并发合并／hijacked／HTTP状态均NOT_OBSERVED，真实HTTP503按无typed status的OtherError处理。
+- 既有 `--dns-metrics` 仍默认关闭，仅前台 `run` 显式启用后尝试写一次stderr聚合。本版另有 `dns_schema:1` 有界运行证据：仅新暂存且绑定启动operation／epoch的嵌入式服务启用；普通CLI／Check禁用，旧进程argv不迁移。认证API／页面读取最多64条实际完成和GotConn计数，STALE／GAP不掩盖；不是持续存活证明，也不提供完整查询、缓存命中／合并、HTTP状态、新TLS握手、实际叶证书或实际detour证明。
 - 真实SDK确定性拨号失败benchmark中，开启观测增加同步469ns／352B／9alloc、异步496ns／416B／10alloc；不是WAN／TLS或端到端性能，helper零分配不代表runtime零分配。缓存、并发合并、连接复用与恢复是已有GREEN基线；本版不宣称DNS加速、GoogleIPv6或Intel现场已修复。原生局部门与CLI入口的边界见[版本说明](docs/releases/v2026-10-31-01.md)。
 - 既有 GEOIP 用户 URL 私有副本及记录回放观察属于上一版证据，不作为本版新规则入口的正式 root／TUN 验收；物理出口仍 UNKNOWN。
 - 曾出现间歇 DNS／TLS 超时。有限重试不是连通性保证，持续失败仍停止并恢复网络。
