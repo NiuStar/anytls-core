@@ -87,6 +87,7 @@ async function startupLoad(o) {
   if(data.code!=='OK'){o.snapshot=null;$('startup-copy').disabled=true;$('startup-text').value='';$('startup-status').textContent='时间轴：'+data.code;if(!['NO_OPERATION','BUSY'].includes(data.code))o.waiting=false;return;}
   if(o.pending&&o.mutation&&!o.id&&data.operation_id===o.baselineID)return;
   if(!o.id)o.id=data.operation_id;o.snapshot=data;startupLastSnapshot=data;const t=data.trace;
+  runtimePublish('history',{version:t.streams.find(s=>s.role==='CORE')?.provenance.version,startedAt:t.started_at,observation:t.core_observation.availability,ageNS:t.core_observation.age_ns,result:t.lifecycle_result});
   $('startup-text').value=startupText(data);$('startup-copy').disabled=false;$('startup-copy').textContent=t.state==='IN_PROGRESS'?'复制日志（操作进行中）':'复制完整日志';
   $('startup-status').textContent=t.state==='IN_PROGRESS'?'正在观察 · 不是进度百分比':'历史快照 · 不是当前就绪证明';
   const helper=t.streams.find(s=>s.role==='HELPER'),core=t.core_observation;

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"io/fs"
@@ -31,7 +32,7 @@ func (f *webStaticCountingFS) ReadFile(name string) ([]byte, error) {
 func TestWebStaticBuildOnceConcurrent(t *testing.T) {
 	var store webStaticStore
 	source := &webStaticCountingFS{FS: webAssets}
-	want := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/dns.js": "dns.js", "/style.css": "style.css"}
+	want := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/dns.js": "dns.js", "/runtime.js": "runtime.js", "/style.css": "style.css"}
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
@@ -106,7 +107,7 @@ func TestWebStaticWireHTTP(t *testing.T) {
 	transport := &http.Transport{DisableCompression: true}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport}
-	for _, path := range []string{"/", "/app.js", "/startup.js", "/dns.js", "/style.css"} {
+	for _, path := range []string{"/", "/app.js", "/startup.js", "/dns.js", "/runtime.js", "/style.css"} {
 		for _, encoding := range []string{"identity", "gzip"} {
 			r, err := http.NewRequest("GET", server.URL+path, nil)
 			if err != nil {
@@ -122,6 +123,15 @@ func TestWebStaticWireHTTP(t *testing.T) {
 			closeErr := resp.Body.Close()
 			if readErr != nil || closeErr != nil || resp.StatusCode != 200 {
 				t.Fatalf("HTTP response status=%d read=%v close=%v", resp.StatusCode, readErr, closeErr)
+			}
+			mime := "text/javascript; charset=utf-8"
+			if path == "/" {
+				mime = "text/html; charset=utf-8"
+			} else if path == "/style.css" {
+				mime = "text/css; charset=utf-8"
+			}
+			if resp.Header.Get("Content-Type") != mime || resp.Header.Get("Vary") != "Accept-Encoding" {
+				t.Fatalf("HTTP MIME/Vary mismatch for %s: %v", path, resp.Header)
 			}
 			if resp.Header.Get("Content-Length") != strconv.Itoa(len(wire)) || resp.ContentLength != int64(len(wire)) || resp.Uncompressed {
 				t.Fatal("wrong framing or client auto-decompression")
@@ -153,8 +163,8 @@ func TestWebStaticWireHTTP(t *testing.T) {
 			} else if resp.Header.Get("Content-Encoding") != "" {
 				t.Fatal("identity encoded")
 			}
-			if !bytes.Equal(original, body) {
-				t.Fatal("wire embedded bytes changed")
+			if !bytes.Equal(original, body) || sha256.Sum256(original) != sha256.Sum256(body) {
+				t.Fatal("wire embedded bytes/SHA changed")
 			}
 		}
 	}
@@ -163,7 +173,7 @@ func TestWebStaticWireHTTP(t *testing.T) {
 func TestWebStaticColdBuildContract(t *testing.T) { webStaticColdBuildContract(t) }
 
 func webStaticColdBuildContract(b testing.TB) {
-	want := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/dns.js": "dns.js", "/style.css": "style.css"}
+	want := map[string]string{"/": "index.html", "/app.js": "app.js", "/startup.js": "startup.js", "/dns.js": "dns.js", "/runtime.js": "runtime.js", "/style.css": "style.css"}
 	var store webStaticStore
 	source := &webStaticCountingFS{FS: webAssets}
 	assets, err := store.load(source)

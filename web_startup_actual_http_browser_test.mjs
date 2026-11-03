@@ -22,7 +22,7 @@ const server=http.createServer((req,res)=>{
   const value=path.endsWith('/session')?{csrf:'shell-only-fixture'}:path.endsWith('/status')?{availability:'AVAILABLE',running:false,loaded:false,version:'shell-only',pendingReload:false,pendingKnown:true}:path.endsWith('/subscription')?{configured:false}:path.endsWith('/profiles')?{profiles:[],etag:'"v1"'}:path.endsWith('/config')?{yaml:'nodes: []\nrules: ["MATCH,DIRECT"]',etag:'"v1"'}:{available:false};
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));return;
  }
- const name=path==='/'?'index.html':path.slice(1);if(!['index.html','app.js','startup.js','style.css'].includes(name)){res.writeHead(404);res.end();return;}
+ const name=path==='/'?'index.html':path.slice(1);if(!['index.html','app.js','runtime.js','startup.js','dns.js','style.css'].includes(name)){res.writeHead(404);res.end();return;}
  res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(root+name));
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
