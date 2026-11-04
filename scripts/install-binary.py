@@ -503,6 +503,48 @@ class WebUI:
             raise
 
 
+def helper_config_identity(config):
+    """Match controlHelperConfigIdentity: SHA256(canonical absolute path), not YAML."""
+    try:
+        path = Path(config)
+        i.require(path.is_absolute() and not any(c in str(path) for c in "\x00\n\r"), "HELPER_STATUS_CONFIG")
+        canonical = path.resolve(strict=True)
+        i.require(str(canonical) != "/" and not any(c in str(canonical) for c in "\x00\n\r") and
+                  canonical.is_file(), "HELPER_STATUS_CONFIG")
+        return hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()
+    except (OSError, ValueError, RuntimeError, UnicodeError):
+        raise ValueError("HELPER_STATUS_CONFIG") from None
+
+
+def validate_helper_status(raw, digest, tag, identity):
+    """Validate the existing ordinary status DTO; never echo helper-controlled data."""
+    try:
+        # CLI JSON is re-encoded/indented, so do not impose the IPC wire-byte cap.
+        response = i.strict_json(raw)
+        required = {"ok", "code", "message", "loaded", "running", "helper_version", "helper_sha256", "config_identity"}
+        i.require(type(response) is dict and required <= response.keys() and
+                  response.keys() <= required | {"diagnostics"}, "invalid")
+        i.require(all(type(response[k]) is bool for k in ("ok", "loaded", "running")) and
+                  all(type(response[k]) is str for k in required - {"ok", "loaded", "running"}), "invalid")
+        i.require(response["ok"] is True and response["code"] == "", "invalid")
+        if "diagnostics" in response:
+            d = response["diagnostics"]
+            fields = {"schema", "operation", "outcome", "stage", "reason", "rollback", "restoration", "cleanup", "receipt", "job", "tun"}
+            i.require(type(d) is dict and d.keys() == fields and type(d["schema"]) is int and d["schema"] == 1 and
+                      all(type(d[k]) is str for k in fields - {"schema"}), "invalid")
+            # startDiagnostics.valid(true), with the same fixed enum allowlists.
+            allowed = {"operation": "START RELOAD STOP", "outcome": "SUCCEEDED", "stage": "NONE", "reason": "NONE",
+                       "rollback": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "restoration": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN",
+                       "cleanup": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "receipt": "NOT_ATTEMPTED WRITTEN FAILED UNKNOWN",
+                       "job": "NOT_OBSERVED RUNNING NOT_RUNNING UNLOADED UNKNOWN", "tun": "NOT_OBSERVED TUN NOT_TUN UNKNOWN"}
+            i.require(all(d[k] in values.split() for k, values in allowed.items()), "invalid")
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        raise ValueError("HELPER_STATUS_INVALID") from None
+    i.require(response["helper_sha256"] == digest, "HELPER_STATUS_SHA_MISMATCH")
+    i.require(response["helper_version"] == tag, "HELPER_STATUS_VERSION_MISMATCH")
+    i.require(response["config_identity"] == identity, "HELPER_STATUS_CONFIG_MISMATCH")
+
+
 def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tty=None, webui_listen="0.0.0.0"):
     """Only called after every downloaded byte and manifest has been verified."""
     target, config, link = app / "anytls-macos", app / "config.yaml", home / ".local/bin/anytls"
@@ -522,9 +564,16 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
             out.flush()
             os.fsync(out.fileno())
         candidate.chmod(0o700)
+        candidate_digest = sha256(candidate)
+        i.require(candidate_digest == sha256(bundle / "bin/anytls-macos"), "HELPER_STATUS_CANDIDATE_MISMATCH")
         command_version(candidate, tag, runner, env)
         created = i.install_config(bundle, app)
         regular(config)
+        # Both executable names must select the same physical sibling config.
+        i.require(candidate.resolve(strict=True).parent == app.resolve(strict=True), "HELPER_STATUS_CONFIG")
+        config_identity = helper_config_identity(config)
+        i.require(helper_config_identity(candidate.resolve(strict=True).parent / "config.yaml") == config_identity,
+                  "HELPER_STATUS_CONFIG_MISMATCH")
         # Resolve the CLI collision before making any privileged change. The
         # first-install symlink may be dangling until the atomic publish below.
         i.ensure_link(target, link)
@@ -542,8 +591,15 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
             runner([str(candidate), "helper", "install"], check=True, stdin=terminal,
                    stdout=terminal, stderr=terminal, env=env)
         progress("正在验证助手认证与配置绑定")
-        runner([str(candidate), "helper", "status"], check=True, stdout=subprocess.PIPE,
-               stderr=subprocess.PIPE, timeout=30, env=env)
+        result = runner([str(candidate), "helper", "status"], check=True, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=30, env=env)
+        i.require(result.returncode == 0, "HELPER_STATUS_EXIT")
+        validate_helper_status(result.stdout, candidate_digest, tag, config_identity)
+        i.require(sha256(candidate) == candidate_digest, "HELPER_STATUS_CANDIDATE_MISMATCH")
+        i.require(stat.S_ISREG(config.lstat().st_mode), "HELPER_STATUS_CONFIG")
+        i.require(helper_config_identity(config) == config_identity and
+                  helper_config_identity(candidate.resolve(strict=True).parent / "config.yaml") == config_identity,
+                  "HELPER_STATUS_CONFIG_MISMATCH")
         progress("[5/6] 备份旧程序并原子替换为已验证版本")
         backup = i.publish_binary(candidate, target, app)
         command_version(target, tag, runner, env)

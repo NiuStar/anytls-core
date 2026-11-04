@@ -226,11 +226,11 @@ func webControlActionReference(ctx context.Context, config, action string, allow
 	}
 	expected, e := controlHelperConfigIdentity(config)
 	if e != nil || expected != status.ConfigIdentity || result.ConfigIdentity != expected {
-		return ref, &webControlError{Code: "HELPER_CONFIG_MISMATCH"}
+		return ref, &webControlError{Code: "HELPER_CONFIG_MISMATCH", StartupUnknown: true}
 	}
 	if result.TimelineAvailability == "AVAILABLE" {
 		if result.OperationID == nil || *result.OperationID != id || capability.HelperEpoch == nil || result.HelperEpoch == nil || *result.HelperEpoch != *capability.HelperEpoch {
-			return ref, &webControlError{Code: "HELPER_UNAVAILABLE"}
+			return ref, &webControlError{Code: "HELPER_UNAVAILABLE", StartupUnknown: true}
 		}
 		ref.Availability = "AVAILABLE"
 	} else {

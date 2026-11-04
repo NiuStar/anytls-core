@@ -198,7 +198,7 @@ func TestWebStartupControlAtMostOnceAndStrictFallback(t *testing.T) {
 			if mode == "random" && ref.OperationID != nil {
 				t.Fatal("invented random fallback ID")
 			}
-			if mode == "mutate-network" {
+			if mode == "mutate-network" || mode == "wrong-id" {
 				var uncertain *webControlError
 				if !errors.As(err, &uncertain) || !uncertain.StartupUnknown || ref.Availability != "AVAILABLE" {
 					t.Fatal("lost mutation reply must be UNKNOWN and queryable", ref, err)

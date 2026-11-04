@@ -77,7 +77,7 @@
  const originalUpdateOperation=updateOperation;updateOperation=async function(install){await originalUpdateOperation(install);if(!install&&$('update-result').textContent.startsWith('检查未完成')){brand.state='failed';renderBrand();}};
  $('check-update').onclick=()=>updateOperation(false);
  // All node/group selection paths disclose reconnect before entering the existing save chain.
- for(const id of ['nodes-list','groups-list'])$(id).addEventListener('click',event=>{const b=event.target.closest('button');if(!b||b.disabled||!['设为启动节点','保存选择'].includes(b.textContent))return;event.preventDefault();event.stopImmediatePropagation();const handler=b.onclick;confirmAction('保存线路选择？',['运行中的服务会由服务端自动应用，期间可能短暂重连。未运行时仅保存，不会启动。'],()=>handler?.());},true);
+ for(const id of ['nodes-list','groups-list'])$(id).addEventListener('click',event=>{const b=event.target.closest('button');if(!b||b.disabled||!(b.dataset.nodeSelect||['设为启动节点','保存选择'].includes(b.textContent)))return;event.preventDefault();event.stopImmediatePropagation();const handler=b.onclick;confirmAction('保存线路选择？',['运行中的服务会由服务端自动应用，期间可能短暂重连。未运行时仅保存，不会启动。'],()=>handler?.());},true);
  // Profile stable IDs and opaque versions are server-owned, never reconstructed from labels.
  let profileSwitchVersion='';
  const inheritedClearProfiles=clearProfiles;clearProfiles=function(){profileSwitchVersion='';$('active-profile').disabled=true;inheritedClearProfiles();};
@@ -235,6 +235,6 @@
  $('log-search').oninput=renderLogs;$('logs-refresh').onclick=()=>{startupResume();renderLogs();};const logObserver=new MutationObserver(()=>{if(route==='debug/logs')renderLogs();});logObserver.observe($('startup-status'),{childList:true,subtree:true});logObserver.observe($('startup-summary'),{childList:true,subtree:true});
  document.addEventListener('visibilitychange',()=>{copyEpoch++;if(document.hidden){cancelMetrics();readEpoch++;closeModal();}else if(active()){if(route==='overview'){loadMetrics();loadTraffic();}}});
  window.addEventListener('pagehide',()=>{cancelMetrics();readEpoch++;copyEpoch++;closeModal();});
- window.AnyTLSProduct=Object.freeze({notice:routeNotice,statusVisible:()=>route==='overview',acceptRuntime:kind=>kind!=='dns'||route==='debug/dns',routes:routes.map(r=>r[0])});
+ window.AnyTLSProduct=Object.freeze({nodeDetails:(n,edit,tcp)=>modal(n.name,[el('p',n.server+':'+n.port+' · '+(n.hasPassword?'已配置密码':'未配置密码')),el('p','当前启动节点仅表示配置选择，不代表当前已连接。'),tcp,edit,el('p','删除节点请使用原始配置；保存前由现有配置校验与确认流程处理。')]),notice:routeNotice,statusVisible:()=>route==='overview',acceptRuntime:kind=>kind!=='dns'||route==='debug/dns',routes:routes.map(r=>r[0])});
  renderRoute(true);renderMetrics();renderPower();renderBrand();
 })();

@@ -5,3 +5,23 @@ button{font:inherit;color:var(--ink);background:#fff;border:1px solid #dbe4ef;bo
 #uptime{display:grid;grid-template-columns:repeat(288,minmax(0,1fr));gap:0;min-width:0}#uptime span{min-width:0;width:auto;border-radius:0}.bottom>.card{min-width:0}.bar{background:#e9edf3}.subscription-card h2{overflow-wrap:anywhere}.rule-order{flex-shrink:0}#freshness{display:inline-block;margin-top:5px;font-size:11px}#sidebar{box-shadow:none}body.drawer-open #sidebar{box-shadow:20px 0 80px #172b4633}
 @media(max-width:760px){.subscription-card .settingrow{min-height:60px}.rule-row>.rule-order{width:100%}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+/* Accepted R3 node cards: API-owned content, no illustrative fixtures. */
+#nodes-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:20px;border:1px solid #e0e8f3;border-radius:14px;background:#fff}
+.node-card{min-width:0;border:1px solid #dfe7f2;border-radius:11px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
+.node-card.selected{border:1.5px solid #246beb;background:#f1f6ff;box-shadow:0 0 0 1px #246beb0b}
+.select-node{border:0;background:none;text-align:left;border-radius:0;padding:13px 14px 8px;min-height:112px;flex:1;display:flex;flex-direction:column;width:100%;gap:8px;color:var(--ink)}
+.select-node:disabled{opacity:1;cursor:default}.node-card:not(.selected) .select-node:disabled{background:#f3f5f8;color:#536780}
+.node-name{display:block;font-size:14px;font-weight:650;line-height:1.6;overflow-wrap:anywhere;word-break:normal;width:100%}
+.selection-label{display:block;color:#205ec4;font-size:12px;line-height:20px;min-height:20px;font-weight:600}.selection-label.unselected{color:#536780;font-weight:400}
+.card-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-top:auto;padding-top:4px;width:100%}
+.protocol{font-size:12px;line-height:1.65;color:#536780;overflow-wrap:anywhere;text-transform:uppercase}
+.node-card .latency{margin:0;border-radius:5px;padding:3px 6px;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;line-height:20px;overflow-wrap:anywhere;background:#f0f3f8;color:#536780}
+.node-card [data-latency=fast]{background:#edf7f1;color:#18724e}.node-card [data-latency=medium]{background:#fff5e4;color:#98600b}.node-card [data-latency=slow],.node-card [data-latency=failed],.node-card [data-latency=timeout]{background:#fff0f1;color:#b8313e}.node-card [data-latency=pending]{background:#edf3ff;color:#205ec4}
+.card-controls{display:flex;border-top:1px solid #e7edf5;padding:8px 6px;background:#f8faff;gap:6px}
+.card-controls button{border:1px solid #a7b8ce;background:#fff;border-radius:7px;min-width:44px;min-height:44px;font-size:12px;line-height:18px;color:#345371;padding:6px;box-shadow:0 1px 1px #172b4605}
+.card-controls .test-node{flex:1;text-align:center;white-space:nowrap}.card-controls .more{flex:0 0 44px;width:44px;padding:6px}.card-controls button:disabled{background:#edf1f6;border-color:#b2bfce;color:#536780;opacity:1}
+#nodes-empty{grid-column:1/-1}.menu svg{width:22px;height:22px;display:block}.menu{padding:0;display:none;place-items:center;min-width:44px;min-height:44px}
+@media(min-width:761px) and (max-width:1199px){#nodes-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:761px){body{background:linear-gradient(to right,#fff 0,#fff 208px,var(--bg) 208px,var(--bg) 100%)}}
+@media(max-width:760px){.menu{display:grid}#view-nodes .list-toolbar{gap:10px}#nodes-list{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px 10px;gap:10px}.select-node{padding:11px 10px 9px;min-height:130px;gap:7px}.node-name{font-size:13px;line-height:1.65}#product-dialog .node-form{grid-template-columns:1fr}}
+@media(max-width:350px){#nodes-list{padding:12px 8px;gap:8px}.select-node{padding-left:8px;padding-right:8px}.card-meta{align-items:flex-start;flex-direction:column}.card-controls{gap:4px;padding:6px 4px}.card-controls button{padding:4px}.card-controls .test-node{padding-left:2px;padding-right:2px}}

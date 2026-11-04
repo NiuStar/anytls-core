@@ -99,7 +99,167 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((self.home / ".local/bin/anytls").is_symlink())
             self.assertEqual(Path(args[0]).parent, self.app)
             self.assertEqual(Path(args[0]).stat().st_mode & 0o777, 0o700)
+        if args[1:] == ["helper", "status"]:
+            return types.SimpleNamespace(stdout=json.dumps(self.status_receipt(args[0])).encode(), returncode=0)
         return types.SimpleNamespace(stdout=b"{}", returncode=0)
+
+    def status_receipt(self, candidate):
+        # Independent Go contract: SHA256 of resolved absolute PATH, not contents.
+        config = (self.app / "config.yaml").resolve(strict=True)
+        return {"ok": True, "code": "", "message": "status", "loaded": False,
+                "running": False, "helper_version": TAG,
+                "helper_sha256": hashlib.sha256(Path(candidate).read_bytes()).hexdigest(),
+                "config_identity": hashlib.sha256(str(config).encode()).hexdigest()}
+
+    def test_status_readback_strict_rejections_block_publish_without_retry(self):
+        _, bundle, _, _ = self.verified()
+        self.app.mkdir()
+        target = self.app / "anytls-macos"
+        target.write_bytes(b"old")
+        (self.app / "config.yaml").write_bytes(b"private-config-sentinel")
+        cases = {"empty": lambda r: b"", "empty-object": lambda r: b"{}",
+                 "null": lambda r: b"null", "array": lambda r: b"[]",
+                 "malformed": lambda r: b"{private-secret-sentinel",
+                 "trailing": lambda r: json.dumps(r).encode() + b" {}",
+                 "duplicate": lambda r: (json.dumps(r)[:-1] + ',"ok":true}').encode(),
+                 "unknown": lambda r: json.dumps({**r, "secret": "private-secret-sentinel"}).encode(),
+                 "nested-duplicate": lambda r: (json.dumps(r)[:-1] + ',"diagnostics":{"schema":1,"schema":1}}').encode()}
+        for key, value in (("ok", False), ("ok", 1), ("code", "STATE_FAILED"),
+                           ("helper_sha256", "0" * 64), ("helper_version", "v0.0.0"),
+                           ("config_identity", "0" * 64), ("loaded", 0), ("running", "false"),
+                           ("diagnostics", None), ("diagnostics", {})):
+            cases[key + str(value)] = lambda r, key=key, value=value: json.dumps({**r, key: value}).encode()
+        for key in self.status_receipt(bundle / "bin/anytls-macos"):
+            cases["missing-" + key] = lambda r, key=key: json.dumps({k: v for k, v in r.items() if k != key}).encode()
+            cases["null-" + key] = lambda r, key=key: json.dumps({**r, key: None}).encode()
+        for label, encode in cases.items():
+            with self.subTest(case=label):
+                self.webui_factory.return_value.restart.reset_mock()
+                def runner(args, **kwargs):
+                    result = self.runner(args, **kwargs)
+                    if args[1:] == ["helper", "status"]:
+                        result.stdout = encode(self.status_receipt(args[0]))
+                    return result
+                with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err, \
+                        mock.patch.object(b.i, "publish_binary", wraps=b.i.publish_binary) as publish, \
+                        self.assertRaisesRegex(ValueError, "^HELPER_STATUS_[A-Z_]+$") as raised:
+                    self.install(bundle, runner)
+                self.assertNotIn("private-secret-sentinel", str(raised.exception) + out.getvalue() + err.getvalue())
+                self.assertEqual(target.read_bytes(), b"old")
+                self.assertEqual((self.app / "config.yaml").read_bytes(), b"private-config-sentinel")
+                self.assertEqual([a[1:] for a, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"]])
+                publish.assert_not_called()
+                self.webui_factory.return_value.restart.assert_not_called()
+                self.assertFalse(list(self.app.glob(".anytls-bin-candidate-*")))
+
+    def test_status_optional_diagnostics_current_schema(self):
+        _, bundle, _, _ = self.verified()
+        def runner(args, **kwargs):
+            result = self.runner(args, **kwargs)
+            if args[1:] == ["helper", "status"]:
+                r = self.status_receipt(args[0])
+                r["diagnostics"] = {"schema": 1, "operation": "START", "outcome": "SUCCEEDED",
+                                    "stage": "NONE", "reason": "NONE", "rollback": "NOT_ATTEMPTED",
+                                    "restoration": "VERIFIED", "cleanup": "UNKNOWN", "receipt": "WRITTEN",
+                                    "job": "NOT_RUNNING", "tun": "NOT_TUN"}
+                result.stdout = json.dumps(r).encode()
+            return result
+        self.install(bundle, runner)
+        self.assertEqual((self.app / "anytls-macos").read_bytes(), self.files["bin/anytls-macos"])
+
+    def test_status_diagnostics_reject_nested_schema_and_enum_drift(self):
+        _, bundle, _, _ = self.verified()
+        self.app.mkdir()
+        target = self.app / "anytls-macos"
+        target.write_bytes(b"old")
+        base = {"schema": 1, "operation": "START", "outcome": "SUCCEEDED", "stage": "NONE", "reason": "NONE",
+                "rollback": "NOT_ATTEMPTED", "restoration": "NOT_ATTEMPTED", "cleanup": "NOT_ATTEMPTED",
+                "receipt": "NOT_ATTEMPTED", "job": "NOT_OBSERVED", "tun": "NOT_OBSERVED"}
+        variants = [{**base, key: None} for key in base] + [{**base, key: "private-secret-sentinel"} for key in base]
+        variants += [{k: v for k, v in base.items() if k != key} for key in base]
+        variants += [{**base, "schema": True}, {**base, "secret": "private-secret-sentinel"}]
+        for diagnostic in variants:
+            def runner(args, **kwargs):
+                result = self.runner(args, **kwargs)
+                if args[1:] == ["helper", "status"]:
+                    result.stdout = json.dumps({**self.status_receipt(args[0]), "diagnostics": diagnostic}).encode()
+                return result
+            with self.subTest(index=variants.index(diagnostic)), self.assertRaisesRegex(ValueError, "^HELPER_STATUS_INVALID$"):
+                self.install(bundle, runner)
+            self.assertEqual(target.read_bytes(), b"old")
+            self.webui_factory.return_value.restart.assert_not_called()
+
+    def test_status_detects_candidate_bytes_drift_before_publish(self):
+        _, bundle, _, _ = self.verified()
+        self.app.mkdir()
+        target = self.app / "anytls-macos"
+        target.write_bytes(b"old")
+        def runner(args, **kwargs):
+            result = self.runner(args, **kwargs)
+            if args[1:] == ["helper", "status"]:
+                Path(args[0]).write_bytes(b"changed-after-valid-receipt")
+            return result
+        with self.assertRaisesRegex(ValueError, "^HELPER_STATUS_CANDIDATE_MISMATCH$"):
+            self.install(bundle, runner)
+        self.assertEqual(target.read_bytes(), b"old")
+        self.webui_factory.return_value.restart.assert_not_called()
+
+    def test_status_config_path_drift_blocks_publish(self):
+        _, bundle, _, _ = self.verified()
+        self.app.mkdir()
+        target = self.app / "anytls-macos"
+        target.write_bytes(b"old")
+        config = self.app / "config.yaml"
+        config.write_bytes(b"private-config-sentinel")
+        alternate = self.app / "alternate.yaml"
+        alternate.write_bytes(b"private-config-sentinel")
+        def runner(args, **kwargs):
+            result = self.runner(args, **kwargs)
+            if args[1:] == ["helper", "status"]:
+                config.unlink()
+                config.symlink_to(alternate)
+            return result
+        with mock.patch.object(b.i, "publish_binary", wraps=b.i.publish_binary) as publish, \
+                self.assertRaisesRegex(ValueError, "^HELPER_STATUS_CONFIG$"):
+            self.install(bundle, runner)
+        publish.assert_not_called()
+        self.assertEqual(target.read_bytes(), b"old")
+        self.assertEqual([a[1:] for a, _ in self.processes], [["version"], ["-v"], ["helper", "install"], ["helper", "status"]])
+        self.webui_factory.return_value.restart.assert_not_called()
+
+    def test_config_identity_exact_go_path_contract(self):
+        self.app.mkdir()
+        config = self.app / "config.yaml"
+        config.write_bytes(b"first-private-config")
+        expected = hashlib.sha256(str(config.resolve()).encode()).hexdigest()
+        self.assertEqual(b.helper_config_identity(config), expected)
+        config.write_bytes(b"second-private-config")
+        self.assertEqual(b.helper_config_identity(config), expected, "path identity is not a content hash")
+        link = self.root / "alias.yaml"
+        link.symlink_to(config)
+        self.assertEqual(b.helper_config_identity(link), expected)
+        for path in (Path("relative.yaml"), self.root / "missing", self.app, self.root / "bad\npath"):
+            with self.assertRaisesRegex(ValueError, "^HELPER_STATUS_CONFIG$"):
+                b.helper_config_identity(path)
+
+    def test_status_main_rejection_does_not_print_private_response(self):
+        self.processes = []
+        real_run = b.run
+        def runner(args, **kwargs):
+            result = self.runner(args, **kwargs)
+            if args[1:] == ["helper", "status"]:
+                result.stdout = b'{"private":"private-secret-sentinel"}'
+            return result
+        def isolated_run(args):
+            return real_run(args, self.transport, runner, system="Darwin", machine="arm64", euid=501,
+                            home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
+        with mock.patch.object(b, "run", side_effect=isolated_run), contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(b.main(["--version", TAG]), 1)
+        self.assertIn("HELPER_STATUS_INVALID", err.getvalue())
+        self.assertNotIn("private-secret-sentinel", out.getvalue() + err.getvalue())
+        self.assertFalse((self.app / "anytls-macos").exists())
+        self.webui_factory.return_value.restart.assert_not_called()
 
     def install(self, bundle, runner=None):
         self.app.mkdir(exist_ok=True)

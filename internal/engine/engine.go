@@ -145,6 +145,11 @@ func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start
 		closeErr := instance.Close()
 		recorder.End(span, timelineCode(closeErr), st.Fields{})
 		err = errors.Join(err, lifecycleError("close", closeErr))
+		// A Check-only construction must not change runtime observation state.
+		// Run may be canceled before Start returns; finalize after resources close.
+		if start {
+			dnsEvidence(ctx).Closed()
+		}
 	}()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -163,7 +168,6 @@ func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start
 	}
 	recorder.Observe("START", "CORE_WAIT", "OK", st.Fields{})
 	dnsEvidence(ctx).Loaded()
-	defer dnsEvidence(ctx).Closed()
 	<-ctx.Done()
 	return ctx.Err()
 }

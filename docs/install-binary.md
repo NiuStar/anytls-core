@@ -110,8 +110,16 @@ Mach-O executable 头；`BUILD-INFO.json.platform` 也必须为对应 `darwin-AR
 
 在任何 root 安装之前创建/检查 CLI 链接；初次安装时它会暂时指向尚未发布的
 目标。候选以 `/dev/tty` 为 stdin 执行 `helper install`，由原生 sudo 授权；
-该命令的认证 readiness 和随后的 `helper status` 都成功后，才先备份实际旧
-二进制，再原子发布并再次执行 `version`。不自动执行 VPN 的 start/reload/stop。
+该命令的认证 readiness 和随后的普通用户 `helper status` 都成功后，才先备份实际旧
+二进制，再原子发布并再次执行 `version`。最后一次 status 必须是单个严格 JSON 对象，
+包含现有八个必需字段（仅允许附加现有 schema 的 `diagnostics`），拒绝重复、未知、缺失、
+null 或错误类型字段；同时要求 `ok=true`、空 `code`，助手 SHA256 等于候选完整文件摘要，
+助手版本等于发行 tag，配置身份等于正式 `config.yaml` 的规范绝对路径 UTF-8 SHA256
+（与 Go `controlHelperConfigIdentity` 一致，不是配置内容摘要）。候选位于同一 appdir，
+其兄弟配置与正式配置身份一致；发布前再次核对候选字节与配置身份。退出零但空输出／
+畸形回执或任一身份不符均不发布、不自动重试助手安装、不重启 WebUI；只输出固定错误码，
+不输出回执或配置内容。`loaded`/`running` 必须是布尔值，但不要求 VPN 已运行。
+不自动执行 VPN 的 start/reload/stop；仅更新用户程序的 `--update-only` 路径保持不变。
 
 二进制归档校验成功后，先保留并读回核对包内许可证、NOTICE 和程序身份材料，以及二进制归档与校验和；保留失败不会执行候选或改变旧程序／配置。不下载应用源码或对应源码归档，也不删除以前安装保留的源码。随后将候选复制到同一 appdir 内并验证版本。
 安装不是跨用户文件和 root helper 的原子事务：首次创建的配置/链接可能保留；helper 已成功后

@@ -2,7 +2,7 @@
 
 > `CLOSED` 仅为最后保存的停止记录状态，完整收尾未验证、连续性 UNKNOWN；新运行证据需用户本机授权更新配套助手并显式重连新版 VPN。本版发布不安装或验收目标机，不代表正式 TUN 或目标站点已恢复。
 
-Go 编写的 macOS AnyTLS VPN 客户端。**v2026-11-02-02（发布前证据快照）** 新增 DNS 运行证据一期：已加载策略与实际 HTTPS Exchange／ExchangeAsync 完成、GotConn 连接取得计数，经认证助手和控制台按运行身份读取；不是完整查询／缓存账本。同时修复 DNS stream 具体 CachedConn 缓冲所有权与异步 Close 竞争，保持 sing-box v1.14.3、严格 DoH／TLS 与既有默认逐连接安全换族。已审实现 `907319e763574e4053b821de495c3bf6b45155c6` 已获独立源码及隔离原生验收；完整699顶层／2336子PASS、7顶层SKIP、0FAIL，vet/build/package通过，不是最终发行身份验收。最终发行原生、CI、公开六附件与独立版本执行结果须另存精确身份绑定收据。未观测缓存命中／合并、HTTP状态、新TLS握手或实际叶证书；不宣称Google、目标站点或正式TUN已恢复。普通update不替换root助手；经助手启动的VPN从助手自身程序暂存核心，新观测须由用户本机完整安装／系统授权更新配套助手，再自行显式重连，发布不执行安装或VPN切换。见[版本说明](docs/releases/v2026-11-02-02.md)、[DNS证据边界](docs/dns-runtime-evidence.md)及[托管说明](docs/webui-autorestart.md)。
+Go 编写的 macOS AnyTLS VPN 客户端。**v2026-11-04-01（发布前证据快照）** 整理 R10 控制台、方案／订阅与运行观测，已接入节点卡片布局与交互及两项助手激活边界补丁；已实现不等于最终发行验收通过。当前公开可安装版本仍以官方最新稳定 Release 为准；本快照尚未发布，最终原生、CI、公开附件和独立版本执行均待验证，后续结果另存绑定精确身份的独立收据，不反复修改快照冒认通过。保持 sing-box v1.14.3、严格 DoH／TLS 与既有逐连接安全换族，不承诺目标机网络恢复或全天 SLA。普通 update 不替换 root 助手；用户须在本机完整安装／系统授权更新配套助手，再自行显式 reload／重连，才使助手暂存并启动新版核心。见[候选版本说明](docs/releases/v2026-11-04-01.md)、[DNS证据边界](docs/dns-runtime-evidence.md)及[托管说明](docs/webui-autorestart.md)。旧 DNS stream 与一期观测的历史证据归属见 [v2026-11-02-02](docs/releases/v2026-11-02-02.md)，不能替代本候选验收。
 
 ## 一键安装（预编译程序 + 受限特权助手）
 
@@ -72,6 +72,15 @@ anytls webui --listen 0.0.0.0 --port 18089
 SOCKS／HTTP 代理模式默认监听 `0.0.0.0:11080`；使用 `--local-listen 127.0.0.1` 可限制为本机。代理入口没有入站认证，不应直接暴露到不可信网络。请通过防火墙限制访问。TUN 及特权助手 Unix socket 不属于 TCP 监听，不改为网络服务。
 
 ## 功能
+
+### 当前候选控制台与运行边界
+
+- 16 个路由页面按网络概览、连接管理、节点与线路、设置和调试工具组织；路由数量不是全部页面功能验收。节点卡片已接入桌面4列／窄桌面3列／手机2列、完整长名称换行、当前选择与启动节点区分、原延迟阈值和44×44操作目标；更多复用编辑与 TCP 测试，无新增节点删除 API。见[产品接入与证据边界](docs/nodecards-r3-product.md)。
+- 助手激活边界：控制请求发送后若身份不符，结果保持 UNKNOWN，按 at-most-once 不自动重发；完整安装器严格核对八字段激活回执及 SHA／tag／path，拒绝不合格回执。两项最小补丁专项独审通过，不等于原生安装／root 回滚验收，普通 update 范围不变。
+- 配置方案以稳定 ID 标识；整套切换包含节点、策略组和规则，并以版本／If-Match CAS 拒绝陈旧保存，不把改名当新方案。HTTPS 订阅支持预览、确认、绑定方案及每小时自动检查；检查不是无确认覆盖当前配置，WebUI 未运行时不承诺后台检查。
+- WebUI 常驻固定 HTTPS endpoint 连通性检查与已记录小时分布属于普通用户 WebUI 的观察，不等于 VPN 健康、全日覆盖或全天 SLA。连通性目标固定为 `https://www.gstatic.com/generate_204`，不接受用户任意 URL。
+- VPN 流量仅统计当前受验证实例中 SDK ROUTED TCP／UDP transport payload；排除 ICMP、所有 raw Flow 包、IP／传输头和 TCP 底层重传，不等于网卡／TLS wire／全设备总流量；记录条数不是字节。缺失、过期、非运行或旧助手状态显示不可用，不补造零值。见[流量契约](docs/r10-traffic-contract.md)。
+- **三种身份分别核对**：普通用户程序／WebUI 的内存与磁盘版本、root 助手、实际 VPN 核心不是同一 authority。网页升级成功不证明助手已更新；助手更新成功也不证明运行中的核心已经替换。`get.sh` 必须由普通用户在 Mac 本机运行（入口拒绝 root），完整安装阶段通过本机系统授权取得助手所需 root 权限；不要给整条命令加 sudo，也不要将系统密码发到聊天。安装保留配置／备份，不自动 reload VPN。用户安装后再按维护安排显式执行 `anytls reload`／重连，并另验实际核心身份与业务。
 
 - `v2026-10-22-05` 已发布最多8路并发测速、整数延迟分色、全体取消及迟到隔离；见 [版本说明](docs/releases/v2026-10-22-05.md) 与 [公开附件验收及DIRECT未关闭边界](docs/releases/v2026-10-22-05-public-validation.md)。
 
@@ -158,7 +167,7 @@ anytls stop
 
 ## 本版验证与已知限制
 
-- 本版说明为冻结的发布前证据快照：已审实现 `907319e763574e4053b821de495c3bf6b45155c6` 的Mac ARM64完整699顶层／2336子PASS、7顶层SKIP、0FAIL、9包及vet/build/package通过；定向84顶层／167子PASS、2顶层SKIP，限定race45顶层／59子PASS、1顶层SKIP；另有最大合法帧定向1项PASS。相同最终夹具保留旧版业务RED／候选GREEN。以上为已认证实现证据，不是本次重跑或最终发行身份验收。最终发行native、独立发行审查、分支／main／标签CI、公开双架构六附件审计及独立版本执行仍PENDING，后续另存绑定收据，不追改本快照。
+- 本版为尚未发布的证据快照。R10 基线 `6a763573c693d6b701859a0ef87d2408e27a0cf0` 的保留原生证据为760顶层／2479子测试 PASS、8顶层 SKIP、0 FAIL，11包及vet/build通过；这是继承的基线证据，不是新增节点卡片或最终发行身份验收，也不是本次重跑。卡片已有局部浏览器／真实认证 HTTP 证据，两项助手补丁已有专项独审；“更多”旧 owner 与 Run 取消终结问题已作最小修复并专项独审，Check-only 语义保持；本地第三轮 full 753顶层／2472子PASS、10SKIP、11包及vet/build通过。前两轮失败保留；扩展连接复用曾出现EOF，归因未定，未添加重试或放宽断言。最终实现身份、native／打包、整体验收、分支／main／标签 CI、公开双架构六附件与独立版本执行均 PENDING；安装、root 助手与正式 VPN／目标站点另验。旧版699／2336等数字仅归属[v2026-11-02-02历史说明](docs/releases/v2026-11-02-02.md)。
 - 默认逐连接换族保留IPv6优先尝试、同一实际编译规则与同一具体出口约束；证书／认证／取消／ACK未确认不触发换族，备用连接也须ACK成功后才能发送业务载荷。EDNS、自定义TLS、ECS／optimistic／rewrite、动态selector、应用自带DNS及其他未支持路径保持UNKNOWN，不全局禁用IPv6、不添加明文DNS回退。用户真实Chrome商店／站点／正式TUN体验仍待验，不宣称所有故障已修复或普遍WAN提速。
 - 既有 `--dns-metrics` 仍默认关闭，仅前台 `run` 显式启用后尝试写一次stderr聚合。本版另有 `dns_schema:1` 有界运行证据：仅新暂存且绑定启动operation／epoch的嵌入式服务启用；普通CLI／Check禁用，旧进程argv不迁移。认证API／页面读取最多64条实际完成和GotConn计数，STALE／GAP不掩盖；不是持续存活证明，也不提供完整查询、缓存命中／合并、HTTP状态、新TLS握手、实际叶证书或实际detour证明。
 - 真实SDK确定性拨号失败benchmark中，开启观测增加同步469ns／352B／9alloc、异步496ns／416B／10alloc；不是WAN／TLS或端到端性能，helper零分配不代表runtime零分配。缓存、并发合并、连接复用与恢复是已有GREEN基线；本版不宣称DNS加速、GoogleIPv6或Intel现场已修复。原生局部门与CLI入口的边界见[版本说明](docs/releases/v2026-10-31-01.md)。
