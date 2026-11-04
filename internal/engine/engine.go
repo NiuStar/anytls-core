@@ -120,8 +120,11 @@ func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInp
 	if records != nil && records.Sink != nil {
 		span = recorder.Begin("START", "CORE_BIND_RECORDS", st.Fields{})
 		instance.Router().AppendTracker(bindRecords(instance, runtimeJSON, records, caVerified))
+		if records.Traffic != nil {
+			instance.Router().AppendTracker(&trafficTracker{counter: records.Traffic})
+		}
 		recorder.End(span, "OK", st.Fields{})
-		return executeRecords(ctx, instance, true, records.StopAdmission)
+		return executeRecords(ctx, trafficLifecycle{instance, records.TrafficLoaded}, true, records.StopAdmission)
 	}
 	return execute(ctx, instance, true)
 }

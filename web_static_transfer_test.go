@@ -18,6 +18,8 @@ func TestWebStaticGzip(t *testing.T) {
 		{"/startup.js", "startup.js", "text/javascript; charset=utf-8"},
 		{"/dns.js", "dns.js", "text/javascript; charset=utf-8"},
 		{"/runtime.js", "runtime.js", "text/javascript; charset=utf-8"},
+		{"/product.js", "product.js", "text/javascript; charset=utf-8"},
+		{"/product.css", "product.css", "text/css; charset=utf-8"},
 		{"/style.css", "style.css", "text/css; charset=utf-8"},
 	} {
 		t.Run(asset.name, func(t *testing.T) {

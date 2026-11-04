@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const webProfileLimit = 6*snapshotConfigLimit + 6*snapshotSelectedLimit + 6*snapshotConfigLimit + 64<<10
+const webProfileLimit = 18*snapshotConfigLimit + 18*snapshotSelectedLimit + 18*snapshotConfigLimit + 128<<10
 
 var webProfileID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
@@ -29,12 +29,13 @@ var webProfileID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // paths keep the active config directory; CA resolution keeps existing policy.
 // nil optional strings mean absent files, distinct from empty files.
 type webProfile struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	CreatedAt    string  `json:"created_at"`
-	YAML         string  `json:"yaml"`
-	Selected     *string `json:"selected"`
-	Subscription *string `json:"subscription"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	CreatedAt    string          `json:"created_at"`
+	YAML         string          `json:"yaml"`
+	Selected     *string         `json:"selected"`
+	Subscription *string         `json:"subscription"`
+	Link         *webProfileLink `json:"link,omitempty"`
 }
 type webProfileSummary struct {
 	ID        string `json:"id"`
@@ -152,6 +153,24 @@ func webProfileEqual(a, b []webProfileFile) bool {
 	}
 	return true
 }
+
+// Domain-separated, unambiguous JSON binds identity and optional-file presence.
+func webProfileSwitchVersion(active string, files []webProfileFile) string {
+	type entry struct {
+		Exists bool
+		Bytes  []byte
+	}
+	entries := make([]entry, len(files))
+	for i, f := range files {
+		entries[i] = entry{f.exists, f.data}
+	}
+	b, _ := json.Marshal(struct {
+		Active string
+		Files  []entry
+	}{active, entries})
+	return "switch-v1-" + shaHex(b)
+}
+
 func webProfileValidate(p webProfile, config string) error {
 	if !webProfileID.MatchString(p.ID) || !webProfileName(p.Name) || !utf8.ValidString(p.YAML) || len(p.YAML) == 0 || int64(len(p.YAML)) > snapshotConfigLimit {
 		return errors.New("invalid profile")
@@ -282,6 +301,10 @@ func (w *webConsole) publishProfile(p *webProfile) error {
 // Parent router must call mutations under existing auth/CSRF/actionMu. GET owns
 // the action lock itself because normal GET dispatch intentionally does not.
 func (w *webConsole) getProfiles(rw http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("detail") == "1" {
+		w.getProfilesDetail(rw, r)
+		return
+	}
 	if !w.actionMu.TryLock() {
 		webError(rw, 409, "ACTION_BUSY")
 		return
@@ -346,6 +369,10 @@ func (w *webConsole) saveProfile(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 400, "PROFILE_INVALID")
 		return
 	}
+	if !w.profileNameAvailable(in.Name, "") {
+		webError(rw, 409, "PROFILE_NAME_EXISTS")
+		return
+	}
 	files, e := w.profileFiles()
 	if e != nil {
 		webError(rw, 503, "PROFILE_STORE_UNAVAILABLE")
@@ -378,6 +405,15 @@ func (w *webConsole) saveProfile(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 500, "PROFILE_SAVE_FAILED")
 		return
 	}
+	if id, e := w.activeProfile(); e != nil {
+		webError(rw, 503, "PROFILE_STORE_UNAVAILABLE")
+		return
+	} else if id == "" {
+		if w.setActiveProfile(p.ID) != nil {
+			webError(rw, 500, "PROFILE_SAVE_FAILED")
+			return
+		}
+	}
 	webJSON(rw, 200, map[string]any{"ok": true, "id": p.ID, "name": p.Name, "created_at": p.CreatedAt})
 }
 func (w *webConsole) copyProfile(rw http.ResponseWriter, r *http.Request) {
@@ -395,6 +431,11 @@ func (w *webConsole) copyProfile(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Name = in.Name
+	if !w.profileNameAvailable(in.Name, "") {
+		webError(rw, 409, "PROFILE_NAME_EXISTS")
+		return
+	}
+	p.Link = nil // Copies do not duplicate automatic subscription ownership.
 	if !webProfileSame(source) {
 		webError(rw, 409, "PROFILE_CONFLICT")
 		return
@@ -499,18 +540,20 @@ func (w *webConsole) commitProfile(p webProfile, source webProfileFile, old []we
 }
 func (w *webConsole) switchProfile(rw http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ID              string `json:"id"`
-		ConfirmInsecure bool   `json:"confirm_insecure"`
-		ConfirmReplace  bool   `json:"confirm_replace"`
+		ID              string  `json:"id"`
+		ConfirmInsecure bool    `json:"confirm_insecure"`
+		ConfirmReplace  bool    `json:"confirm_replace"`
+		SnapshotVersion *string `json:"snapshot_version"`
 	}
 	if webDecode(rw, r, &in) != nil || !webProfileID.MatchString(in.ID) || !in.ConfirmReplace || !in.ConfirmInsecure {
 		webError(rw, 400, "PROFILE_INVALID")
 		return
 	}
-	if r.Header.Get("If-Match") == "" {
+	if r.Header.Get("If-Match") == "" && in.SnapshotVersion == nil {
 		webError(rw, 428, "IF_MATCH_REQUIRED")
 		return
 	}
+
 	p, source, e := w.readProfile(in.ID)
 	if e != nil {
 		webProfileReadError(rw, e)
@@ -521,13 +564,40 @@ func (w *webConsole) switchProfile(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 503, "PROFILE_STORE_UNAVAILABLE")
 		return
 	}
-	if r.Header.Get("If-Match") != `"`+shaHex(old[0].data)+`"` {
+	active, e := w.activeProfile()
+	if e != nil {
+		webError(rw, 503, "PROFILE_STORE_UNAVAILABLE")
+		return
+	}
+	marker, e := webProfileCapture(w.activePath(), 128, true, true)
+	if e != nil {
+		webError(rw, 503, "PROFILE_STORE_UNAVAILABLE")
+		return
+	}
+	version := webProfileSwitchVersion(active, old)
+	match := r.Header.Get("If-Match") == `"`+shaHex(old[0].data)+`"`
+	if in.SnapshotVersion != nil {
+		match = *in.SnapshotVersion == version
+	} else if strings.HasPrefix(r.Header.Get("If-Match"), `"switch-v1-`) {
+		match = r.Header.Get("If-Match") == `"`+version+`"`
+	}
+	if !match {
 		webError(rw, 412, "PROFILE_CONFLICT")
 		return
 	}
 	if webProfileValidate(p, w.configPath) != nil {
 		webError(rw, 422, "PROFILE_INVALID")
 		return
+	}
+	// Preconditions are verified: save only the known outgoing ID.
+	if active, e := w.activeProfile(); e != nil {
+		webError(rw, 503, "PROFILE_STORE_UNAVAILABLE")
+		return
+	} else if active != "" && active != in.ID {
+		if w.syncActiveProfile() != nil {
+			webError(rw, 500, "PROFILE_SYNC_FAILED")
+			return
+		}
 	}
 	code := w.commitProfile(p, source, old, webAtomicWrite)
 	if code != "" {
@@ -543,6 +613,27 @@ func (w *webConsole) switchProfile(rw http.ResponseWriter, r *http.Request) {
 	}
 	w.importPending = nil
 	target := webProfilePayload(p, w.configPath)
+	if w.setActiveProfile(p.ID) != nil {
+		restored := true
+		rollback := append(append([]webProfileFile{}, old...), marker)
+		for _, f := range rollback {
+			if webProfileWriteFile(f, webAtomicWrite) != nil {
+				restored = false
+			}
+		}
+		for _, f := range rollback {
+			f.info = nil
+			if !webProfileSame(f) {
+				restored = false
+			}
+		}
+		code := "PROFILE_STATE_UNCERTAIN"
+		if restored {
+			code = "PROFILE_SWITCH_FAILED_ROLLED_BACK"
+		}
+		webError(rw, 500, code)
+		return
+	}
 	changed := !webProfileEqual(old[:2], target[:2])
 	w.finishConfigSave(rw, r, changed, `"`+shaHex([]byte(p.YAML))+`"`, in.ConfirmInsecure)
 }

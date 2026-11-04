@@ -29,7 +29,7 @@ func (w *webStaticDiscardWriter) Write(p []byte) (int, error) {
 
 func BenchmarkWebStaticAssets(b *testing.B) {
 	w := &webConsole{port: 18089}
-	for _, asset := range []struct{ path, name string }{{"/", "index.html"}, {"/app.js", "app.js"}, {"/startup.js", "startup.js"}, {"/dns.js", "dns.js"}, {"/runtime.js", "runtime.js"}, {"/style.css", "style.css"}} {
+	for _, asset := range []struct{ path, name string }{{"/", "index.html"}, {"/app.js", "app.js"}, {"/startup.js", "startup.js"}, {"/dns.js", "dns.js"}, {"/runtime.js", "runtime.js"}, {"/product.js", "product.js"}, {"/product.css", "product.css"}, {"/style.css", "style.css"}} {
 		for _, encoding := range []string{"identity", "gzip"} {
 			b.Run(asset.name+"/"+encoding, func(b *testing.B) {
 				original, err := webAssets.ReadFile("web_assets/" + asset.name)

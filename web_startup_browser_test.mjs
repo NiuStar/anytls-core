@@ -15,7 +15,7 @@ function fixture(operationID=id,source='MANUAL_START',finished=false){
  const core={role:'CORE',clock_id:'e'.repeat(32),origin_at:wall,elapsed_ns:'9007199254740993',provenance,current:{stage:'CORE_BOX_NEW',segment:'START',span_id:'1',began_at:wall,began_elapsed_ns:'0'},events:[event(1,'CORE_BOX_NEW','BEGIN','1',0)],generated_events:'1',dropped_events:'0',first_missing_seq:null,gap:false,retained_ranges:[{first:'1',last:'1'}],terminal:null};
  return {timeline_schema:1,code:'OK',helper_epoch:epoch,config_identity:identity,operation_id:operationID,trace:{authority:'AUXILIARY_NOT_AUTHORITY',operation_id:operationID,helper_epoch:epoch,config_identity:identity,operation:source.startsWith('SAVE_')?'RELOAD':'START',source,started_at:wall,finished_at:finished?wall:null,state:finished?'FINISHED':'IN_PROGRESS',lifecycle_result:finished?'FAILED':'IN_PROGRESS',helper_return:finished?'FAILED':'IN_PROGRESS',web_return:finished?'FAILED':'IN_PROGRESS',receipt_result:'FAILED',diagnostics:null,streams:[helper,core],core_observation:{availability:'STALE',captured_at:wall,helper_receive_elapsed_ns:'60',age_ns:'2000000000',clock_id:core.clock_id,phase:core.current,gap:true},gap:true}};
 }
-const browser=await chromium.launch({executablePath:process.env.CHROMIUM||'/home/hermeswebui/.cache/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell',headless:true,args:['--no-sandbox'],env:{...process.env,LD_LIBRARY_PATH:process.env.BROWSER_LIBS||'/workspace/browser-libs/extracted/usr/lib/x86_64-linux-gnu'}});
+const browser=await chromium.launch({executablePath:process.env.CHROMIUM||'/home/hermeswebui/.cache/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell',headless:true,args:['--no-sandbox'],env:{...process.env,FONTCONFIG_FILE:process.env.FONTCONFIG_FILE||'/workspace/anytls-r10-product-evidence-r2/fonts.conf',LD_LIBRARY_PATH:process.env.BROWSER_LIBS||'/workspace/browser-libs/extracted/usr/lib/x86_64-linux-gnu'}});
 const results=[];
 try {
  for(const width of [1280,390]) {
@@ -27,10 +27,10 @@ try {
    if(!path.startsWith('/api/')){const name=path==='/'?'index.html':path.slice(1);return route.fulfill({body:fs.readFileSync(root+name),contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'});}
    if(path.endsWith('/startup-trace')){active++;maxActive=Math.max(maxActive,active);let data=JSON.stringify(snapshot),status=200;if(holdTrace){const held=holdTrace;holdTrace=null;await new Promise(resolve=>releaseTrace=resolve);status=held.status;data=held.text;}active--;return route.fulfill({status,body:data,contentType:'application/json'}).catch(()=>{});}
    if(path.includes('/service/')){if(holdPost)await new Promise(resolve=>releasePost=resolve);return route.fulfill({status:postStatus,json:{error:'START_FAILED',startup_operation:postRef}});}
-   if(request.method()!=='GET'&&['/api/v1/config','/api/v1/nodes','/api/v1/groups/selection','/api/v1/nodes/selection','/api/v1/rules','/api/v1/profiles/switch','/api/v1/import/commit'].includes(path))return route.fulfill({json:saveResponse});
+   if(request.method()!=='GET'&&['/api/v1/config','/api/v1/nodes','/api/v1/groups/selection','/api/v1/nodes/selection','/api/v1/rules','/api/v1/profiles/switch','/api/v1/import/commit','/api/v1/subscriptions/apply'].includes(path))return route.fulfill({json:saveResponse});
    return route.fulfill({json:path.endsWith('/session')||path.endsWith('/login')?{csrf:'fixture'}:path.endsWith('/status')?{availability:'AVAILABLE',running:false,loaded:false,version:'fixture',pendingReload:false,pendingKnown:true}:path.endsWith('/subscription')?{configured:false}:path.endsWith('/profiles')?{profiles:[],etag:'"v1"'}:path.endsWith('/config')?{yaml:'SECRET_SENTINEL',etag:'"v1"'}:{available:false}});
   });
-  await page.goto('http://fixture.test/');await page.waitForFunction(()=>!document.getElementById('console-view').hidden);
+  await page.goto('http://fixture.test/#debug/operations');await page.waitForFunction(()=>!document.getElementById('console-view').hidden&&currentView==='overview');
   assert.equal(await page.locator('#startup-copy').count(),1,'overview must offer startup-log copy');
   if(process.env.CASE==='red'){results.push({width,panel:true});continue;}
   await page.waitForFunction(()=>!document.getElementById('startup-copy').disabled);
@@ -50,11 +50,11 @@ try {
   if(process.env.ST1_MAX_READ){const maximal=fs.readFileSync(process.env.ST1_MAX_READ,'utf8');assert.equal(await page.evaluate(raw=>{try{const v=stParse(raw);return stRead(v)&&JSON.stringify(JSON.parse(startupText(v).split('[完整固定 DTO]\n')[1]))===JSON.stringify(v);}catch{return false;}},maximal),true,'shared-codec maximal valid fixture must also pass browser validator');}
   assert.equal(await page.locator('#notice img').count(),0,'XSS stays literal outside copied log');
   // Real button dispatches one POST; failure result still binds a final snapshot.
-  snapshot=fixture(id,'MANUAL_START',true);await page.locator('[data-service="start"]').click();await page.waitForFunction(()=>!busy);await page.waitForFunction(()=>document.getElementById('startup-status').textContent.includes('历史快照'));
+  snapshot=fixture(id,'MANUAL_START',true);await page.locator('[data-service="start"]').evaluate(e=>e.click());await page.waitForFunction(()=>!busy);await page.waitForFunction(()=>document.getElementById('startup-status').textContent.includes('历史快照'));
   assert.match(await page.locator('#notice').textContent(),/START_FAILED/);assert.equal(requests.filter(r=>r.path==='/api/v1/service/start').length,1);assert.ok(requests.filter(r=>r.path.endsWith('/startup-trace')).every(r=>r.origin==='http://fixture.test'));
   // NO_CHANGE must keep prior copy, and must not send another service reload.
   await page.evaluate(async()=>{await api('/config',{method:'PUT',body:{yaml:'same'}});});assert.match(await page.locator('#startup-context').textContent(),/本次未触发/);assert.equal(requests.filter(r=>r.path==='/api/v1/service/reload').length,0);
-  const origins=[['/config','SAVE_YAML'],['/nodes','SAVE_NODE'],['/groups/selection','SAVE_GROUP'],['/nodes/selection','SAVE_SELECTION'],['/rules','SAVE_RULE'],['/profiles/switch','PROFILE_SWITCH'],['/import/commit','IMPORT_COMMIT'],['/import/commit','IMPORT_APPEND']];
+  const origins=[['/config','SAVE_YAML'],['/nodes','SAVE_NODE'],['/groups/selection','SAVE_GROUP'],['/nodes/selection','SAVE_SELECTION'],['/rules','SAVE_RULE'],['/profiles/switch','PROFILE_SWITCH'],['/import/commit','IMPORT_COMMIT'],['/import/commit','IMPORT_APPEND'],['/subscriptions/apply','IMPORT_COMMIT']];
   for(let index=0;index<origins.length;index++){
    const [path,source]=origins[index],operationID=(index+1).toString(16).repeat(32);snapshot=fixture(operationID,source,true);snapshot.trace.operation='RELOAD';
    saveResponse={ok:true,saved:true,changed:true,applied:index%2===0,apply_status:index%2===0?'APPLIED':'APPLY_FAILED',apply_error:index%2?'START_FAILED':undefined,startup_operation:{timeline_schema:1,operation_id:operationID,availability:'AVAILABLE'}};

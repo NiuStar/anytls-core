@@ -19,6 +19,7 @@ import (
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
+	ts "github.com/NiuStar/anytls-core/internal/trafficstats"
 )
 
 const (
@@ -150,6 +151,7 @@ type controlHelperServer struct {
 	startupRegistration func() (controlHelperRegistration, error)
 	startupAuthenticate func(net.Conn, *startupBinding) bool
 	dns                 dnsRuntimeCache
+	trafficStoreRead    func(context.Context, cr.Scope, any, int) (cr.Header, error)
 }
 
 func (s *controlHelperServer) handle(c net.Conn) {
@@ -176,6 +178,19 @@ func (s *controlHelperServer) handle(c net.Conn) {
 	// Bound before dispatch; legacy decoding still has its unchanged 4096-byte
 	// budget. Dispatch must allow reordered/whitespace-padded 8KiB records frames.
 	raw, readErr := io.ReadAll(io.LimitReader(c, st.PushBytes+1))
+	if trafficFrame(raw) {
+		var q ts.Read
+		response := ts.Unavailable()
+		if readErr == nil && len(raw) <= 1024 && ts.Decode(raw, &q) == nil {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			response = s.trafficRead(ctx)
+			cancel()
+		}
+		if b, e := ts.Encode(response); e == nil {
+			_, _ = c.Write(b)
+		}
+		return
+	}
 	if dnsFrame(raw) {
 		var q de.Read
 		if readErr != nil || de.Decode(raw, &q) != nil {

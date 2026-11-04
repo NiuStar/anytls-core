@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
+	ts "github.com/NiuStar/anytls-core/internal/trafficstats"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -25,6 +26,8 @@ import (
 // nonblocking admission contract; false is counted by the sink, never here.
 // StopAdmission, if supplied, runs before the Box's independent Close.
 type RecordsInput struct {
+	Traffic       *ts.Counter
+	TrafficLoaded func()
 	Manifest      *cr.Manifest
 	Sink          cr.Sink
 	StopAdmission func()

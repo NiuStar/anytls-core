@@ -26,6 +26,7 @@ import (
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	de "github.com/NiuStar/anytls-core/internal/dnsevidence"
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
+	ts "github.com/NiuStar/anytls-core/internal/trafficstats"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,36 +36,43 @@ var webAssets embed.FS
 // API contract and operating notes are embedded alongside the application.
 // Authentication and brief state locks never enclose system actions or update.
 type webConsole struct {
-	configPath, passwordPath string
-	port                     int
-	listenHost               string // empty preserves the original loopback constructor
-	authMu                   sync.Mutex
-	sessions                 map[string]webSession
-	failures                 int
-	loginWindow              time.Time
-	blockedUntil             time.Time
-	actionMu                 sync.RWMutex
-	metaMu                   sync.Mutex
-	pending                  bool
-	pendingKnown             bool
-	baseline                 string
-	now                      func() time.Time
-	state                    func() (bool, bool, error)
-	serviceAction            func(context.Context, string, bool) error
-	updateAction             func(context.Context, bool) (json.RawMessage, error)
-	importPending            *webImportCandidate // guarded by actionMu
-	importFetch              func(context.Context, string) ([]byte, error)
-	nodeProbe                func(context.Context, node, string) (float64, error)
-	recordsRequest           func(context.Context, cr.PageRequest) (cr.PageResponse, error)
-	dnsRequest               func(context.Context, de.Read) (de.Response, error)
-	startupMu                sync.Mutex
-	startupLatest            *webStartupOperation
-	startupReadRequest       webStartupReadFunc
-	startupControlRequest    webStartupControlFunc
-	startupLegacyRequest     webControlRequestFunc
-	startupRandom            io.Reader
-	probeSlotsOnce           sync.Once
-	probeSlots               chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
+	configPath, passwordPath      string
+	port                          int
+	listenHost                    string // empty preserves the original loopback constructor
+	authMu                        sync.Mutex
+	sessions                      map[string]webSession
+	failures                      int
+	loginWindow                   time.Time
+	blockedUntil                  time.Time
+	actionMu                      sync.RWMutex
+	metaMu                        sync.Mutex
+	pending                       bool
+	pendingKnown                  bool
+	baseline                      string
+	now                           func() time.Time
+	state                         func() (bool, bool, error)
+	serviceAction                 func(context.Context, string, bool) error
+	updateAction                  func(context.Context, bool) (json.RawMessage, error)
+	importPending                 *webImportCandidate // guarded by actionMu
+	importFetch                   func(context.Context, string) ([]byte, error)
+	subscriptionBusy              map[string]bool // guarded by actionMu
+	subscriptionSources           map[string]bool // raw URLs remain private, in-process only
+	metrics                       *webMetricsController
+	subscriptionPreview           *webSubscriptionPreview
+	subscriptionPreviewGeneration string
+	profileMarkerReadback         func() error // fault seam after marker rename, before readback
+	nodeProbe                     func(context.Context, node, string) (float64, error)
+	recordsRequest                func(context.Context, cr.PageRequest) (cr.PageResponse, error)
+	trafficRequest                func(context.Context) (ts.Response, error)
+	dnsRequest                    func(context.Context, de.Read) (de.Response, error)
+	startupMu                     sync.Mutex
+	startupLatest                 *webStartupOperation
+	startupReadRequest            webStartupReadFunc
+	startupControlRequest         webStartupControlFunc
+	startupLegacyRequest          webControlRequestFunc
+	startupRandom                 io.Reader
+	probeSlotsOnce                sync.Once
+	probeSlots                    chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
 	// Restart authority is installed only by the verified managed CLI path.
 	restartCheck   func() error
 	restartRequest func()
@@ -144,6 +152,17 @@ func webuiCommand(args []string) error {
 	}
 	fmt.Printf("WebUI listening on %s:%d\nTransport: %s (HTTP, no TLS). Network access transmits credentials and session data without encryption; use a reachable host/IP, not 0.0.0.0, in your browser.\nAccount: admin; recover password with 'anytls password'.\n", *listen, *port, w.transport())
 	server := &http.Server{Handler: w, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+	subscriptionCtx, subscriptionCancel := context.WithCancel(context.Background())
+	w.metrics = startWebMetrics(context.Background(), w.configPath)
+	defer func() {
+		if err := w.metrics.Stop(); err != nil {
+			// Fixed diagnostic only; a bounded wait is not proof that OS IO joined.
+			fmt.Fprintln(os.Stderr, "WebUI metrics shutdown: STOP_TIMEOUT; persistence completion unverified")
+		}
+	}()
+	subscriptionDone := make(chan struct{})
+	go func() { defer close(subscriptionDone); w.runSubscriptionWorker(subscriptionCtx) }()
+	defer func() { subscriptionCancel(); <-subscriptionDone }()
 	return webAgentServe(server, listener, w, *managed != "")
 }
 func (w *webConsole) allowedHost(host string) bool {
@@ -250,6 +269,29 @@ func (w *webConsole) authenticated(r *http.Request) (webSession, bool) {
 	}
 	return session, true
 }
+
+// Network completions hold auth/password authority through every commit;
+// logout and CLI rotation linearize either before this gate or after the write.
+func (w *webConsole) manualSubscriptionAuthority(r *http.Request) func() (func(), bool) {
+	cookie, err := r.Cookie(webCookieName)
+	token := ""
+	if err == nil {
+		token = cookie.Value
+	}
+	csrf := r.Header.Get("X-CSRF-Token")
+	return func() (func(), bool) {
+		webPasswordMu.Lock()
+		w.authMu.Lock()
+		release := func() { w.authMu.Unlock(); webPasswordMu.Unlock() }
+		password, e := webReadPassword(w.passwordPath)
+		s, ok := w.sessions[token]
+		if r.Context().Err() != nil || e != nil || !ok || !w.now().Before(s.expires) || s.passwordHash != sha256.Sum256([]byte(password)) || !webEqual(csrf, s.csrf) {
+			release()
+			return nil, false
+		}
+		return release, true
+	}
+}
 func (w *webConsole) login(rw http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string `json:"username"`
@@ -349,6 +391,14 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 401, "AUTH_REQUIRED")
 		return
 	}
+	if r.URL.Path == "/api/v1/metrics" {
+		w.metrics.get(w, rw, r)
+		return
+	}
+	if r.URL.Path == "/api/v1/traffic" {
+		w.getTraffic(rw, r)
+		return
+	}
 	if r.URL.Path == "/api/v1/startup-trace" {
 		if r.Method != "GET" {
 			webError(rw, 405, "METHOD_NOT_ALLOWED")
@@ -396,6 +446,10 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A long native authorization or build does not monopolize auth/status GETs.
+	if r.URL.Path == "/api/v1/subscriptions/preview" || r.URL.Path == "/api/v1/subscriptions/check" {
+		w.subscriptionNetwork(rw, r)
+		return
+	}
 	if webStartupMutationPath(r) {
 		rw = webStartupResponseWriter{rw}
 	}
@@ -432,6 +486,8 @@ func (w *webConsole) pendingState() (bool, bool) {
 }
 func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSession) {
 	switch r.URL.Path {
+	case "/api/v1/subscriptions":
+		w.getSubscriptions(rw, r)
 	case "/api/v1/profiles":
 		// getProfiles owns actionMu; acquiring it here would reject every list.
 		w.getProfiles(rw, r)
@@ -522,6 +578,11 @@ func (w *webConsole) saved() { w.metaMu.Lock(); w.pending = true; w.metaMu.Unloc
 // Called only after save readback, while ServeHTTP still owns actionMu. A
 // successful disk write is never reported as a failed save if apply fails.
 func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, changed bool, etag string, consent bool, extra ...map[string]any) {
+	if err := w.syncActiveProfile(); err != nil {
+		w.saved()
+		webJSON(rw, 500, map[string]any{"error": "PROFILE_SYNC_FAILED", "saved": true, "applied": false})
+		return
+	}
 	status, applied := "NO_CHANGE", false
 	applyError := ""
 	var diagnostics *startDiagnostics
@@ -605,6 +666,10 @@ func (w *webConsole) finishConfigSave(rw http.ResponseWriter, r *http.Request, c
 
 func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 	switch {
+	case (r.URL.Path == "/api/v1/profiles/rename" || r.URL.Path == "/api/v1/profiles/delete") && r.Method == "POST":
+		w.editProfile(rw, r)
+	case strings.HasPrefix(r.URL.Path, "/api/v1/subscriptions/") && r.Method == "POST":
+		w.subscriptionMutation(rw, r)
 	case r.URL.Path == "/api/v1/rules/delete" && r.Method == "POST":
 		w.deleteRule(rw, r)
 	case r.URL.Path == "/api/v1/rules" && r.Method == "POST":

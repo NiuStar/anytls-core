@@ -2,7 +2,7 @@
 // No HTML strings are populated from API data. Credentials remain in memory only.
 const $ = id => document.getElementById(id);
 // Optional B1/B2 observer; status/API ownership remains in this file.
-function runtimePublish(kind,data){globalThis.AnyTLSRuntime?.publish(kind,data);}
+function runtimePublish(kind,data){if(globalThis.AnyTLSProduct?.acceptRuntime?.(kind)===false)return;globalThis.AnyTLSRuntime?.publish(kind,data);}
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 let sessionGeneration=0, loginRequest=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {
@@ -69,13 +69,13 @@ function serviceFeedback(code,data,operation) {
 }
 async function api(path, options = {}, current = ()=>true) {
  const session=sessionGeneration;
- const startupMutation=Boolean(options.method&&options.method!=='GET'&&(/^\/service\/(start|stop|reload)$/.test(path)||['/config','/nodes','/groups/selection','/nodes/selection','/rules','/rules/delete','/profiles/switch','/import/commit'].includes(path)));
+ const startupMutation=Boolean(options.method&&options.method!=='GET'&&(/^\/service\/(start|stop|reload)$/.test(path)||['/config','/nodes','/groups/selection','/nodes/selection','/rules','/rules/delete','/profiles/switch','/import/commit','/subscriptions/apply'].includes(path)));
  const trace=startupMutation&&typeof startupBegin==='function'?startupBegin(!path.startsWith('/service/')):null;if(trace)trace.mutation=true;
  const headers = new Headers(options.headers || {});
  if (options.body !== undefined) { headers.set('Content-Type','application/json'); options.body = JSON.stringify(options.body); }
  if (options.method && options.method !== 'GET') headers.set('X-CSRF-Token',csrf);
  let response,data;try{response=await fetch('/api/v1'+path, { ...options, headers, credentials:'same-origin', cache:'no-store', redirect:'error' });data=await response.json();}catch(error){if(trace&&startupCurrent(trace))startupResult({startup_operation:{timeline_schema:1,operation_id:trace.id,availability:trace.id?'AVAILABLE':'UNAVAILABLE'}},trace);throw new Error(trace?'服务器未返回有效数据；已发送的服务操作不会自动重试。':'服务器未返回有效数据。');}
- if(!current()||(options.signal&&options.signal.aborted)||session!==sessionGeneration&&(startupMutation||path==='/status'||path==='/helper/status'))throw new Error('会话或读取已更换，忽略旧操作响应。');
+ if(!current()||(options.signal&&options.signal.aborted)||session!==sessionGeneration)throw new Error('会话或读取已更换，忽略旧操作响应。');
  if(trace&&!startupCurrent(trace))throw new Error('操作已更换，忽略旧操作响应。');
  if(trace&&session===sessionGeneration)startupResult(data,trace);
  if (!response.ok) {
@@ -130,7 +130,7 @@ async function refreshAfterSave(refresh) {
  if (!serviceState) warning+=(warning?' ':'')+'服务状态刷新失败，请稍后确认。';
  notice(savedNotice+(warning?' '+warning:''),savedFailure||Boolean(warning));
 }
-function notice(text, failure = false) { $('notice').style.whiteSpace='pre-line'; $('notice').textContent=text; $('notice').classList.toggle('failure',failure); $('notice').hidden=!text; }
+function notice(text, failure = false) { if(globalThis.AnyTLSProduct?.notice?.()===false)return;$('notice').style.whiteSpace='pre-line'; $('notice').textContent=text; $('notice').classList.toggle('failure',failure); $('notice').hidden=!text; }
 async function operation(label, fn) {
  if (busy) return;
  const session=sessionGeneration;
@@ -156,14 +156,14 @@ function cancelStatus() {
  const owner=polling;if(!owner)return;polling=false;clearTimeout(owner.timer);owner.controller.abort();owner.cancel();
 }
 async function status(current=()=>true,{explicit=false}={}) {
- const visible=()=>!document.hidden&&(explicit||currentView==='overview');
+ const visible=()=>!document.hidden&&(explicit||(globalThis.AnyTLSProduct?.statusVisible?.()??currentView==='overview'));
  if (!csrf || updateRestartOwner || (!explicit&&busy) || !current() || !visible()) return;
  // An explicit post-save read supersedes a periodic read, never another explicit read.
  if(polling){if(!explicit||polling.explicit)return;cancelStatus();}
  const session=sessionGeneration,owner={explicit,controller:new AbortController(),timer:null,cancel:null};polling=owner;
  const active=()=>polling===owner&&session===sessionGeneration&&Boolean(csrf)&&current()&&visible();
  const cancelled=new Promise((_,reject)=>owner.cancel=()=>reject(new Error('状态读取已取消。')));
- const read=path=>Promise.race([api(path,{signal:owner.controller.signal}),cancelled]);
+ const read=path=>Promise.race([api(path,{signal:owner.controller.signal},active),cancelled]);
  owner.timer=setTimeout(()=>{if(polling===owner){owner.controller.abort();owner.cancel();}},5000);
  try {
   const state=await read('/status');if(!active())return;serviceState=state;renderServiceButtons();runtimePublish('status',state);
@@ -210,7 +210,7 @@ function filterNodes(){
  empty.textContent=rows.length?'没有匹配的节点，请清除或修改搜索。':'没有节点。请在配置页编辑原始 YAML。';empty.hidden=shown>0;
 }
 $('nodes-search').addEventListener('input',filterNodes);
-async function loadNodes(){const request=++nodesRequest,session=sessionGeneration;cancelProbes();nodesEtag='';renderExtraButtons();let result;try{result=await api('/nodes');}catch(e){if(request===nodesRequest&&session===sessionGeneration)invalidateNodes();throw e;}if(request!==nodesRequest||session!==sessionGeneration||!csrf)return;if(!Array.isArray(result.nodes)||typeof result.etag!=='string'||!result.etag){invalidateNodes();throw new Error('节点列表响应不完整，请重新读取。');}const target=$('nodes-list');target.replaceChildren();nodesLoaded=true;nodesEtag=result.etag;
+async function loadNodes(){const request=++nodesRequest,session=sessionGeneration;cancelProbes();nodesEtag='';renderExtraButtons();let result;try{result=await api('/nodes',{},()=>request===nodesRequest&&session===sessionGeneration&&Boolean(csrf));}catch(e){if(request===nodesRequest&&session===sessionGeneration)invalidateNodes();throw e;}if(request!==nodesRequest||session!==sessionGeneration||!csrf)return;if(!Array.isArray(result.nodes)||typeof result.etag!=='string'||!result.etag){invalidateNodes();throw new Error('节点列表响应不完整，请重新读取。');}const target=$('nodes-list');target.replaceChildren();nodesLoaded=true;nodesEtag=result.etag;
  for(const n of result.nodes){const row=element('article',undefined,'item'),content=element('div',undefined,'item-content');row.nodeSearch=n;row.classList.toggle('selected',Boolean(n.selected));const heading=element('div',undefined,'node-heading');heading.append(element('strong',n.name),element('span',n.type,'badge'));if(n.selected)heading.append(element('span','当前启动节点','badge current'));if(n.skipVerify)heading.append(element('span','跳过证书校验 · 风险','badge risky'));content.append(heading,element('p',n.server+':'+n.port+' · '+(n.hasPassword?'已配置密码':'未配置密码'),'node-meta'));row.append(content);const choose=element('button',n.selected?'当前启动节点':'设为启动节点');choose.disabled=!n.selectable||n.selected;choose.onclick=()=>operation('保存节点选择',async()=>{const saved=await api('/nodes/selection',{method:'POST',body:saveBody({name:n.name})});savedFeedback(saved);await refreshAfterSave(loadNodes);}); row.append(choose);
  const probes=element('div',undefined,'node-probes'),probeResult=element('p','尚未测速','probe-result');probeResult.setAttribute('role','status');probeResult.dataset.latency='unknown';row.probeResult=probeResult;row.probeName=n.name;
  for(const [mode,label] of [['https','代理延迟'],['tcp','TCP延迟']]){const button=element('button',label);button.type='button';button.dataset.probe=mode;button.onclick=()=>startProbes([row],mode);probes.append(button);}probes.append(probeResult);row.append(probes);
@@ -223,7 +223,7 @@ function invalidateGroups(){groupsRequest++;groupsEtag='';$('groups-list').repla
 async function loadGroups(){
  const request=++groupsRequest,session=sessionGeneration;groupsEtag='';$('groups-list').replaceChildren();$('groups-count').textContent='正在读取…';
  const current=()=>request===groupsRequest&&session===sessionGeneration&&Boolean(csrf);
- let result;try{result=await api('/groups');}catch(e){if(current()){invalidateGroups();throw e;}return;}
+ let result;try{result=await api('/groups',{},current);}catch(e){if(current()){invalidateGroups();throw e;}return;}
  if(!current())return;
  if(!Array.isArray(result.groups)||typeof result.etag!=='string'||!result.etag){invalidateGroups();throw new Error('策略组响应不完整，请重新读取。');}
  groupsEtag=result.etag;const target=$('groups-list');$('groups-count').textContent=result.groups.length+' 个分组';
@@ -241,7 +241,7 @@ function resetRulesNavigation(){rulesPage=0;rulesQuery='';rulesMatches=null;$('r
 function invalidateRules(){rulesRequest++;rulesSnapshot=null;resetRulesNavigation();$('rules-count').textContent='尚未读取';$('rules-empty').hidden=true;$('rule-form').hidden=true;$('rule-form').reset();$('rule-target').replaceChildren();$('rule-set').replaceChildren();$('rule-preview').textContent='';$('rule-feedback').textContent='';$('rules-list').replaceChildren();renderRuleButtons();}
 async function loadRules(open=false){
  invalidateRules();const request=rulesRequest,session=sessionGeneration;
- let data;try{data=await api(open?'/rules':'/rules?view=list');}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
+ let data;try{data=await api(open?'/rules':'/rules?view=list',{},()=>request===rulesRequest&&session===sessionGeneration&&Boolean(csrf));}catch(error){if(request===rulesRequest&&session===sessionGeneration&&csrf)throw error;return;}if(request!==rulesRequest||session!==sessionGeneration||!csrf)return;
  const optionsLoaded=open&&Array.isArray(data.targets)&&Array.isArray(data.rule_sets)&&data.options_loaded!==false;
  if(!Array.isArray(data.rules)||data.rules.some(rule=>typeof rule!=='string')||typeof data.etag!=='string'||!data.etag||(open?!optionsLoaded:data.view!=='list'||data.options_loaded!==false||own(data,'targets')||own(data,'rule_sets')))throw new Error('规则响应不完整，请重新读取。');
  rulesSnapshot={...data,options_loaded:optionsLoaded,request,session};renderRulesPage();
@@ -614,13 +614,13 @@ async function loadProfiles(){
 $('refresh-profiles').onclick=()=>operation('刷新方案',loadProfiles);
 $('save-profile').onclick=()=>{if(busy)return;const name=$('profile-name').value.trim();if(!name){notice('请输入新方案名称。',true);return;}return operation('保存磁盘配置为方案',async()=>{const session=sessionGeneration;await api('/profiles',{method:'POST',body:{name}});if(session!==sessionGeneration||!csrf)return;$('profile-name').value='';notice('磁盘上的当前配置已保存为方案；未保存编辑未包含，也未切换 VPN。');await loadProfiles();});};
 function invalidateConfigViews(){invalidateRules();clearImportSecrets();clearConfigDraft();invalidateNodes();invalidateGroups();clearProfiles();$('rules-list').replaceChildren();}
-function switchProfile(id){
+function switchProfile(id,snapshotVersion){
  if(busy||!profilesEtag||!confirm('切换会备份旧配置，并清空编辑草稿和导入预览。运行中的 VPN 会自动应用，期间短暂断网重连；未运行时仅保存。继续？'))return;
  const expected=profilesEtag;
  return operation('切换方案',async()=>{
   const session=sessionGeneration,editor=$('yaml-editor'),editorDisabled=editor.disabled;editor.disabled=true;importCommitting=true;renderImportButtons();
   try{
-   let data;try{data=await api('/profiles/switch',{method:'POST',headers:{'If-Match':expected},body:{id,confirm_insecure:true,confirm_replace:true}});}catch(error){
+   let data;try{data=await api('/profiles/switch',{method:'POST',headers:{'If-Match':expected},body:{id,confirm_insecure:true,confirm_replace:true,...(snapshotVersion?{snapshot_version:snapshotVersion}:{})}});}catch(error){
     if(session!==sessionGeneration||!csrf)return;
     if(error.code==='PROFILE_STATE_UNCERTAIN'||!error.code){invalidateConfigViews();serviceState=null;renderServiceButtons();syncServiceUI(null,'状态未知');$('editor-info').textContent=messages.PROFILE_STATE_UNCERTAIN;}
     else clearProfiles();throw error;

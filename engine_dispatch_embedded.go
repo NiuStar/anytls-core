@@ -89,16 +89,19 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 	var input *engine.RecordsInput
 	if recordService && command == "run" {
 		var writer *cr.Writer
-		input = &engine.RecordsInput{Manifest: compiled.Manifest, OpenSink: func() cr.Sink {
+		traffic := newRunTrafficReporter()
+		input = &engine.RecordsInput{Manifest: compiled.Manifest, Traffic: traffic.counter, TrafficLoaded: func() { traffic.running.Store(true) }, OpenSink: func() cr.Sink {
 			var err error
 			writer, err = openRunRecords(config, compiled)
 			if err != nil || writer == nil {
 				fmt.Fprintln(os.Stderr, "connection recording unavailable")
 				return nil
 			}
+			traffic.start(writer)
 			return writer
 		}, StopAdmission: func() {
 			if writer != nil {
+				traffic.close()
 				writer.StopAdmission()
 			}
 		}}

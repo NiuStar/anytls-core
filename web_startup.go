@@ -36,7 +36,7 @@ type webStartupResponseWriter struct{ http.ResponseWriter }
 
 func webStartupMutationPath(r *http.Request) bool {
 	switch r.URL.Path {
-	case "/api/v1/config", "/api/v1/nodes", "/api/v1/groups/selection", "/api/v1/nodes/selection", "/api/v1/rules", "/api/v1/rules/delete", "/api/v1/profiles/switch", "/api/v1/import/commit":
+	case "/api/v1/config", "/api/v1/nodes", "/api/v1/groups/selection", "/api/v1/nodes/selection", "/api/v1/rules", "/api/v1/rules/delete", "/api/v1/profiles/switch", "/api/v1/import/commit", "/api/v1/subscriptions/apply":
 		return r.Method != "GET"
 	}
 	return strings.HasPrefix(r.URL.Path, "/api/v1/service/")
@@ -73,7 +73,7 @@ func webStartupSource(r *http.Request) string {
 		return "SAVE_RULE"
 	case "/api/v1/profiles/switch":
 		return "PROFILE_SWITCH"
-	case "/api/v1/import/commit":
+	case "/api/v1/import/commit", "/api/v1/subscriptions/apply":
 		return "IMPORT_COMMIT"
 
 	}

@@ -18,7 +18,7 @@ const defaultStatus=()=>({availability:'AVAILABLE',running:true,loaded:true,vers
 const defaultHelper=()=>({available:true,status:{ok:true,code:'',message:'SECRET_SENTINEL /private/config.yaml 192.0.2.1',loaded:true,running:true,helper_version:'v2026-11-01-01',helper_sha256:'3'.repeat(64),config_identity:identity}});
 const disk=()=>({installed:'v2026-11-03-01',current:'v2026-11-02-02',latest:'v2026-11-03-01',status:'RESTART_REQUIRED',available:false,sourceOnly:false,updated:false,restartRequired:true});
 let statusData=defaultStatus(),helperData=defaultHelper(),dnsData=dns(),statusFail=false,checkFail=false,requests=[];
-const staticNames=new Set(['index.html','app.js','runtime.js','startup.js','dns.js','style.css']);
+const staticNames=new Set(['index.html','app.js','runtime.js','startup.js','dns.js','style.css','product.js','product.css']);
 const server=http.createServer((req,res)=>{
  const u=new URL(req.url,'http://localhost');requests.push({path:u.pathname,query:u.search,method:req.method});
  if(!u.pathname.startsWith('/api/')){const file=u.pathname==='/'?'index.html':u.pathname.slice(1);if(!staticNames.has(file)){res.writeHead(404);res.end();return;}res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(root+file));return;}
@@ -30,7 +30,7 @@ const server=http.createServer((req,res)=>{
  case '/api/v1/startup-trace':data=trace();break;
  case '/api/v1/update-check':data=checkFail?{error:'SECRET_SENTINEL'}:disk();code=checkFail?503:200;break;
  case '/api/v1/dns-runtime':data=u.search?dnsData:{...dnsData,binding,availability:'UNAVAILABLE',snapshot:null,age_ns:null,received_at:null};break;
- case '/api/v1/profiles':data={profiles:[],etag:'"synthetic"'};break;
+ case '/api/v1/profiles':data={profiles:[],etag:'"synthetic"',active_id:'',switch_version:'switch-v1-'+'1'.repeat(64)};break;
  case '/api/v1/subscription':data={configured:false};break;
  case '/api/v1/logout':data={ok:true};break;
  default:code=404;data={error:'SYNTHETIC_NOT_IMPLEMENTED'};
@@ -38,7 +38,7 @@ const server=http.createServer((req,res)=>{
  res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(data));
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin='http://127.0.0.1:'+server.address().port;
-const browser=await chromium.launch({executablePath:process.env.CHROMIUM||'/home/hermeswebui/.cache/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell',headless:true,args:['--no-sandbox'],env:{...process.env,LD_LIBRARY_PATH:process.env.BROWSER_LIBS||'/workspace/browser-libs/extracted/usr/lib/x86_64-linux-gnu'}});
+const browser=await chromium.launch({executablePath:process.env.CHROMIUM||'/home/hermeswebui/.cache/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell',headless:true,args:['--no-sandbox'],env:{...process.env,FONTCONFIG_FILE:process.env.FONTCONFIG_FILE||'/workspace/anytls-r10-product-evidence-r2/fonts.conf',LD_LIBRARY_PATH:process.env.BROWSER_LIBS||'/workspace/browser-libs/extracted/usr/lib/x86_64-linux-gnu'}});
 const results=[];
 try{
  for(const width of [1280,390]){
@@ -46,8 +46,9 @@ try{
   const context=await browser.newContext({viewport:{width,height:1100}}),page=await context.newPage(),errors=[];
   page.on('pageerror',e=>errors.push(String(e)));
   await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
-  await page.goto(origin);await page.waitForFunction(()=>document.getElementById('runtime-helper').textContent.includes('v2026-11-01-01'));
-  await page.waitForFunction(()=>document.getElementById('runtime-history').textContent.includes('v2026-10-01-01'));
+  const go=async route=>{await page.evaluate(r=>location.hash=r,route);await page.waitForTimeout(100);};
+  await page.goto(origin+'/#debug/versions');await page.waitForFunction(()=>document.getElementById('runtime-helper').textContent.includes('v2026-11-01-01'));await go('debug/operations');
+  await page.waitForFunction(()=>document.getElementById('runtime-history').textContent.includes('v2026-10-01-01'));await go('debug/versions');
   const summary=()=>page.evaluate(()=>JSON.parse(AnyTLSRuntime.summary()));
   const overflow=async()=>assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'no horizontal overflow');
   assert.equal((await summary()).versions.installed.value,null);assert.equal((await summary()).versions.coreCurrent.value,null);assert.equal((await summary()).health.network,'NOT_OBSERVED');
@@ -56,21 +57,21 @@ try{
   await page.locator('#runtime-check').click();await page.waitForFunction(()=>document.getElementById('runtime-installed').textContent.includes('v2026-11-03-01'));
   assert.equal(requests.filter(r=>r.path.endsWith('/update-check')).length,1);assert.match(await page.locator('#runtime-difference').textContent(),/版本标签不同/);
   // SPEC-02: use the real update-page click handler, then read overview summary.
-  await page.evaluate(()=>document.querySelector('[data-view="update"]').click());await page.locator('#check-update').click();await page.waitForFunction(()=>document.getElementById('update-result').textContent.includes('已安装新版'));
+  await go('settings/update');await page.locator('#check-update').click();await page.waitForFunction(()=>document.getElementById('update-result').textContent.includes('已安装新版'));
   const beforeUpdateFailure=(await summary()).versions.installed;checkFail=true;
   await page.locator('#check-update').click();await page.waitForFunction(()=>document.getElementById('update-result').textContent.includes('检查未完成'));assert.match(await page.locator('#runtime-error').textContent(),/安装版本检查失败/);
-  await page.evaluate(()=>document.querySelector('[data-view="overview"]').click());await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).versions.installed.refreshStatus==='FAILED');
+  await go('debug/versions');await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).versions.installed.refreshStatus==='FAILED');
   const afterUpdateFailure=(await summary()).versions.installed;assert.equal(afterUpdateFailure.value,beforeUpdateFailure.value);assert.equal(afterUpdateFailure.observedAt,beforeUpdateFailure.observedAt);assert.match(await page.locator('#runtime-installed').textContent(),/本次读取失败/);
   await overflow();await page.locator('#runtime-panel').screenshot({path:out+`/update-page-failed-${width}.png`});fs.writeFileSync(out+`/update-page-failed-${width}.json`,JSON.stringify({before:beforeUpdateFailure,after:afterUpdateFailure},null,2));checkFail=false;
   assert.equal((await summary()).versions.webui.value,'v2026-11-02-02');assert.equal((await summary()).versions.helper.value,'v2026-11-01-01');
-  await page.locator('#dns-evidence-refresh').click();await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).health.dns.availability==='OBSERVED');
+  await go('debug/dns');await page.locator('#dns-evidence-refresh').click();await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).health.dns.availability==='OBSERVED');
   const dnsRequests=requests.filter(r=>r.path.endsWith('/dns-runtime'));assert.equal(dnsRequests.length,2);assert.equal(dnsRequests[0].query,'');assert.ok(dnsRequests[1].query.includes('instance_id='));
   assert.equal((await summary()).versions.coreCurrent.value,null);assert.equal((await summary()).lastStartup.observation,'STALE');
-  await overflow();await page.locator('#runtime-panel').screenshot({path:out+`/observed-${width}.png`});
+  await go('debug/versions');await overflow();await page.locator('#runtime-panel').screenshot({path:out+`/observed-${width}.png`});await go('debug/dns');
   await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).health.dns.availability==='STALE');assert.equal(requests.filter(r=>r.path.endsWith('/dns-runtime')).length,2);
   // Real two-step mismatch cannot project fresh evidence.
   dnsData={...dns(),binding:{...binding,generation:'9'.repeat(32)}};await page.locator('#dns-evidence-refresh').click();await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).health.dns.availability==='UNAVAILABLE');dnsData=dns();
-  helperData={available:false,code:'HELPER_CONFIG_MISMATCH',message:'SECRET_SENTINEL'};statusData={...defaultStatus(),availability:'UNAVAILABLE',running:false,loaded:false};await page.evaluate(()=>status());
+  helperData={available:false,code:'HELPER_CONFIG_MISMATCH',message:'SECRET_SENTINEL'};statusData={...defaultStatus(),availability:'UNAVAILABLE',running:false,loaded:false};await go('debug/versions');await page.evaluate(()=>status(()=>true,{explicit:true}));
   assert.equal((await summary()).versions.helper.value,null);assert.equal((await summary()).health.service.running,null);assert.match(await page.locator('#runtime-service').textContent(),/UNKNOWN/);
   await overflow();await page.locator('#runtime-panel').screenshot({path:out+`/unknown-${width}.png`});
   statusFail=true;checkFail=true;await page.evaluate(()=>{savedFeedback({changed:true,apply_status:'APPLIED'});});const noticeBefore=await page.locator('#notice').textContent();await page.evaluate(()=>status());assert.equal(await page.locator('#notice').textContent(),noticeBefore);
@@ -100,6 +101,6 @@ try{
  }
  const staticSource=fs.readFileSync(new URL('./web_static.go',import.meta.url),'utf8');
  assert.match(staticSource,/\{"\/runtime\.js", "runtime\.js", "text\/javascript; charset=utf-8"\}/,'runtime asset must be in the source store manifest');
- assert.match(staticSource,/case "\/", "\/app\.js", "\/startup\.js", "\/dns\.js", "\/runtime\.js", "\/style\.css":/,'all previous exact paths and runtime route must remain in source allowlist');
+ const staticAllowlist=/case ([^\n]+):/.exec(staticSource)?.[1]||'';for(const asset of ['/','/app.js','/startup.js','/dns.js','/runtime.js','/style.css','/product.js','/product.css'])assert.ok(staticAllowlist.includes('"'+asset+'"'),'exact asset remains in source allowlist: '+asset);
  const report={mode:'BROWSER_SYNTHETIC',nativePreview:false,goStaticRuntimeRoute:'SOURCE_MANIFEST_ADDED_NOT_COMPILED_OR_HTTP_VERIFIED',results};fs.writeFileSync(out+'/results.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }finally{await browser.close();await new Promise(r=>server.close(r));}
