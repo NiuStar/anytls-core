@@ -392,6 +392,10 @@ class WebUIPreflightRejected(ValueError):
     """No installer lifecycle mutation has been dispatched at this boundary."""
 
 
+class CoreReloadPreflightRejected(ValueError):
+    """Original core capture failed before helper/publication/reload mutation."""
+
+
 class WebUI:
     """Only manage the exact current user's default-port WebUI, never the VPN."""
     def __init__(self, target, env, listen="0.0.0.0"):
@@ -853,7 +857,10 @@ def processes(app):
     paths = (str(app/'service/anytls-macos'), str(app/'anytls-macos'))
     for line in raw.splitlines():
         f = line.split(None, 7)
-        need(len(f)==8 and f[0].isdigit() and f[1].isdigit(), 'CORE_RELOAD_PROCESS_READ')
+        # Darwin can render system UIDs as signed values (for example -2).
+        # Retain the numeric UID; capture still requires the scoped core UID 0.
+        need(len(f)==8 and f[0].isdigit() and re.fullmatch(r'-?[0-9]+', f[1]) is not None,
+             'CORE_RELOAD_PROCESS_READ')
         cmd = f[7]
         # Every service-path process, and any direct user-binary TUN run, counts.
         if cmd == paths[0] or cmd.startswith(paths[0]+' ') or ((cmd == paths[1] or cmd.startswith(paths[1]+' ')) and re.search(r'(^| )run( |$)',cmd)):
@@ -1094,7 +1101,12 @@ def _install_verified(bundle, tag, app, home, runner, env, tty, webui_listen, re
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise WebUIPreflightRejected("WEBUI_PREFLIGHT_REJECTED: no helper install, binary publish, WebUI signal or core reload dispatched: " + str(exc)) from exc
     # Capture BEFORE helper replacement; explicit opt-out performs no helper read.
-    activation = CoreReload(app) if reload_core else None
+    try:
+        activation = CoreReload(app) if reload_core else None
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        reason = str(exc) if type(exc) is ValueError and re.fullmatch(r'CORE_RELOAD_[A-Z_]+', str(exc)) else 'CORE_RELOAD_UNAVAILABLE'
+        raise CoreReloadPreflightRejected('core reload preflight rejected; CORE_RELOAD_PREFLIGHT_REJECTED: ' + reason +
+                                         '; no helper install, binary publish, WebUI signal or core reload dispatched') from exc
     if activation is not None:
         activation.lock_fd = lock_fd
     # A unique, regular candidate in appdir matches the helper's fixed path policy.
@@ -1357,8 +1369,9 @@ def main(argv=None):
                  45: "UPDATE_PUBLISH_FAILED", 46: "UPDATE_VERIFY_FAILED", 47: "UPDATE_UNAVAILABLE"}
         print(codes.get(exc.code, "UPDATE_UNAVAILABLE"), file=sys.stderr)
         return exc.code if exc.code in codes else 47
-    except WebUIPreflightRejected as exc:
-        print("Binary installation failed: " + str(exc) + "; close/inspect the existing WebUI; no automatic recovery attempted.", file=sys.stderr)
+    except (WebUIPreflightRejected, CoreReloadPreflightRejected) as exc:
+        advice = 'close/inspect the existing WebUI' if isinstance(exc, WebUIPreflightRejected) else 'inspect the original core state read-only before retrying'
+        print("Binary installation failed: " + str(exc) + "; " + advice + "; no automatic recovery attempted.", file=sys.stderr)
         return 1
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
         detail = str(exc) if type(exc) is ValueError else type(exc).__name__
