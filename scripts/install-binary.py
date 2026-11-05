@@ -158,7 +158,7 @@ def update_transport(transport):
         # disk writes or validators must NEVER be relabelled as network errors.
         with contextlib.ExitStack() as stack:
             try:
-                src = stack.enter_context(transport(url, kind))
+                src = stack.enter_context(i.open_download(url, kind, transport))
             except (OSError, http.client.HTTPException) as exc:
                 raise DownloadFailed() from exc
             class Response:
@@ -1288,7 +1288,13 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
     # Check-only never creates app/config/link and never executes downloaded code.
     with tempfile.TemporaryDirectory(prefix="anytls-binary-", dir=None if args.check_download else app) as temp:
         work = Path(temp)
-        tag, bundle, digest, commit = verified_download(work, args.version, transport, arch=arch)
+        try:
+            tag, bundle, digest, commit = verified_download(work, args.version, transport, arch=arch)
+        except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError, http.client.HTTPException) as exc:
+            # Preserve direct callers' original type/identity (including missing
+            # platform packages); only the CLI needs the known phase marker.
+            exc.anytls_preinstall = True
+            raise
         report = {"version": tag, "source_commit": commit, "binary_sha256": digest,
                   "platform": "darwin-" + arch, "download_verified": True, "executed": False}
         if args.check_download:
@@ -1373,7 +1379,14 @@ def main(argv=None):
         advice = 'close/inspect the existing WebUI' if isinstance(exc, WebUIPreflightRejected) else 'inspect the original core state read-only before retrying'
         print("Binary installation failed: " + str(exc) + "; " + advice + "; no automatic recovery attempted.", file=sys.stderr)
         return 1
-    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError, http.client.HTTPException, subprocess.SubprocessError) as exc:
+        if getattr(exc, 'anytls_preinstall', False):
+            detail = i.transport_diagnostic(exc) if isinstance(exc, (OSError, http.client.HTTPException)) else type(exc).__name__
+            print("Binary download/verification failed: " + detail +
+                  "; no helper install, binary publish, WebUI signal or core reload dispatched in this attempt; "
+                  "earlier UNKNOWN receipts retained and must be reconciled read-only. "
+                  "No automatic source compilation, recovery reload or rollback.", file=sys.stderr)
+            return 1
         detail = str(exc) if type(exc) is ValueError else type(exc).__name__
         print("Binary installation failed: " + detail + "; no automatic source compilation or recovery reload/rollback. " +
               ("Default/explicit core reload may have been dispatched: preserve its receipt; UNKNOWN must be reconciled read-only, never retried to obtain a reply. " if not args.update_only and not args.check_download and args.reload_core is not False else "VPN was not stopped/reloaded. ") +

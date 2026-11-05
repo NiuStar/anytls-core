@@ -3,7 +3,13 @@
 SHA256SUMS shares the release's HTTPS transport trust, not a signature.
 """
 import argparse
+import contextlib
 import datetime
+import errno
+import http.client
+import ssl
+import time
+import urllib.error
 import hashlib
 import json
 import os
@@ -76,7 +82,53 @@ class Redirects(urllib.request.HTTPRedirectHandler):
 def open_url(url, kind):
     trusted_url(url, kind)
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json" if kind == "api" else "application/octet-stream", "User-Agent": "anytls-source-installer"})
-    return urllib.request.build_opener(Redirects(kind)).open(request, timeout=120)
+    return urllib.request.build_opener(Redirects(kind)).open(request, timeout=15)
+
+
+def transient_open_error(exc):
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        exc = exc.reason
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return False
+    if isinstance(exc, ssl.SSLError):
+        return isinstance(exc, ssl.SSLEOFError) or getattr(exc, "reason", None) == "UNEXPECTED_EOF_WHILE_READING"
+    return isinstance(exc, (TimeoutError, ConnectionResetError, ConnectionAbortedError)) or (
+        isinstance(exc, OSError) and exc.errno in (errno.ECONNRESET, errno.ECONNABORTED, errno.ETIMEDOUT))
+
+
+def transport_diagnostic(exc):
+    # Never echo an exception message/URL (including signed redirect queries).
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        exc = exc.reason
+    classes = (ssl.SSLCertVerificationError, ssl.SSLEOFError, ssl.SSLError,
+               TimeoutError, ConnectionResetError, ConnectionAbortedError,
+               urllib.error.HTTPError, http.client.HTTPException, OSError)
+    name = next((cls.__name__ for cls in classes if isinstance(exc, cls)), "transport error")
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, ssl.SSLError) and reason in ("UNEXPECTED_EOF_WHILE_READING", "CERTIFICATE_VERIFY_FAILED"):
+        name += " (" + reason + ")"
+    return name
+
+
+@contextlib.contextmanager
+def open_download(url, kind, transport):
+    # GET only, before entering the consumer: no target creation/body read or
+    # mutation is replayed. One retry, 0.5s delay, at most 30s to start it.
+    # Native opening uses 15s socket timeouts (redirect/DNS time can add time).
+    started = time.monotonic()
+    with contextlib.ExitStack() as stack:
+        for attempt in range(2):
+            try:
+                response = stack.enter_context(transport(url, kind))
+            except (OSError, http.client.HTTPException) as exc:
+                if attempt or not transient_open_error(exc) or time.monotonic() - started >= 30:
+                    raise
+                print("[AnyTLS] Transient GET open failure: " + transport_diagnostic(exc) +
+                      "; retrying once before body/file creation.", file=sys.stderr, flush=True)
+                time.sleep(0.5)
+            else:
+                break
+        yield response
 
 
 def strict_json(raw):
@@ -90,7 +142,7 @@ def strict_json(raw):
 
 
 def read_json(url, kind="api", transport=open_url):
-    with transport(url, kind) as response:
+    with open_download(url, kind, transport) as response:
         return strict_json(response.read())
 
 
@@ -119,7 +171,7 @@ def release(version=None, transport=open_url):
 
 def download(url, target, expected=None, transport=open_url, kind="asset"):
     digest = hashlib.sha256()
-    with transport(url, kind) as src, Path(target).open("xb") as dst:
+    with open_download(url, kind, transport) as src, Path(target).open("xb") as dst:
         while True:
             block = src.read(1024 * 1024)
             if not block:
