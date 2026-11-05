@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -20,13 +19,24 @@ func groupChoices(config string) ([]proxyGroup, error) {
 	return d.Groups, err
 }
 func saveGroupChoice(config, group, choice string) error {
-	// Reuse the existing config acquisition policy and limit, but reject final
-	// symlinks: rename must not silently replace a link rather than its source.
-	// One captured byte slice feeds every parser; no public-path re-read.
 	captured, err := readSnapshotSource(config, snapshotConfigLimit, false)
 	if err != nil {
 		return err
 	}
+	b, err := groupChoiceBytes(captured, group, choice)
+	if err != nil || bytes.Equal(b, captured) {
+		return err
+	}
+	return webAtomicWrite(config, b)
+}
+
+// One captured byte slice feeds every parser, including transactional callers.
+func groupChoiceBytes(captured []byte, group, choice string) (result []byte, err error) {
+	err = editGroupChoice(captured, group, choice, &result)
+	return result, err
+}
+
+func editGroupChoice(captured []byte, group, choice string, result *[]byte) error {
 	var doc yaml.Node
 	decoder := yaml.NewDecoder(bytes.NewReader(captured))
 	if err := decoder.Decode(&doc); err != nil {
@@ -101,6 +111,7 @@ func saveGroupChoice(config, group, choice string) error {
 		return errors.New("group choice target is shared by a YAML alias")
 	}
 	if selected != nil && previous == choice {
+		*result = captured
 		return nil
 	}
 	if selected == nil {
@@ -113,25 +124,8 @@ func saveGroupChoice(config, group, choice string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(config), ".group-choice-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	n, writeErr := f.Write(b)
-	if writeErr != nil || n != len(b) {
-		if writeErr == nil {
-			writeErr = io.ErrShortWrite
-		}
-		return errors.Join(writeErr, f.Close())
-	}
-	if err := f.Sync(); err != nil {
-		return errors.Join(err, f.Close())
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), config)
+	*result = b
+	return nil
 }
 func groupChoiceSharedTarget(n *yaml.Node, targets ...*yaml.Node) bool {
 	if n.Kind == yaml.AliasNode {

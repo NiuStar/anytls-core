@@ -62,7 +62,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=no)"
           echo "TMPDIR=$HOME/.aq-ci" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.aq-ci"
-      - name: Run all three Python tooling suites before Go
+      - name: Run all Python tooling suites before Go
         run: python3 -m unittest discover -s scripts -p '*_test.py' -v
       - uses: actions/setup-go@v5
         with:
@@ -98,6 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     defaults:
       run:
         shell: bash
@@ -172,6 +173,11 @@ jobs:
               for name in sorted(merged):
                   sums.write(sha256(out / name) + '  ' + name + '\n')
           PY
+      - name: Require exact tag push CI and all three terminal-success jobs
+        timeout-minutes: 32
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/release_ci_gate.py --seconds 1800 --interval 15
       - name: Publish verified assets once, without replacing existing assets
         env:
           GH_TOKEN: ${{ github.token }}

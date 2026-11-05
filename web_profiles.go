@@ -468,8 +468,13 @@ func webProfileWriteFile(f webProfileFile, write func(string, []byte) error) err
 	return os.Remove(f.path)
 }
 func (w *webConsole) commitProfile(p webProfile, source webProfileFile, old []webProfileFile, write func(string, []byte) error) string {
-	target := webProfilePayload(p, w.configPath)
-	if !webProfileSame(source) {
+	return w.commitProfileFiles(webProfilePayload(p, w.configPath), old, func() bool { return webProfileSame(source) }, write)
+}
+
+// Shared CAS/readback/backup/rollback path. Caller owns actionMu. This is an
+// optimistic multi-file transaction, not crash-atomic or an OS-wide writer lock.
+func (w *webConsole) commitProfileFiles(target, old []webProfileFile, sourceSame func() bool, write func(string, []byte) error) string {
+	if !sourceSame() {
 		return "PROFILE_CONFLICT"
 	}
 	for _, f := range old {
@@ -491,7 +496,7 @@ func (w *webConsole) commitProfile(p webProfile, source webProfileFile, old []we
 	if webImportBackup(backup, w.configPath) != nil {
 		return "PROFILE_SAVE_FAILED"
 	}
-	if !webProfileSame(source) {
+	if !sourceSame() {
 		return "PROFILE_CONFLICT"
 	}
 	for _, f := range old {

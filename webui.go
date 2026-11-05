@@ -517,12 +517,13 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 			return
 		}
 		if r.URL.Path == "/api/v1/nodes" {
-			selected, _ := selectedNode(w.configPath, nodes)
+			selected := effectiveWebSelection(w.configPath, b, nodes)
+			defaultSelected, linked, needsSync := webSelectionLinkState(b, nodes, selected)
 			list := make([]map[string]any, 0, len(nodes))
 			for _, n := range nodes {
-				list = append(list, map[string]any{"name": n.Name, "type": n.Type, "server": n.Server, "port": n.Port, "hasPassword": n.Password != "", "selectable": selectable(n), "skipVerify": n.SkipVerify, "sni": n.SNI, "selected": selected == n.Name})
+				list = append(list, map[string]any{"name": n.Name, "type": n.Type, "server": n.Server, "port": n.Port, "hasPassword": n.Password != "", "selectable": selectable(n), "skipVerify": n.SkipVerify, "sni": n.SNI, "selected": selected == n.Name, "defaultSelected": defaultSelected == n.Name, "selectionNeedsSync": needsSync[n.Name]})
 			}
-			webJSON(rw, 200, map[string]any{"nodes": list, "etag": `"` + shaHex(b) + `"`})
+			webJSON(rw, 200, map[string]any{"nodes": list, "etag": `"` + shaHex(b) + `"`, "selection_linked": linked})
 			return
 		}
 		var doc struct {
@@ -789,46 +790,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 400, "INVALID_INPUT")
 			return
 		}
-		// Older clients omit If-Match; a supplied snapshot must still match
-		// before saving or consulting the running service.
-		if match := r.Header.Get("If-Match"); match != "" {
-			b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
-			if err != nil {
-				webError(rw, 500, "CONFIG_UNAVAILABLE")
-				return
-			}
-			if match != `"`+shaHex(b)+`"` {
-				webError(rw, 412, "CONFIG_CONFLICT")
-				return
-			}
-		}
-		before := w.fingerprint()
-		if err := saveGroupChoice(w.configPath, in.Group, in.Choice); err != nil {
-			webError(rw, 422, "GROUP_SELECTION_REJECTED")
-			return
-		}
-		after := w.fingerprint()
-		changed := before != after
-		if changed {
-			w.saved()
-		}
-		b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
-		var doc struct {
-			Groups []proxyGroup `yaml:"proxy-groups"`
-		}
-		verified := false
-		if err == nil && yaml.Unmarshal(b, &doc) == nil {
-			for _, g := range doc.Groups {
-				if g.Name == in.Group && g.Selected == in.Choice {
-					verified = true
-				}
-			}
-		}
-		if !verified {
-			webError(rw, 500, "GROUP_READBACK_FAILED")
-			return
-		}
-		w.finishConfigSave(rw, r, changed, "", in.ConfirmInsecure)
+		w.saveLinkedSelection(rw, r, in.Group, in.Choice, in.ConfirmInsecure)
 	case r.URL.Path == "/api/v1/nodes/selection" && r.Method == "POST":
 		var in struct {
 			Name            string `json:"name"`
@@ -838,25 +800,7 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			webError(rw, 400, "INVALID_INPUT")
 			return
 		}
-		nodes, err := loadNodes(w.configPath)
-		if err != nil {
-			webError(rw, 422, "CONFIG_INVALID")
-			return
-		}
-		before, _ := selectedNode(w.configPath, nodes)
-		if before != in.Name {
-			if saveSelection(w.configPath, in.Name, nodes) != nil {
-				webError(rw, 422, "NODE_SELECTION_REJECTED")
-				return
-			}
-			w.saved()
-		}
-		after, err := selectedNode(w.configPath, nodes)
-		if err != nil || after != in.Name {
-			webError(rw, 500, "SELECTION_READBACK_FAILED")
-			return
-		}
-		w.finishConfigSave(rw, r, before != after, "", in.ConfirmInsecure)
+		w.saveLinkedSelection(rw, r, "", in.Name, in.ConfirmInsecure)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/service/") && r.Method == "POST":
 		action := strings.TrimPrefix(r.URL.Path, "/api/v1/service/")
 		if action != "start" && action != "stop" && action != "reload" {
