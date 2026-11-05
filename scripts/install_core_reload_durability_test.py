@@ -31,6 +31,14 @@ def load(name, path):
 f = load('reload_durability_fixture', HERE/'install_core_reload_test.py')
 b = f.b
 
+def fd_matches(fd, path):
+    try:
+        target = path.stat()
+    except FileNotFoundError:
+        return False
+    opened = os.fstat(fd)
+    return (opened.st_dev, opened.st_ino) == (target.st_dev, target.st_ino)
+
 # Insert only native peer/process/TUN observations, leaving worker orchestration,
 # exclusive journals and every actual fsync untouched except selected faults.
 SEAM = r'''
@@ -48,11 +56,17 @@ def request(q, timeout=5):
     if _fixture.get('unknown'): raise TimeoutError('synthetic lost reply')
     return _fixture['response']
 _real_fsync = os.fsync
+def fd_matches(fd, path):
+    try:
+        target = path.stat()
+    except FileNotFoundError:
+        return False
+    opened = os.fstat(fd)
+    return (opened.st_dev, opened.st_ino) == (target.st_dev, target.st_ino)
 def injected_fsync(fd):
-    target = os.readlink('/proc/self/fd/'+str(fd))
     fault = _fixture.get('fault')
-    if ((fault=='result-file' and target==str(_root/'result.json')) or
-        (fault=='result-directory' and target==str(_root) and (_root/'result.json').exists())):
+    if ((fault=='result-file' and fd_matches(fd, _root/'result.json')) or
+        (fault=='result-directory' and fd_matches(fd, _root) and (_root/'result.json').exists())):
         (_root/'fault-fired').touch()
         raise OSError('synthetic terminal sync failure')
     return _real_fsync(fd)
@@ -114,10 +128,9 @@ class Durability(unittest.TestCase):
         w.tx.rmdir()
         real_fsync = os.fsync
         def sync(fd):
-            target = os.readlink('/proc/self/fd/'+str(fd))
-            is_result = target == str(w.tx/'result.json')
-            is_ack = target == str(w.tx/'accepted.json')
-            is_ack_dir = target == str(w.tx) and (w.tx/'accepted.json').exists()
+            is_result = fd_matches(fd, w.tx/'result.json')
+            is_ack = fd_matches(fd, w.tx/'accepted.json')
+            is_ack_dir = fd_matches(fd, w.tx) and (w.tx/'accepted.json').exists()
             if ((parent_fault=='parent-result' and is_result) or
                 (parent_fault=='accepted-file' and is_ack) or
                 (parent_fault=='accepted-directory' and is_ack_dir)):
@@ -242,6 +255,18 @@ seam=sys.argv[3]
 def launch(argv,**kwargs):
     root=Path(argv[5]);b.CORE_RELOAD_SUPPORT['put'](root,'fixture.json',fixture)
     source=argv[4].replace("if __name__ == '__main__':",seam+"\nif __name__ == '__main__':",1)
+    if len(sys.argv)>4:
+        exit_fd=int(sys.argv[4])
+        # Only this owned worker inherits the pipe. EOF observes real exit,
+        # while its receipt binds the returned status to this PID/operation.
+        source=source.replace("if __name__ == '__main__':", """
+_real_worker = worker
+def worker(root):
+    rc = _real_worker(root)
+    os.write(EXIT_FD, json.dumps(dict(pid=os.getpid(), operation_id='a'*32, returncode=rc)).encode())
+    return rc
+""".replace('EXIT_FD',str(exit_fd))+"\nif __name__ == '__main__':",1)
+        kwargs['pass_fds']=(*kwargs['pass_fds'],exit_fd)
     child=real_popen(argv[:4]+[source]+argv[5:],**kwargs)
     (app/'worker-pid').write_text(str(child.pid))
     class ExitWaiter:
@@ -261,18 +286,29 @@ with b.installation_lock(app) as fd:
     core.lock_fd=fd
     core.finish(fixture['digest'],'v1.2.3','b'*40)
 '''
-        # Linux subreaper makes the actual orphan ours to wait/reap in this test.
-        import ctypes
-        libc = ctypes.CDLL(None, use_errno=True)
-        previous = ctypes.c_int()
-        self.assertEqual(libc.prctl(37, ctypes.byref(previous), 0, 0, 0), 0)
-        self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)
+        # Linux can reap the orphan directly. Other POSIX hosts observe the
+        # owned worker's exit pipe plus receipt, without Linux libc APIs.
+        linux = sys.platform.startswith('linux')
+        read_fd = write_fd = None
+        if linux:
+            import ctypes
+            libc = ctypes.CDLL(None, use_errno=True)
+            previous = ctypes.c_int()
+            self.assertEqual(libc.prctl(37, ctypes.byref(previous), 0, 0, 0), 0)
+            self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)
+        else:
+            read_fd, write_fd = os.pipe()
         pid = None
         try:
             parent = REAL_POPEN([sys.executable, '-I', '-B', '-c', parent_source,
-                                 str(HERE/'install-binary.py'), str(w.app), SEAM],
+                                 str(HERE/'install-binary.py'), str(w.app), SEAM] +
+                                ([] if linux else [str(write_fd)]),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                pass_fds=() if linux else (write_fd,),
                                 env={'PATH':'/usr/bin:/bin','LANG':'C'})
+            if write_fd is not None:
+                os.close(write_fd)
+                write_fd = None
             stdout, stderr = parent.communicate(timeout=15)
             self.assertEqual(parent.returncode, 73, stderr.decode())
             pid = int((w.app/'worker-pid').read_text())
@@ -281,14 +317,36 @@ with b.installation_lock(app) as fd:
                     self.fail('parent exit released live worker flock')
             (w.tx/'release').touch()
             until = time.monotonic()+10
+            receipt = b''
             while True:
-                reaped, status = os.waitpid(pid, os.WNOHANG)
-                if reaped:
-                    pid = None
-                    self.assertEqual(os.waitstatus_to_exitcode(status), 0)
-                    break
+                if linux:
+                    reaped, status = os.waitpid(pid, os.WNOHANG)
+                    if reaped:
+                        pid = None
+                        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+                        break
+                else:
+                    import select
+                    if select.select([read_fd], [], [], .01)[0]:
+                        chunk = os.read(read_fd, 4096)
+                        if not chunk:
+                            expected_pid, pid = pid, None
+                            self.assertEqual(json.loads(receipt), dict(pid=expected_pid,
+                                             operation_id=w.op, returncode=0))
+                            break
+                        receipt += chunk
                 self.assertLess(time.monotonic(), until)
                 time.sleep(.01)
+            # Pipe EOF can precede closure of another fd during process exit.
+            until = time.monotonic()+10
+            while True:
+                try:
+                    with b.installation_lock(w.app):
+                        break
+                except ValueError as exc:
+                    self.assertIn('another binary installer', str(exc))
+                    self.assertLess(time.monotonic(), until, 'exited worker retained flock')
+                    time.sleep(.01)
             # Even a later SUCCEEDED worker cannot accept a lost parent's result.
             self.assertEqual(json.loads((w.tx/'result.json').read_bytes())['state'], 'SUCCEEDED')
             self.assert_all_mutators_blocked()
@@ -296,8 +354,13 @@ with b.installation_lock(app) as fd:
             (w.tx/'release').touch()
             if pid is not None:
                 os.kill(pid, 9)
-                os.waitpid(pid, 0)
-            libc.prctl(36, previous.value, 0, 0, 0)
+                if linux:
+                    os.waitpid(pid, 0)
+            for fd in (read_fd, write_fd):
+                if fd is not None:
+                    os.close(fd)
+            if linux:
+                libc.prctl(36, previous.value, 0, 0, 0)
 
     def test_successful_parent_commit_allows_next_install(self):
         self.finish(self.fixture())

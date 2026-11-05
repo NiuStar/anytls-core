@@ -80,7 +80,7 @@ class Worker(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='reload-offline-', dir=os.environ['TMPDIR'])
         self.addCleanup(self.temp.cleanup)
-        self.app = Path(self.temp.name) / 'app'
+        self.app = Path(self.temp.name).resolve() / 'app'
         self.app.mkdir(mode=0o700)
         (self.app / 'config.yaml').write_text('private fixture only')
         (self.app / 'anytls-macos').write_bytes(b'candidate fixture')
