@@ -349,6 +349,9 @@ def private_append(path):
         raise
 
 
+_INSTALL_LOCKS = threading.local()
+
+
 @contextlib.contextmanager
 def installation_lock(app):
     with private_append(app / ".install.lock") as lock:
@@ -358,7 +361,20 @@ def installation_lock(app):
             raise ValueError("another binary installer is running") from None
         # Close only: LOCK_UN would release the worker's inherited open-file
         # description too, leaving a detached reload unprotected.
-        yield lock.fileno()
+        owned = getattr(_INSTALL_LOCKS, 'owned', {})
+        _INSTALL_LOCKS.owned = owned
+        key = str(app.resolve(strict=True))
+        owned[key] = (os.getpid(), lock.fileno())
+        try:
+            yield lock.fileno()
+        finally:
+            owned.pop(key, None)
+
+
+def reconciliation_lock_required(app):
+    entry = getattr(_INSTALL_LOCKS, 'owned', {}).get(str(app.resolve(strict=True)))
+    i.require(entry is not None and entry[0] == os.getpid(), 'CORE_RELOAD_RECONCILE_LOCK_REQUIRED')
+    os.fstat(entry[1])
 
 
 def core_reload_guard(app):
@@ -375,6 +391,12 @@ def core_reload_guard(app):
                     accepted == dict(operation_id=result['operation_id'], result_sha256=sha256(root/'result.json')))
         except (OSError, ValueError, KeyError, TypeError):
             safe = False
+        if not safe:
+            try:
+                reconciliation_lock_required(app)
+                safe = reconcile_preflight(app, root)
+            except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError, subprocess.SubprocessError):
+                safe = False
         i.require(safe, 'Core reload UNKNOWN/pending; do not install or dispatch again; inspect receipt: '+str(root))
 
 
@@ -754,8 +776,8 @@ def request(q, timeout=5):
              (q['operation_id'] is None or hexstr(q['operation_id'], 32)))
     else:
         shape(q, 'timeline_schema action operation_id allow_insecure')
-        need(action == 'reload' and type(q['timeline_schema']) is int and q['timeline_schema'] == 1 and
-             hexstr(q['operation_id'], 32) and q['allow_insecure'] is True)
+        need(action in ('reload','stop') and type(q['timeline_schema']) is int and q['timeline_schema'] == 1 and
+             hexstr(q['operation_id'], 32) and q['allow_insecure'] is (action=='reload'))
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         # Absolute deadline, not a per-recv timeout susceptible to a slow peer.
         deadline = time.monotonic() + timeout
@@ -849,9 +871,9 @@ def read_check(r, identity, operation=None, epoch=None):
              'CORE_RELOAD_OPERATION_MISMATCH')
     return r['helper_epoch']
 
-def processes(app):
+def processes(app, timeout=5):
     raw = subprocess.run(['/bin/ps','-ww','-axo','pid=,uid=,lstart=,command='], check=True,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
                          env={'PATH':'/usr/bin:/bin','LC_ALL':'C','LANG':'C'}).stdout.decode('utf-8')
     rows = []
     paths = (str(app/'service/anytls-macos'), str(app/'anytls-macos'))
@@ -1018,6 +1040,369 @@ if __name__ == '__main__':
 '''
 CORE_RELOAD_SUPPORT = {'__name__': 'installer_reload_support'}
 exec(CORE_RELOAD_WORKER, CORE_RELOAD_SUPPORT)
+
+
+def reconciliation_receipt(root, name):
+    """Bounded no-follow read, binding inode/security metadata and complete bytes."""
+    n = CORE_RELOAD_SUPPORT
+    path = root / name
+    before = path.lstat()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as f:
+        def stamp(st):
+            return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid,
+                    st.st_nlink, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        st = os.fstat(f.fileno())
+        n['need'](stamp(before)==stamp(st) and stat.S_ISREG(st.st_mode) and st.st_nlink==1 and
+                  st.st_uid==os.getuid() and stat.S_IMODE(st.st_mode)==0o600 and st.st_size<=768*1024)
+        raw = f.read(768*1024+1)
+        n['need'](len(raw)==st.st_size and stamp(os.fstat(f.fileno()))==stamp(st) and
+                  stamp(path.lstat())==stamp(st))
+    return n['strict'](raw), hashlib.sha256(raw).hexdigest()
+
+
+def rejection_trace(r, job, epoch, diag):
+    n = CORE_RELOAD_SUPPORT
+    need = n['need']
+    n['timeline_shape'](r)
+    if r['code']=='OPERATION_MISMATCH':
+        # The cache retains only the latest operation (for example a later manual
+        # stop). This response is NOT rejection evidence. The original strictly
+        # bound root-peer response above is authority; fresh same-binary status,
+        # config/selection and census are still mandatory before committing.
+        need(type(r['timeline_schema']) is int and r['timeline_schema']==1 and
+             r['helper_epoch']==epoch and r['config_identity']==job['before']['config']['identity'] and
+             n['hexstr'](r['operation_id'],32) and r['operation_id']!=job['operation_id'] and r['trace'] is None)
+        return
+    n['read_check'](r, job['before']['config']['identity'], job['operation_id'], epoch)
+    t = r['trace']
+    need(t['authority']=='AUXILIARY_NOT_AUTHORITY' and t['operation_id']==job['operation_id'] and
+         t['helper_epoch']==epoch and t['config_identity']==job['before']['config']['identity'] and
+         t['operation']=='RELOAD' and t['source']=='MANUAL_RELOAD' and t['state']=='FINISHED' and
+         t['lifecycle_result']=='FAILED' and t['helper_return']=='FAILED' and
+         t['web_return']=='NOT_ATTEMPTED' and t['receipt_result']=='NOT_ATTEMPTED' and t['diagnostics']==diag and
+         type(t['finished_at']) is str)
+    # No CORE stream is expected: global gap may ONLY describe missing CORE observation.
+    need(len(t['streams'])==1 and t['streams'][0]['role']=='HELPER')
+    observation = t['core_observation']
+    need(observation==dict(availability='NOT_OBSERVED', captured_at=None, helper_receive_elapsed_ns=None,
+                          age_ns=None, clock_id=None, phase=None, gap=True) and t['gap'] is True)
+    s = t['streams'][0]
+    need(s['gap'] is False and s['dropped_events']=='0' and s['first_missing_seq'] is None and
+         s['current'] is None and n['hexstr'](s['clock_id'],32))
+    p = s['provenance']
+    need(p==dict(version=job['tag'], git_revision=job['revision'], dirty=False, sha256=job['digest'],
+                 sha_kind='FILE_BYTES', execution_mapping='NOT_ATTESTED'))
+    # Only this complete source-confirmed pre-stop sequence qualifies. New stages
+    # require review; absence of CORE events alone is never evidence of no stop.
+    expected = [('HELPER_ACCEPT','OBSERVATION','OK','PREFLIGHT',None),
+                ('HELPER_PREFLIGHT_CAPTURE','BEGIN','NONE','PREFLIGHT','1'),
+                ('HELPER_PREFLIGHT_CAPTURE','END','OK','PREFLIGHT','1'),
+                ('HELPER_PREFLIGHT_COMPILE','BEGIN','NONE','PREFLIGHT','2'),
+                ('HELPER_PREFLIGHT_COMPILE','END','FAILED','PREFLIGHT','2'),
+                ('HELPER_FINISH','OBSERVATION','FAILED','FINALIZE',None)]
+    need(s['generated_events']=='6' and s['retained_ranges']==[dict(first='1',last='6')] and len(s['events'])==6)
+    reconciliation_stream(t,s,expected,'FAILED')
+
+
+def reconciliation_stream(t, s, expected, result):
+    """Shared narrow complete HELPER stream scalar/span/terminal checks."""
+    need = CORE_RELOAD_SUPPORT['need']
+    # Match Go's canonical UTC RFC3339Nano and uint64 decimal codecs.
+    import calendar
+    def decimal(value):
+        need(type(value) is str and re.fullmatch(r'0|[1-9][0-9]{0,19}',value) is not None)
+        value = int(value)
+        need(value <= 18446744073709551615)
+        return value
+    def wall(value):
+        need(type(value) is str)
+        m = re.fullmatch(r'([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{0,8}[1-9]))?Z',value)
+        need(m is not None)
+        year, month, day, hour, minute, second = map(int,m.groups()[:6])
+        need(1<=month<=12 and 1<=day<=calendar.monthrange(year,month)[1] and hour<24 and minute<60 and second<60)
+        return (year,month,day,hour,minute,second,int((m[7] or '').ljust(9,'0')))
+    started, finished, origin = wall(t['started_at']), wall(t['finished_at']), wall(s['origin_at'])
+    need(started<=origin<=finished)
+    previous, previous_at, spans = -1, origin, {}
+    for seq, e in enumerate(s['events'], 1):
+        if expected is not None:
+            need(tuple(e[k] for k in ('stage','state','code','segment','span_id'))==expected[seq-1] and
+                 e['job']=='NOT_OBSERVED' and e['tun']=='NOT_OBSERVED' and
+                 all(e[k] is None for k in ('round','ordinal','rule_count','completed_count')))
+        need(e['seq']==str(seq) and e['state'] in ('BEGIN','END','OBSERVATION'))
+        for k in ('round','ordinal','rule_count','completed_count'):
+            if e[k] is not None:
+                decimal(e[k])
+        elapsed, at = decimal(e['elapsed_ns']), wall(e['at'])
+        need(elapsed>=previous and previous_at<=at<=finished)
+        if e['state']=='BEGIN':
+            need(e['span_id'] is not None and decimal(e['span_id'])>0 and e['span_id'] not in spans and
+                 len(spans)<16 and e['duration_ns'] is None)
+            spans[e['span_id']] = e
+        elif e['state']=='END':
+            need(bool(spans) and e['span_id']==next(reversed(spans)))
+            begin = spans.pop(e['span_id'])
+            need(decimal(e['duration_ns'])==elapsed-decimal(begin['elapsed_ns']) and
+                 all(e[k]==begin[k] for k in ('span_id','stage','segment')))
+        else:
+            need(e['span_id']==(next(reversed(spans)) if spans else None) and e['duration_ns'] is None)
+        previous, previous_at = elapsed, at
+    need(not spans)
+    terminal = s['terminal']
+    need(type(terminal) is dict and terminal['result']==result and
+         decimal(terminal['elapsed_ns'])>=previous and s['elapsed_ns']==terminal['elapsed_ns'] and
+         previous_at<=wall(terminal['at'])<=finished)
+
+
+def reconciliation_worker_absent(pid, timeout=5):
+    # A reused PID also blocks; never signal it or break a lock. Require a full,
+    # nonempty successfully parsed census, not an ambiguous ps -p nonzero exit.
+    i.require(type(pid) is int and pid>0, 'CORE_RELOAD_CLAIM')
+    result = subprocess.run(['/bin/ps','-ww','-axo','pid=,uid=,lstart=,command='],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+                            env={'PATH':'/usr/bin:/bin','LC_ALL':'C','LANG':'C'})
+    i.require(result.returncode==0 and not result.stderr, 'CORE_RELOAD_WORKER_READ')
+    rows = result.stdout.decode('utf-8').splitlines()
+    i.require(bool(rows), 'CORE_RELOAD_WORKER_READ')
+    pids = set()
+    for row in rows:
+        f = row.split(None,7)
+        i.require(len(f)==8 and re.fullmatch(r'[1-9][0-9]*',f[0]) and
+                  re.fullmatch(r'-?[0-9]+',f[1]) and
+                  re.fullmatch(r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}', ' '.join(f[2:7])) and
+                  int(f[0]) not in pids, 'CORE_RELOAD_WORKER_READ')
+        pids.add(int(f[0]))
+    i.require(pid not in pids, 'CORE_RELOAD_WORKER_PRESENT')
+
+
+def reconciliation_config(pin):
+    n = CORE_RELOAD_SUPPORT
+    n['shape'](pin,'identity config selection')
+    n['need'](n['hexstr'](pin['identity'],64) and n['hexstr'](pin['config'],64) and
+              (pin['selection'] is None or n['hexstr'](pin['selection'],64)))
+
+
+def reconciliation_core(core, app):
+    n = CORE_RELOAD_SUPPORT
+    n['shape'](core,'pid uid birth command')
+    n['need'](type(core['pid']) is int and core['pid']>0 and type(core['uid']) is int and core['uid']==0 and
+              type(core['birth']) is str and bool(core['birth']) and type(core['command']) is str and
+              core['command'].startswith(str(app/'service/anytls-macos')+' '))
+
+
+def reconciliation_stop_response(r, op, epoch, job):
+    n = CORE_RELOAD_SUPPORT
+    n['shape'](r,'timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics')
+    n['need'](type(r['timeline_schema']) is int and r['timeline_schema']==1 and r['code']=='' and
+              r['ok'] is True and r['loaded'] is False and r['running'] is False and
+              r['operation_id']==op and r['helper_epoch']==epoch and r['timeline_availability']=='AVAILABLE' and
+              r['helper_sha256']==job['digest'] and r['helper_version']==job['tag'] and
+              r['config_identity']==job['before']['config']['identity'])
+    reconciliation_stop_diagnostics(r['diagnostics'])
+
+
+def reconciliation_stop_diagnostics(d):
+    n = CORE_RELOAD_SUPPORT
+    n['diagnostics'](d,reload=False)
+    n['need'](d['operation']=='STOP' and d['job']=='UNLOADED' and d['tun'] in ('NOT_OBSERVED','NOT_TUN','UNKNOWN'))
+
+
+def reconciliation_stop_trace(r, op, epoch, job):
+    n = CORE_RELOAD_SUPPORT
+    identity = job['before']['config']['identity']
+    n['read_check'](r,identity,op,epoch)
+    t = r['trace']
+    n['need'](t['authority']=='AUXILIARY_NOT_AUTHORITY' and t['operation_id']==op and
+              t['helper_epoch']==epoch and t['config_identity']==identity and t['operation']=='STOP' and
+              t['source']=='MANUAL_STOP' and t['state']=='FINISHED' and
+              t['lifecycle_result']=='SUCCEEDED' and t['helper_return']=='SUCCEEDED' and
+              t['web_return']=='NOT_ATTEMPTED')
+    reconciliation_stop_diagnostics(t['diagnostics'])
+    n['need'](len(t['streams'])==1 and t['streams'][0]['role']=='HELPER')
+    s = t['streams'][0]
+    n['need'](s['provenance']==dict(version=job['tag'],git_revision=job['revision'],dirty=False,
+              sha256=job['digest'],sha_kind='FILE_BYTES',execution_mapping='NOT_ATTESTED') and
+              s['gap'] is False and s['dropped_events']=='0' and s['first_missing_seq'] is None and
+              s['current'] is None and n['hexstr'](s['clock_id'],32) and len(s['events'])>=4 and
+              s['generated_events']==str(len(s['events'])) and
+              s['retained_ranges']==[dict(first='1',last=str(len(s['events'])))])
+    # STOP may include lifecycle STOP/RESTORE spans, not RELOAD's preflight.
+    n['need'](s['events'][0]['stage']=='HELPER_ACCEPT' and s['events'][-1]['stage']=='HELPER_FINISH' and
+              s['events'][-1]['code']=='OK' and
+              any(e['stage']=='HELPER_FINAL_STATE' and e['state']=='END' and e['code']=='OK' for e in s['events']))
+    reconciliation_stream(t,s,None,'SUCCEEDED')
+
+
+def reconcile_preflight(app, root):
+    """No archive/replay: append one distinct terminal proof, unlink pending LAST."""
+    reconciliation_lock_required(app)
+    n = CORE_RELOAD_SUPPORT
+    need, shape = n['need'], n['shape']
+    deadline = time.monotonic()+25
+    def remaining():
+        left = deadline-time.monotonic()
+        need(left>0, 'CORE_RELOAD_DEADLINE')
+        return min(5,left)
+    op = root.name.removeprefix('.core-reload-')
+    need(n['hexstr'](op,32) and root.parent.resolve(strict=True)==app.resolve(strict=True))
+    st = root.lstat()
+    need(stat.S_ISDIR(st.st_mode) and st.st_uid==os.getuid() and stat.S_IMODE(st.st_mode)==0o700)
+    need(root.resolve(strict=True)==root and not os.path.lexists(root/'accepted.json') and
+         not os.path.lexists(root/'timeline.json'))
+    names = ('job.json','intent.json','response.json','result.json','claim.json')
+    receipts = {name:reconciliation_receipt(root,name) for name in names}
+    hashes = {name:value[1] for name,value in receipts.items()}
+    job, intent, response, result, claim = [receipts[name][0] for name in names]
+    shape(job,'app operation_id digest tag revision before')
+    shape(intent,'operation_id helper_epoch action allow_insecure single_dispatch')
+    shape(result,'state operation_id error_class code')
+    shape(claim,'pid')
+    need(result==dict(state='UNKNOWN',operation_id=op,error_class='ValueError',code='CORE_RELOAD_INVALID') and
+         job['app']==str(app) and job['operation_id']==op and n['hexstr'](job['digest'],64) and
+         n['hexstr'](job['revision'],40) and type(job['tag']) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',job['tag']))
+    shape(job['before'],'state config core' + (' status' if 'status' in job['before'] else ''))
+    need(job['before']['state']=='RUNNING' and type(claim['pid']) is int and claim['pid']>0)
+    if 'status' in job['before']:
+        prior = job['before']['status']
+        need(type(prior) is dict and n['hexstr'](prior.get('helper_sha256'),64) and
+             type(prior.get('helper_version')) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',prior['helper_version']))
+        n['status_check'](prior,prior['helper_sha256'],prior['helper_version'],job['before']['config']['identity'])
+        need(prior['loaded'] is True and prior['running'] is True)
+    pin, old = job['before']['config'], job['before']['core']
+    reconciliation_config(pin)
+    reconciliation_core(old,app)
+    epoch = intent['helper_epoch']
+    need(intent['operation_id']==op and n['hexstr'](epoch,32) and intent['action']=='reload' and
+         type(intent['allow_insecure']) is bool and intent['single_dispatch'] is True)
+    shape(response,'timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics')
+    diag = dict(schema=1, operation='RELOAD', outcome='FAILED', stage='HELPER_PREFLIGHT', reason='PREFLIGHT_REJECTED',
+                rollback='NOT_ATTEMPTED',restoration='NOT_ATTEMPTED',cleanup='NOT_ATTEMPTED',
+                receipt='NOT_ATTEMPTED',job='NOT_OBSERVED',tun='NOT_OBSERVED')
+    shape(response['diagnostics'],'schema operation outcome stage reason rollback restoration cleanup receipt job tun')
+    need(type(response['diagnostics']['schema']) is int and response['diagnostics']==diag and
+         type(response['timeline_schema']) is int and response['timeline_schema']==1 and
+         response['code']=='PREFLIGHT_FAILED' and response['ok'] is False and
+         response['loaded'] is False and response['running'] is False and response['operation_id']==op and
+         response['helper_epoch']==epoch and response['timeline_availability']=='AVAILABLE' and
+         response['helper_sha256']==job['digest'] and response['helper_version']==job['tag'] and response['config_identity']==pin['identity'])
+    marker_path = root/'reconciled.json'
+    if os.path.lexists(marker_path):
+        marker, _ = reconciliation_receipt(root,'reconciled.json')
+        shape(marker,'schema status operation_id helper_epoch receipt_sha256 helper_read current stop_sha256')
+        need(type(marker['schema']) is int and marker['schema']==1 and marker['status']=='RECONCILED_PREFLIGHT_REJECTED' and
+             marker['operation_id']==op and marker['helper_epoch']==epoch and marker['receipt_sha256']==hashes and
+             not os.path.lexists(root/'pending.json'))
+        rejection_trace(marker['helper_read'],job,epoch,diag)
+        shape(marker['current'],'state config core status')
+        current = marker['current']
+        n['status_check'](current['status'],job['digest'],job['tag'],pin['identity'])
+        reconciliation_config(current['config'])
+        need(current['config']['identity']==pin['identity'])
+        if current['core'] is not None:
+            reconciliation_core(current['core'],app)
+        need(current['state']=='STOPPED' and current['core'] is None and
+             current['status']['loaded'] is False and current['status']['running'] is False)
+        stop_names = {name for name in ('stop-intent.json','stop-read.json','stop-response.json') if os.path.lexists(root/name)}
+        need(type(marker['stop_sha256']) is dict and set(marker['stop_sha256'])==stop_names and
+             stop_names in (set(),{'stop-intent.json','stop-read.json'},{'stop-intent.json','stop-read.json','stop-response.json'}))
+        if marker['stop_sha256']:
+            stop_intent = reconciliation_receipt(root,'stop-intent.json')[0]
+            shape(stop_intent,'operation_id helper_epoch action allow_insecure single_dispatch')
+            need(n['hexstr'](stop_intent['operation_id'],32) and stop_intent['operation_id']!=op and
+                 stop_intent==dict(operation_id=stop_intent['operation_id'],helper_epoch=epoch,action='stop',allow_insecure=False,single_dispatch=True) and
+                 stop_intent['allow_insecure'] is False and stop_intent['single_dispatch'] is True)
+            reconciliation_stop_trace(reconciliation_receipt(root,'stop-read.json')[0],stop_intent['operation_id'],epoch,job)
+            if 'stop-response.json' in stop_names:
+                reconciliation_stop_response(reconciliation_receipt(root,'stop-response.json')[0],stop_intent['operation_id'],epoch,job)
+            need(all(n['hexstr'](digest,64) and reconciliation_receipt(root,name)[1]==digest for name,digest in marker['stop_sha256'].items()))
+        return True
+    pending, _ = reconciliation_receipt(root,'pending.json')
+    need(pending==dict(operation_id=op))
+    reconciliation_worker_absent(claim['pid'],timeout=remaining())
+    fresh_pin = n['config_pin'](app)
+    reconciliation_config(fresh_pin)
+    need(fresh_pin['identity']==pin['identity'])
+    def unchanged():
+        need(n['config_pin'](app)==fresh_pin and n['file_hash'](app/'anytls-macos')==job['digest'] and
+             n['helper_hash']()==job['digest'])
+        remaining()  # Hashing/filesystem calls are not interruptible by this budget.
+    def current_read():
+        unchanged()
+        status = n['status_check'](n['request'](dict(action='status',allow_insecure=False),timeout=remaining()),job['digest'],job['tag'],pin['identity'])
+        cores = n['processes'](app,timeout=remaining())
+        for core in cores:
+            reconciliation_core(core,app)
+        need((status['loaded'] is False and status['running'] is False and cores==[]) or
+             (status['loaded'] is True and status['running'] is True and len(cores)==1))
+        unchanged()
+        return dict(state='RUNNING' if cores else 'STOPPED',config=fresh_pin,core=cores[0] if cores else None,status=status)
+    current = current_read()
+    timeline = n['request'](dict(timeline_schema=1,action='startup.read',operation_id=op),timeout=remaining())
+    rejection_trace(timeline,job,epoch,diag)  # original epoch MUST still be known
+    stop_hashes = {}
+    need(os.path.lexists(root/'stop-intent.json') or
+         not any(os.path.lexists(root/name) for name in ('stop-read.json','stop-response.json')))
+    if current['state']=='RUNNING' or os.path.lexists(root/'stop-intent.json'):
+        # One new STOP, never replay the rejected reload or an uncertain STOP.
+        if not os.path.lexists(root/'stop-intent.json'):
+            unchanged()
+            n['put'](root,'stop-intent.json',dict(operation_id=i.uuid.uuid4().hex,helper_epoch=epoch,
+                     action='stop',allow_insecure=False,single_dispatch=True))
+            new_stop = True
+        else:
+            new_stop = False
+        stop_intent = reconciliation_receipt(root,'stop-intent.json')[0]
+        shape(stop_intent,'operation_id helper_epoch action allow_insecure single_dispatch')
+        stop_op = stop_intent['operation_id']
+        need(n['hexstr'](stop_op,32) and stop_op!=op and stop_intent['helper_epoch']==epoch and
+             stop_intent['action']=='stop' and stop_intent['allow_insecure'] is False and stop_intent['single_dispatch'] is True)
+        received = False
+        if new_stop:
+            began = time.monotonic()
+            try:
+                reply = n['request'](dict(timeline_schema=1,action='stop',operation_id=stop_op,allow_insecure=False),timeout=300)
+                received = True
+            except OSError:
+                pass  # Transport loss only; decode/frame/peer errors must HOLD.
+            finally:
+                deadline += time.monotonic()-began  # STOP has its own bounded lifecycle budget.
+            if received:
+                n['put'](root,'stop-response.json',reply)
+                need(os.path.lexists(root/'stop-response.json'))
+        if os.path.lexists(root/'stop-response.json'):
+            reconciliation_stop_response(reconciliation_receipt(root,'stop-response.json')[0],stop_op,epoch,job)
+        stopped = n['request'](dict(timeline_schema=1,action='startup.read',operation_id=stop_op),timeout=remaining())
+        reconciliation_stop_trace(stopped,stop_op,epoch,job)
+        if not os.path.lexists(root/'stop-read.json'):
+            n['put'](root,'stop-read.json',stopped)
+        else:
+            reconciliation_stop_trace(reconciliation_receipt(root,'stop-read.json')[0],stop_op,epoch,job)
+        stop_hashes = {name:reconciliation_receipt(root,name)[1] for name in
+                       ('stop-intent.json','stop-read.json','stop-response.json') if os.path.lexists(root/name)}
+        current = current_read()
+    need(current['state']=='STOPPED' and current_read()==current)
+    reconciliation_worker_absent(claim['pid'],timeout=remaining())
+    need(all(reconciliation_receipt(root,name)==receipts[name] for name in names) and
+         reconciliation_receipt(root,'pending.json')[0]==pending and
+         all(getattr(root.lstat(),k)==getattr(st,k) for k in ('st_dev','st_ino','st_mode','st_uid','st_gid')))
+    unchanged()
+    proof = dict(schema=1,status='RECONCILED_PREFLIGHT_REJECTED',operation_id=op,helper_epoch=epoch,
+                 receipt_sha256=hashes,helper_read=timeline,current=current,stop_sha256=stop_hashes)
+    remaining()
+    n['put'](root,'reconciled.json',proof)
+    need(reconciliation_receipt(root,'reconciled.json')[1]==hashlib.sha256(n['json'].dumps(proof,sort_keys=True).encode()).hexdigest())
+    need(all(reconciliation_receipt(root,name)==receipts[name] for name in names) and current_read()==current and
+         reconciliation_receipt(root,'pending.json')[0]==pending)
+    reconciliation_worker_absent(claim['pid'],timeout=remaining())
+    reconciliation_lock_required(app)
+    need(all(reconciliation_receipt(root,name)[1]==digest for name,digest in stop_hashes.items()))
+    unchanged()  # full installed app SHA and current content fence before unlink
+    remaining()
+    # No subsequent operation may fail: crash resurrection is conservative HOLD.
+    # A marker plus pending is NOT automatically resumed after uncertain fsync.
+    (root/'pending.json').unlink()
+    return True
 
 
 class CoreReload:

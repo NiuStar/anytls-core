@@ -57,7 +57,13 @@ curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | ba
 
 重连使用独立后台 worker 和私有持久回执，避免终端／SSH 断开造成重复控制请求。成功必须核验本次操作、新核心来源和运行状态；超时、断连或回执身份不明记为 UNKNOWN，保留输出的事务目录，**不要为了取得回执重复运行安装命令**。安装成功、核心切换成功和实际网络／浏览器验收是分别的结果；184 等目标机的真实原生安装与网络仍需本机测试。
 
-新默认不会自动清除或重试历史 UNKNOWN／pending，包括此前因节点跳验权限不足而预检失败的事务；必须保留原回执并先只读核对，再另行决定是否授权新操作。仅安装脚本策略变化，不修改 `VERSION`、Go 核心或既有二进制包，不要求新核心版本。
+只有严格证明为**停止旧核心之前的助手预检拒绝**时，一键安装器会自动对账解除阻断，**不归档、不删除事务目录、不重发旧请求**。完整安装（包括 `--no-reload-core`）及仅更新模式均在安装独占锁内先检查历史回执；没有历史事务时不增加助手读取。对账要求原 `response.json` 为 root-peer IPC worker 留存且与 job／intent／UNKNOWN result／claim 严格绑定的 `PREFLIGHT_FAILED`、`HELPER_PREFLIGHT`、`PREFLIGHT_REJECTED`，没有 stop／start／cleanup／receipt 写入证据；同时核对当前用户程序与助手的完整 SHA／tag／配置物理路径身份、本次开始时捕获的当前配置及选择文件摘要、完整进程清单及 worker 已退出。不要求当前内容或核心 PID 与历史相同，不恢复旧配置。若当前 VPN 正在运行，安装器在同一安装锁内主动请求一次 STOP，然后要求助手确认未加载未运行且清单确认核心为空，才继续对账和安装；已停止时不发送 STOP。此恢复路径保持 VPN 停止，后续安装不会因此自动启动，用户可安装完成后自行开启。
+
+对原 operation 发出一次只读 `startup.read`：若旧 timeline 仍在，必须是完整无丢失 HELPER 预检失败流；缺少 CORE 观察造成的全局 gap 不等于 HELPER 流缺失。若已被后续手动停止等操作轮换，只接受同助手 epoch／配置身份的严格 `OPERATION_MISMATCH`（新 operation、trace=null）；mismatch 本身不是失败证据，停止前拒绝的 authority 仍是同一完整助手二进制原先返回并持久化的严格 response，不支持无 response／发送超时等泛化 UNKNOWN。助手 epoch、用户程序／助手完整二进制或配置物理路径变化、本次检查中当前配置／选择再次变化、无法确认核心停止、活动 worker、证据不全或畸形均继续阻断并要求核对。
+
+主动停止使用独立新 operation，先独占持久写入 `stop-intent.json` 再发送一次 root-peer 认证的 STOP；保留回复和精确 operation 的 `startup.read` 停止成功证明。超时／丢失回复不盲目重发，后续仅读取同一 operation，并确认当前助手及空核心清单；无法确认则保留 pending。只读检查共享约 25 秒预算，各 IPC／进程读取使用剩余超时，写 marker 和删除 pending 前均检查预算；STOP 本身另有 300 秒请求上限，不承诺所有文件系统阻塞的硬总时限。
+
+成功对账只独占写入 `reconciled.json`，状态为独立的 `RECONCILED_PREFLIGHT_REJECTED`（不是 `SUCCEEDED`／`accepted`），包含原回执摘要、operation／epoch、助手只读回复、独立 STOP 证明摘要（若有）与当前 STOPPED 状态／当前配置 pin；历史 config／selection 摘要仍保留在原 job 中；文件及目录 fsync 并读回后，最后才删除本事务的 `pending.json`。原 job／intent／response／UNKNOWN result／claim 字节保持，整个目录原地保留。后续 guard 重新核对所有绑定摘要；回执被改动／删除、对账写入／同步／读回失败或 pending 因崩溃重新出现都保守阻断，不自动重写或继续未确认的提交。旧 SUCCEEDED 但未经原父进程 accepted 的事务仍不自动清除。仅安装脚本变化，不修改 `VERSION`、Go 核心或既有二进制包。
 
 该功能由可信 main 安装脚本提供，不改变既有 `v2026-11-04-01` 二进制包；`--version` 固定下载包，不固定安装脚本版本。
 

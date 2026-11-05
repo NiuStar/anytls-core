@@ -18,7 +18,7 @@ curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | ba
 curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | bash -s -- --no-reload-core
 ```
 
-显式 `--reload-core` 仍可使用；下载检查和仅更新模式不重连。安装后的这次重连默认遵循节点 TLS 配置：已有 `skip-cert-verify: true` 无需二次确认，CA／pin 节点仍按原规则校验，不强制所有节点跳验，也不放宽发行下载 HTTPS、DoH 或 Google 等目标站点 TLS。身份检查、一次性操作回执与 UNKNOWN 处理见[安装说明](docs/install-binary.md#安装完成后默认重连核心)；无需为此重新发布内嵌核心二进制。
+显式 `--reload-core` 仍可使用；下载检查和仅更新模式不重连。安装后的这次重连默认遵循节点 TLS 配置：已有 `skip-cert-verify: true` 无需二次确认，CA／pin 节点仍按原规则校验，不强制所有节点跳验，也不放宽发行下载 HTTPS、DoH 或 Google 等目标站点 TLS。身份检查、一次性操作回执与 UNKNOWN 处理见[安装说明](docs/install-binary.md#安装完成后默认重连核心)；仅对严格证明为停止前助手预检拒绝的历史事务自动对账解除阻断，原事务原地保留、不归档、不重发旧 reload。该恢复路径若 VPN 仍运行会主动停止一次，确认停止后继续安装，不恢复旧配置，也不会自动重新开启 VPN；其他 UNKNOWN 仍需只读核对。无需为此重新发布内嵌核心二进制。
 
 若首个 `raw.githubusercontent.com` 请求出现 TLS reset／无法连接，改用 **GitHub 官方 API** 取得同一 `main/get.sh`（不是第三方镜像）：
 
