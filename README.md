@@ -18,7 +18,7 @@ curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | ba
 curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | bash -s -- --no-reload-core
 ```
 
-显式 `--reload-core` 仍可使用；下载检查和仅更新模式不重连。身份检查、一次性操作回执与 UNKNOWN 处理见[安装说明](docs/install-binary.md#安装完成后默认重连核心)；无需为此重新发布内嵌核心二进制。
+显式 `--reload-core` 仍可使用；下载检查和仅更新模式不重连。安装后的这次重连默认遵循节点 TLS 配置：已有 `skip-cert-verify: true` 无需二次确认，CA／pin 节点仍按原规则校验，不强制所有节点跳验，也不放宽发行下载 HTTPS、DoH 或 Google 等目标站点 TLS。身份检查、一次性操作回执与 UNKNOWN 处理见[安装说明](docs/install-binary.md#安装完成后默认重连核心)；无需为此重新发布内嵌核心二进制。
 
 若首个 `raw.githubusercontent.com` 请求出现 TLS reset／无法连接，改用 **GitHub 官方 API** 取得同一 `main/get.sh`（不是第三方镜像）：
 
@@ -151,7 +151,7 @@ anytls status
 anytls stop
 ```
 
-严格 CA 模式要求 CA PEM；节点可使用 `fingerprint: '<64位十六进制 SHA-256>'` 固定**完整叶证书 DER**（大小写均接受，读取后规范为小写），与 `client-fingerprint: chrome`／`golang` 的 ClientHello 配置完全不同。`fingerprint` 是可选的 pin-only 身份认证，不校验证书 CA 链、主机名或有效期；必须由可信渠道独立取得，证书更新后需更新指纹。不得与 `ca`、`certificate-public-key-sha256` 或 `skip-cert-verify: true` 混用；空值、null、非字符串、非64位十六进制均拒绝，不会退回跳过校验。纯数字指纹也必须加引号。原有 `certificate-public-key-sha256` 仍表示固定公钥 SPKI 的 base64 SHA-256，不是完整证书指纹；两种 pin-only 模式均无需本地 CA 文件，不提供公共 CA／主机名校验。已有跳过校验节点仍需显式确认；它不提供服务器身份安全保证。sudo 密码只在本机终端输入，不发到聊天。
+严格 CA 模式要求 CA PEM；节点可使用 `fingerprint: '<64位十六进制 SHA-256>'` 固定**完整叶证书 DER**（大小写均接受，读取后规范为小写），与 `client-fingerprint: chrome`／`golang` 的 ClientHello 配置完全不同。`fingerprint` 是可选的 pin-only 身份认证，不校验证书 CA 链、主机名或有效期；必须由可信渠道独立取得，证书更新后需更新指纹。不得与 `ca`、`certificate-public-key-sha256` 或 `skip-cert-verify: true` 混用；空值、null、非字符串、非64位十六进制均拒绝，不会退回跳过校验。纯数字指纹也必须加引号。原有 `certificate-public-key-sha256` 仍表示固定公钥 SPKI 的 base64 SHA-256，不是完整证书指纹；两种 pin-only 模式均无需本地 CA 文件，不提供公共 CA／主机名校验。已有跳过校验节点不提供服务器身份安全保证；完整安装后的受控重连默认接受节点配置，无需二次确认，CLI 的独立确认规则不变。sudo 密码只在本机终端输入，不发到聊天。
 
 ### 显式关闭 SNI（默认不变）
 

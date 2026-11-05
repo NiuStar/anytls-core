@@ -96,7 +96,7 @@ class Worker(unittest.TestCase):
         self.status = dict(ok=True, code='', message='status', loaded=True, running=True,
                            helper_sha256=self.digest, helper_version=self.tag, config_identity=self.identity)
         self.old = dict(pid=40, uid=0, birth='Wed Nov  4 01:02:03 2026', command=str(self.app / 'service/anytls-macos') + ' -config old -network tun run')
-        self.new = dict(pid=41, uid=0, birth='Wed Nov  4 01:02:05 2026', command=self.n['core_command'](self.app, self.op, self.epoch))
+        self.new = dict(pid=41, uid=0, birth='Wed Nov  4 01:02:05 2026', command=str(self.app/'service/anytls-macos') + ' -config ' + str(self.app/'service/config.yaml') + ' -network tun -record-service -allow-insecure -startup-operation ' + self.op + ' -startup-epoch ' + self.epoch + ' -dns-observe-service run')
         self.diag = dict(schema=1, operation='RELOAD', outcome='SUCCEEDED', stage='NONE', reason='NONE',
                          rollback='NOT_ATTEMPTED', restoration='NOT_ATTEMPTED', cleanup='NOT_ATTEMPTED',
                          receipt='WRITTEN', job='RUNNING', tun='TUN')
@@ -129,7 +129,7 @@ class Worker(unittest.TestCase):
             if q['action'] == 'startup.read':
                 return json.loads(json.dumps(self.cap if q['operation_id'] is None else self.trace))
             self.assertTrue((self.tx / 'intent.json').is_file(), 'intent must be durable BEFORE send')
-            self.assertEqual(q, dict(timeline_schema=1, action='reload', operation_id=self.op, allow_insecure=False))
+            self.assertEqual(q, dict(timeline_schema=1, action='reload', operation_id=self.op, allow_insecure=True))
             return json.loads(json.dumps(self.response))
         self.n['request'] = request
         self.n['helper_hash'] = lambda: self.digest
@@ -150,6 +150,13 @@ class Worker(unittest.TestCase):
         self.assertEqual(result['state'], 'SUCCEEDED')
         self.assertEqual(result['operation_id'], self.op)
         self.assertEqual(result['new_core'], self.new)
+        intent = json.loads((self.tx/'intent.json').read_bytes())
+        self.assertIs(intent['allow_insecure'], True)
+        self.assertEqual(self.n['core_command'](self.app, self.op, self.epoch), self.new['command'])
+        for q in self.requests:
+            if q['action'] == 'status':
+                self.assertEqual(q, dict(action='status', allow_insecure=False))
+                self.assertIs(q['allow_insecure'], False)
         self.assertEqual([q['action'] for q in self.requests], ['status', 'startup.read', 'status', 'reload', 'startup.read', 'status'])
         self.assertEqual((self.tx/'intent.json').stat().st_mode & 0o777, 0o600)
         self.assertNotIn('private fixture', ''.join(p.read_text() for p in self.tx.iterdir()))
@@ -163,6 +170,65 @@ class Worker(unittest.TestCase):
                 self.assertFalse(any(q['action']=='reload' for q in self.requests))
                 for p in self.tx.iterdir(): p.unlink()
                 self.status[key] = dict(helper_sha256=self.digest, helper_version=self.tag, config_identity=self.identity, running=True)[key]
+
+    def test_worker_uses_authenticated_transport_with_config_policy(self):
+        real = {'__name__': 'synthetic_transport'}
+        exec(b.CORE_RELOAD_WORKER, real)
+        fixture_request = self.n['request']
+        peers = []
+        def connect_socket(*args):
+            s = mock.MagicMock()
+            s.__enter__.return_value = s
+            peers.append(s)
+            def send(raw):
+                self.assertTrue(s.authenticated)
+                q = json.loads(raw)
+                if q['action'] == 'reload':
+                    self.assertIs(q['allow_insecure'], True)
+                    self.assertIs(json.loads((self.tx/'intent.json').read_bytes())['allow_insecure'], True)
+                response = fixture_request(q)
+                s.recv.side_effect = [json.dumps(response).encode(), b'']
+            s.authenticated = False
+            s.sendall.side_effect = send
+            return s
+        def authenticate(s):
+            s.connect.assert_called_once()
+            s.sendall.assert_not_called()
+            s.authenticated = True
+        real['root_peer'] = authenticate
+        self.n['request'] = real['request']
+        with mock.patch.object(real['socket'], 'socket', side_effect=connect_socket):
+            self.assertEqual(self.run_worker(), 0)
+        self.assertEqual(len(peers), 6)
+        self.assertEqual(sum(q['action']=='reload' for q in self.requests), 1)
+
+    def test_false_reload_policy_is_unknown_without_resend(self):
+        real = {'__name__': 'synthetic_transport'}
+        exec(b.CORE_RELOAD_WORKER, real)
+        fixture_request = self.n['request']
+        rejected = []
+        def request(q, timeout=5):
+            if q['action'] == 'reload':
+                self.requests.append(q)
+                rejected.append({**q, 'allow_insecure': False})
+                return real['request'](rejected[-1], timeout)
+            return fixture_request(q, timeout)
+        self.n['request'] = request
+        with mock.patch.object(real['socket'], 'socket', side_effect=AssertionError('reject before socket')):
+            self.assertEqual(self.run_worker(), 1)
+            self.assertEqual(self.n['worker'](self.tx), 1)
+        self.assertEqual(json.loads((self.tx/'result.json').read_bytes())['state'], 'UNKNOWN')
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(sum(q['action']=='reload' for q in self.requests), 1)
+
+    def test_missing_allow_flag_is_unknown_without_resend(self):
+        self.new['command'] = self.new['command'].replace(' -allow-insecure', '')
+        self.assertEqual(self.run_worker(), 1)
+        result = json.loads((self.tx/'result.json').read_bytes())
+        self.assertEqual(result['state'], 'UNKNOWN')
+        self.assertEqual(result['code'], 'CORE_RELOAD_NEW_PROCESS')
+        self.assertEqual(self.n['worker'](self.tx), 1)
+        self.assertEqual(sum(q['action']=='reload' for q in self.requests), 1)
 
     def test_post_send_uncertainty_never_resends(self):
         mutations = [lambda: self.response.update(operation_id='f'*32),
@@ -322,10 +388,12 @@ def tun_readback(): return 'utun123'
     def test_request_rejects_bad_payload_before_socket_and_auth_before_send(self):
         real={ '__name__':'synthetic_transport' }
         exec(b.CORE_RELOAD_WORKER,real)
-        for q in (dict(action='reload',allow_insecure=False),
-                  dict(timeline_schema=True,action='reload',operation_id=self.op,allow_insecure=False),
-                  dict(timeline_schema=1,action='reload',operation_id='INVALID',allow_insecure=False),
-                  dict(timeline_schema=1,action='reload',operation_id=self.op,allow_insecure=True)):
+        for q in (dict(action='reload',allow_insecure=True),
+                  dict(timeline_schema=True,action='reload',operation_id=self.op,allow_insecure=True),
+                  dict(timeline_schema=1,action='reload',operation_id='INVALID',allow_insecure=True),
+                  *(dict(timeline_schema=1,action='reload',operation_id=self.op,allow_insecure=value)
+                    for value in (False, 'true', 'false', 1, 0, None)),
+                  *(dict(action='status',allow_insecure=value) for value in (True, 'false', 0, None))):
             with mock.patch.object(real['socket'],'socket',side_effect=AssertionError('must reject before connect')):
                 with self.assertRaises(ValueError): real['request'](q)
         # Exercise actual transport sequencing with a synthetic socket, never native socket.

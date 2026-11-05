@@ -755,7 +755,7 @@ def request(q, timeout=5):
     else:
         shape(q, 'timeline_schema action operation_id allow_insecure')
         need(action == 'reload' and type(q['timeline_schema']) is int and q['timeline_schema'] == 1 and
-             hexstr(q['operation_id'], 32) and q['allow_insecure'] is False)
+             hexstr(q['operation_id'], 32) and q['allow_insecure'] is True)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         # Absolute deadline, not a per-recv timeout susceptible to a slow peer.
         deadline = time.monotonic() + timeout
@@ -868,7 +868,7 @@ def processes(app):
     return rows
 
 def core_command(app, op, epoch):
-    return str(app/'service/anytls-macos')+' -config '+str(app/'service/config.yaml')+' -network tun -record-service -startup-operation '+op+' -startup-epoch '+epoch+' -dns-observe-service run'
+    return str(app/'service/anytls-macos')+' -config '+str(app/'service/config.yaml')+' -network tun -record-service -allow-insecure -startup-operation '+op+' -startup-epoch '+epoch+' -dns-observe-service run'
 
 def tun_readback():
     # Kernel route lookup only: this sends no packet and performs no DNS/TLS.
@@ -972,9 +972,9 @@ def worker(root):
         status = status_check(request(dict(action='status',allow_insecure=False)),job['digest'],job['tag'],pin['identity'])
         need(status['loaded'] and status['running'], 'CORE_RELOAD_NOT_RUNNING')
         need(processes(app)==[job['before']['core']], 'CORE_RELOAD_PROCESS_DRIFT')
-        put(root,'intent.json',dict(operation_id=op,helper_epoch=epoch,action='reload',allow_insecure=False,single_dispatch=True))
+        put(root,'intent.json',dict(operation_id=op,helper_epoch=epoch,action='reload',allow_insecure=True,single_dispatch=True))
         sent = True  # even a partial write/disconnect is UNKNOWN; NEVER resend.
-        response = request(dict(timeline_schema=1,action='reload',operation_id=op,allow_insecure=False),300)
+        response = request(dict(timeline_schema=1,action='reload',operation_id=op,allow_insecure=True),300)
         put(root,'response.json',response)
         shape(response,'timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics')
         need(type(response['timeline_schema']) is int and response['timeline_schema']==1 and
