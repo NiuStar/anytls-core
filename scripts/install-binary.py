@@ -356,7 +356,26 @@ def installation_lock(app):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("another binary installer is running") from None
-        yield
+        # Close only: LOCK_UN would release the worker's inherited open-file
+        # description too, leaving a detached reload unprotected.
+        yield lock.fileno()
+
+
+def core_reload_guard(app):
+    # No journal means no helper/process reads, including explicit opt-out.
+    for root in app.glob('.core-reload-*'):
+        try:
+            regular(root/'result.json')
+            regular(root/'accepted.json')
+            result = i.strict_json((root/'result.json').read_bytes())
+            accepted = i.strict_json((root/'accepted.json').read_bytes())
+            safe = (not os.path.lexists(root/'pending.json') and type(result) is dict and
+                    result.get('state') == 'SUCCEEDED' and
+                    root.name == '.core-reload-' + result.get('operation_id', '') and
+                    accepted == dict(operation_id=result['operation_id'], result_sha256=sha256(root/'result.json')))
+        except (OSError, ValueError, KeyError, TypeError):
+            safe = False
+        i.require(safe, 'Core reload UNKNOWN/pending; do not install or dispatch again; inspect receipt: '+str(root))
 
 
 def canonical_ipv4(host):
@@ -545,8 +564,411 @@ def validate_helper_status(raw, digest, tag, identity):
     i.require(response["config_identity"] == identity, "HELPER_STATUS_CONFIG_MISMATCH")
 
 
-def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tty=None, webui_listen="0.0.0.0"):
+# Self-contained stdlib worker: never imports a deleted bootstrap/sibling script.
+# Native boundaries have named Python seams for LOCALONLY synthetic tests only;
+# no CLI/env setting can replace the production peer, process or hash checks.
+CORE_RELOAD_WORKER = r'''
+import ctypes, hashlib, json, os, re, signal, socket, stat, struct, subprocess, sys, time
+from pathlib import Path
+HELPER = Path('/Library/PrivilegedHelperTools/com.nousresearch.anytls-control/anytls-control')
+SOCKET = HELPER.parent / 'run/control.sock'
+
+def need(value, code='CORE_RELOAD_INVALID'):
+    if not value:
+        raise ValueError(code)
+
+def strict(raw):
+    def pairs(items):
+        obj = {}
+        for k, v in items:
+            need(k not in obj)
+            obj[k] = v
+        return obj
+    return json.loads(raw, object_pairs_hook=pairs,
+                      parse_constant=lambda value: need(False))
+
+def shape(obj, keys):
+    need(type(obj) is dict and obj.keys() == set(keys.split()))
+
+def hexstr(value, count):
+    return type(value) is str and re.fullmatch('[0-9a-f]{%d}' % count, value) is not None
+
+def file_hash(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as f:
+        st = os.fstat(f.fileno())
+        need(stat.S_ISREG(st.st_mode) and st.st_nlink == 1, 'CORE_RELOAD_FILE')
+        h = hashlib.sha256()
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            h.update(chunk)
+        def stable(v):
+            return (v.st_dev,v.st_ino,v.st_mode,v.st_uid,v.st_gid,v.st_nlink,v.st_size,v.st_mtime_ns,v.st_ctime_ns)
+        need(stable(os.fstat(f.fileno())) == stable(st) and stable(Path(path).lstat()) == stable(st), 'CORE_RELOAD_FILE_DRIFT')
+        return h.hexdigest()
+
+def config_pin(app):
+    config = app / 'config.yaml'
+    need(config.is_absolute() and config.resolve(strict=True) == config, 'CORE_RELOAD_CONFIG')
+    selection = app / 'config.yaml.selected'
+    return dict(identity=hashlib.sha256(str(config).encode()).hexdigest(),
+                config=file_hash(config), selection=file_hash(selection) if os.path.lexists(selection) else None)
+
+def helper_hash():
+    st = HELPER.lstat()
+    need(st.st_uid == 0 and not st.st_mode & 0o022, 'CORE_RELOAD_HELPER_FILE')
+    return file_hash(HELPER)
+
+def root_peer(sock):
+    lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    fn = lib.getpeereid
+    fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+    fn.restype = ctypes.c_int
+    uid, gid = ctypes.c_uint(), ctypes.c_uint()
+    need(fn(sock.fileno(), ctypes.byref(uid), ctypes.byref(gid)) == 0 and uid.value == 0,
+         'CORE_RELOAD_PEER_NOT_ROOT')
+
+def request(q, timeout=5):
+    action = q.get('action')
+    if action == 'status':
+        need(q == dict(action='status', allow_insecure=False) and q['allow_insecure'] is False)
+    elif action == 'startup.read':
+        shape(q, 'timeline_schema action operation_id')
+        need(type(q['timeline_schema']) is int and q['timeline_schema'] == 1 and
+             (q['operation_id'] is None or hexstr(q['operation_id'], 32)))
+    else:
+        shape(q, 'timeline_schema action operation_id allow_insecure')
+        need(action == 'reload' and type(q['timeline_schema']) is int and q['timeline_schema'] == 1 and
+             hexstr(q['operation_id'], 32) and q['allow_insecure'] is False)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        # Absolute deadline, not a per-recv timeout susceptible to a slow peer.
+        deadline = time.monotonic() + timeout
+        s.settimeout(timeout)
+        s.connect(str(SOCKET))
+        root_peer(s)  # authenticate before writing ANY request
+        s.sendall(json.dumps(q, separators=(',', ':')).encode())
+        s.shutdown(socket.SHUT_WR)
+        limit = 768*1024 if action == 'startup.read' else 4096
+        raw = bytearray()
+        while True:
+            left = deadline - time.monotonic()
+            need(left > 0, 'CORE_RELOAD_TIMEOUT')
+            s.settimeout(left)
+            chunk = s.recv(min(65536, limit + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+            need(len(raw) <= limit, 'CORE_RELOAD_FRAME')
+        return strict(raw.decode('utf-8'))
+
+def status_check(r, digest, tag, identity):
+    required = 'ok code message loaded running helper_version helper_sha256 config_identity'
+    need(type(r) is dict and set(required.split()) <= r.keys() and r.keys() <= set((required+' diagnostics').split()))
+    need(all(type(r[k]) is bool for k in ('ok','loaded','running')) and
+         all(type(r[k]) is str for k in ('code','message','helper_version','helper_sha256','config_identity')))
+    need(r['ok'] is True and r['code'] == '' and hexstr(r['helper_sha256'],64) and
+         r['helper_sha256'] == digest and r['helper_version'] == tag and r['config_identity'] == identity,
+         'CORE_RELOAD_STATUS_IDENTITY')
+    need(not r['running'] or r['loaded'], 'CORE_RELOAD_STATUS_STATE')
+    if 'diagnostics' in r:
+        diagnostics(r['diagnostics'], reload=False)
+    return r
+
+def diagnostics(d, reload=True):
+    shape(d, 'schema operation outcome stage reason rollback restoration cleanup receipt job tun')
+    need(type(d['schema']) is int and d['schema'] == 1 and
+         all(type(v) is str for k,v in d.items() if k != 'schema'))
+    enums = dict(operation='START RELOAD STOP', outcome='SUCCEEDED', stage='NONE', reason='NONE',
+                 rollback='NOT_ATTEMPTED VERIFIED FAILED UNKNOWN', restoration='NOT_ATTEMPTED VERIFIED FAILED UNKNOWN',
+                 cleanup='NOT_ATTEMPTED VERIFIED FAILED UNKNOWN', receipt='NOT_ATTEMPTED WRITTEN FAILED UNKNOWN',
+                 job='NOT_OBSERVED RUNNING NOT_RUNNING UNLOADED UNKNOWN', tun='NOT_OBSERVED TUN NOT_TUN UNKNOWN')
+    need(all(d[k] in values.split() for k,values in enums.items()))
+    if reload:
+        need(d['operation']=='RELOAD' and d['outcome']=='SUCCEEDED' and d['job']=='RUNNING' and
+             d['tun']=='TUN' and d['receipt']=='WRITTEN', 'CORE_RELOAD_DIAGNOSTICS')
+
+def timeline_shape(r):
+    # Source DTO shapes (internal/startuptimeline/types.go). Reject drift and
+    # wrong primitive/null types at every depth; this is not lifecycle authority.
+    event = dict.fromkeys('seq segment stage state code at elapsed_ns job tun'.split(),str)
+    event.update(dict.fromkeys('span_id duration_ns round ordinal rule_count completed_count'.split(),(str,type(None))))
+    phase = dict.fromkeys('stage segment span_id began_at began_elapsed_ns'.split(),str)
+    provenance = dict(version=(str,type(None)),git_revision=(str,type(None)),dirty=(bool,type(None)),
+                      sha256=(str,type(None)),sha_kind=str,execution_mapping=str)
+    terminal = dict(result=str,at=str,elapsed_ns=str)
+    stream = dict(role=str,clock_id=str,origin_at=str,elapsed_ns=str,provenance=provenance,
+                  current=(phase,type(None)),events=[event],generated_events=str,dropped_events=str,
+                  first_missing_seq=(str,type(None)),retained_ranges=[dict(first=str,last=str)],
+                  terminal=(terminal,type(None)),gap=bool)
+    observation = dict(availability=str,captured_at=(str,type(None)),helper_receive_elapsed_ns=(str,type(None)),
+                       age_ns=(str,type(None)),clock_id=(str,type(None)),phase=(phase,type(None)),gap=bool)
+    diagnostic = dict.fromkeys('operation outcome stage reason rollback restoration cleanup receipt job tun'.split(),str)
+    diagnostic['schema']=int
+    trace = dict.fromkeys('authority operation_id operation source started_at state lifecycle_result helper_return web_return receipt_result'.split(),str)
+    trace.update(helper_epoch=(str,type(None)),config_identity=(str,type(None)),finished_at=(str,type(None)),
+                 diagnostics=(diagnostic,type(None)),streams=[stream],core_observation=observation,gap=bool)
+    def typed(value, schema, depth=0):
+        need(depth<=24)
+        if type(schema) is tuple:
+            return any(typed(value,part,depth+1) for part in schema)
+        if type(schema) is dict:
+            return type(value) is dict and value.keys()==schema.keys() and all(typed(value[k],v,depth+1) for k,v in schema.items())
+        if type(schema) is list:
+            return type(value) is list and len(value)<=1024 and all(typed(v,schema[0],depth+1) for v in value)
+        return type(value) is schema
+    schema=dict(timeline_schema=int,code=str,helper_epoch=(str,type(None)),config_identity=(str,type(None)),
+                operation_id=(str,type(None)),trace=(trace,type(None)))
+    need(typed(r,schema), 'CORE_RELOAD_TRACE_SCHEMA')
+
+def read_check(r, identity, operation=None, epoch=None):
+    timeline_shape(r)
+    shape(r, 'timeline_schema code helper_epoch config_identity operation_id trace')
+    need(type(r['timeline_schema']) is int and r['timeline_schema']==1 and hexstr(r['helper_epoch'],32) and
+         r['config_identity']==identity and (r['operation_id'] is None or hexstr(r['operation_id'],32)))
+    need(r['code'] in ('OK','NO_OPERATION'), 'CORE_RELOAD_CAPABILITY')
+    need((r['code']=='NO_OPERATION' and r['operation_id'] is None and r['trace'] is None) or
+         (r['code']=='OK' and type(r['trace']) is dict and r['operation_id'] is not None))
+    if operation is not None:
+        need(r['code']=='OK' and r['operation_id']==operation and r['helper_epoch']==epoch,
+             'CORE_RELOAD_OPERATION_MISMATCH')
+    return r['helper_epoch']
+
+def processes(app):
+    raw = subprocess.run(['/bin/ps','-ww','-axo','pid=,uid=,lstart=,command='], check=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+                         env={'PATH':'/usr/bin:/bin','LC_ALL':'C','LANG':'C'}).stdout.decode('utf-8')
+    rows = []
+    paths = (str(app/'service/anytls-macos'), str(app/'anytls-macos'))
+    for line in raw.splitlines():
+        f = line.split(None, 7)
+        need(len(f)==8 and f[0].isdigit() and f[1].isdigit(), 'CORE_RELOAD_PROCESS_READ')
+        cmd = f[7]
+        # Every service-path process, and any direct user-binary TUN run, counts.
+        if cmd == paths[0] or cmd.startswith(paths[0]+' ') or ((cmd == paths[1] or cmd.startswith(paths[1]+' ')) and re.search(r'(^| )run( |$)',cmd)):
+            rows.append(dict(pid=int(f[0]), uid=int(f[1]), birth=' '.join(f[2:7]), command=cmd))
+    return rows
+
+def core_command(app, op, epoch):
+    return str(app/'service/anytls-macos')+' -config '+str(app/'service/config.yaml')+' -network tun -record-service -startup-operation '+op+' -startup-epoch '+epoch+' -dns-observe-service run'
+
+def tun_readback():
+    # Kernel route lookup only: this sends no packet and performs no DNS/TLS.
+    raw = subprocess.run(['/sbin/route','-n','get','1.1.1.1'],check=True,stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE,timeout=5,env={'LC_ALL':'C','LANG':'C','PATH':'/usr/bin:/bin'}).stdout.decode('ascii')
+    interfaces = re.findall(r'^\s*interface: (\S+)\s*$',raw,re.MULTILINE)
+    need(len(interfaces)==1 and re.fullmatch(r'utun[0-9]+',interfaces[0]), 'CORE_RELOAD_TUN_UNAVAILABLE')
+    return interfaces[0]
+
+def capture(app):
+    # Missing socket is not a stopped helper. Only a completely absent helper,
+    # launchd job AND core census qualifies as a first install.
+    cores = processes(app)
+    if not os.path.lexists(SOCKET):
+        need(not os.path.lexists(HELPER) and not cores and
+             not os.path.lexists('/Library/LaunchDaemons/com.nousresearch.anytls-control.plist'), 'CORE_RELOAD_HELPER_UNAVAILABLE')
+        for label in ('com.nousresearch.anytls-macos','com.nousresearch.anytls-control'):
+            result = subprocess.run(['/bin/launchctl','print','system/'+label],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+                                    env={'LC_ALL':'C','LANG':'C','PATH':'/usr/bin:/bin'})
+            # Match launchctl's service-absent diagnostic, never generic nonzero.
+            diagnostic = result.stderr.decode('utf-8').strip()
+            absent = 'Could not find service "'+label+'" in domain for system'
+            need(result.returncode != 0 and not result.stdout and diagnostic in (absent,'Bad request.\n'+absent),
+                 'CORE_RELOAD_ABSENCE_UNPROVEN')
+        return dict(state='ABSENT', config=None, core=None, status=None)
+    pin = config_pin(app)
+    r = request(dict(action='status', allow_insecure=False))
+    need(type(r) is dict and type(r.get('helper_version')) is str and
+         re.fullmatch(r'[A-Za-z0-9.+_-]{1,128}',r['helper_version']))
+    status_check(r, helper_hash(), r['helper_version'], pin['identity'])
+    need(len(cores)==int(r['running']), 'CORE_RELOAD_PROCESS_STATE')
+    if cores:
+        need(cores[0]['uid']==0, 'CORE_RELOAD_PROCESS_UID')
+    need(config_pin(app)==pin and processes(app)==cores, 'CORE_RELOAD_CAPTURE_DRIFT')
+    return dict(state='RUNNING' if r['running'] else 'STOPPED', config=pin, core=cores[0] if cores else None, status=r)
+
+def put(root, name, value):
+    # Exclusive, private and fsynced before any request can mutate service state.
+    fd = os.open(root/name, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd,'w') as f:
+        json.dump(value,f,sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    fd = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+def trace_check(r, job, epoch):
+    op, identity = job['operation_id'], job['before']['config']['identity']
+    read_check(r, identity, op, epoch)
+    t = r['trace']
+    shape(t, 'authority operation_id helper_epoch config_identity operation source started_at finished_at state lifecycle_result helper_return web_return receipt_result diagnostics streams core_observation gap')
+    need(t['authority']=='AUXILIARY_NOT_AUTHORITY' and t['operation_id']==op and t['helper_epoch']==epoch and
+         t['config_identity']==identity and t['operation']=='RELOAD' and t['source']=='MANUAL_RELOAD' and
+         t['state']=='FINISHED' and t['lifecycle_result']=='SUCCEEDED' and t['helper_return']=='SUCCEEDED')
+    diagnostics(t['diagnostics'])
+    need(type(t['streams']) is list)
+    cores = [s for s in t['streams'] if type(s) is dict and s.get('role')=='CORE']
+    need(len(cores)==1, 'CORE_RELOAD_PROVENANCE')
+    s = cores[0]
+    shape(s, 'role clock_id origin_at elapsed_ns provenance current events generated_events dropped_events first_missing_seq retained_ranges terminal gap')
+    p = s['provenance']
+    shape(p, 'version git_revision dirty sha256 sha_kind execution_mapping')
+    need(p['sha_kind']=='FILE_BYTES' and p['sha256']==job['digest'] and p['version']==job['tag'] and
+         p['git_revision']==job['revision'] and p['dirty'] is False and p['execution_mapping']=='NOT_ATTESTED',
+         'CORE_RELOAD_PROVENANCE')
+    # CORE_WAIT is a live core, not a completed process; its terminal may be null.
+    need(type(s['events']) is list and any(type(e) is dict and e.get('stage')=='CORE_START' and
+         e.get('state')=='END' and e.get('code')=='OK' for e in s['events']), 'CORE_RELOAD_CORE_START')
+
+def worker(root):
+    sent = False
+    claimed = False
+    op = None
+    try:
+        st = root.lstat()
+        need(stat.S_ISDIR(st.st_mode) and st.st_uid==os.getuid() and stat.S_IMODE(st.st_mode)==0o700)
+        need(not os.path.lexists(root/'intent.json') and not os.path.lexists(root/'result.json'), 'CORE_RELOAD_ALREADY_CLAIMED')
+        put(root,'claim.json',dict(pid=os.getpid()))
+        claimed = True
+        job = strict((root/'job.json').read_bytes())
+        shape(job, 'app operation_id digest tag revision before')
+        op = job['operation_id']
+        need(hexstr(op,32) and hexstr(job['digest'],64) and hexstr(job['revision'],40) and
+             type(job['tag']) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',job['tag']))
+        app = Path(job['app'])
+        need(app.is_absolute() and app.resolve(strict=True)==app and job['before']['state']=='RUNNING')
+        pin = job['before']['config']
+        def unchanged():
+            need(config_pin(app)==pin and file_hash(app/'anytls-macos')==job['digest'] and
+                 helper_hash()==job['digest'], 'CORE_RELOAD_IDENTITY_DRIFT')
+        unchanged()
+        status = status_check(request(dict(action='status',allow_insecure=False)),job['digest'],job['tag'],pin['identity'])
+        need(status['loaded'] and status['running'], 'CORE_RELOAD_NOT_RUNNING')
+        need(processes(app)==[job['before']['core']], 'CORE_RELOAD_PROCESS_DRIFT')
+        epoch = read_check(request(dict(timeline_schema=1,action='startup.read',operation_id=None)),pin['identity'])
+        unchanged()
+        status = status_check(request(dict(action='status',allow_insecure=False)),job['digest'],job['tag'],pin['identity'])
+        need(status['loaded'] and status['running'], 'CORE_RELOAD_NOT_RUNNING')
+        need(processes(app)==[job['before']['core']], 'CORE_RELOAD_PROCESS_DRIFT')
+        put(root,'intent.json',dict(operation_id=op,helper_epoch=epoch,action='reload',allow_insecure=False,single_dispatch=True))
+        sent = True  # even a partial write/disconnect is UNKNOWN; NEVER resend.
+        response = request(dict(timeline_schema=1,action='reload',operation_id=op,allow_insecure=False),300)
+        put(root,'response.json',response)
+        shape(response,'timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics')
+        need(type(response['timeline_schema']) is int and response['timeline_schema']==1 and
+             response['ok'] is True and response['code']=='' and response['loaded'] is True and response['running'] is True and
+             response['operation_id']==op and response['helper_epoch']==epoch and response['timeline_availability']=='AVAILABLE' and
+             response['helper_sha256']==job['digest'] and response['helper_version']==job['tag'] and response['config_identity']==pin['identity'])
+        diagnostics(response['diagnostics'])
+        timeline = request(dict(timeline_schema=1,action='startup.read',operation_id=op))
+        put(root,'timeline.json',timeline)
+        trace_check(timeline,job,epoch)
+        status = status_check(request(dict(action='status',allow_insecure=False)),job['digest'],job['tag'],pin['identity'])
+        need(status['loaded'] and status['running'])
+        unchanged()
+        rows = processes(app)
+        need(len(rows)==1 and rows[0]['uid']==0 and rows[0]['pid']!=job['before']['core']['pid'] and
+             rows[0]['command']==core_command(app,op,epoch), 'CORE_RELOAD_NEW_PROCESS')
+        # Re-read the entire census: old PID/identity must be absent, no second core.
+        need(processes(app)==rows, 'CORE_RELOAD_PROCESS_DRIFT')
+        interface = tun_readback()
+        unchanged()
+        need(processes(app)==rows, 'CORE_RELOAD_PROCESS_DRIFT')
+        put(root,'result.json',dict(state='SUCCEEDED',operation_id=op,helper_epoch=epoch,new_core=rows[0],
+                                  tun='TUN',interface=interface,sha_kind='FILE_BYTES',execution_mapping='NOT_ATTESTED',network='NOT_TESTED'))
+        return 0
+    except Exception as exc:
+        if claimed and not os.path.lexists(root/'result.json'):
+            code = str(exc) if type(exc) is ValueError and re.fullmatch(r'CORE_RELOAD_[A-Z_]+',str(exc)) else 'CORE_RELOAD_UNAVAILABLE'
+            put(root,'result.json',dict(state='UNKNOWN' if sent else 'REJECTED',operation_id=op,error_class=type(exc).__name__,code=code))
+        return 1
+
+if __name__ == '__main__':
+    os.umask(0o077)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    # Hard total worker bound includes all observations. On an alarm while a
+    # request is in flight, the ordinary exception path retains UNKNOWN.
+    def expired(signum, frame):
+        raise TimeoutError('CORE_RELOAD_DEADLINE')
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(350)
+    raise SystemExit(worker(Path(sys.argv[1])))
+'''
+CORE_RELOAD_SUPPORT = {'__name__': 'installer_reload_support'}
+exec(CORE_RELOAD_WORKER, CORE_RELOAD_SUPPORT)
+
+
+class CoreReload:
+    def __init__(self, app):
+        self.app = app.resolve(strict=True)
+        core_reload_guard(self.app)
+        self.before = CORE_RELOAD_SUPPORT['capture'](self.app)
+
+    def finish(self, digest, tag, revision):
+        if self.before['state'] != 'RUNNING':
+            print('Core reload SKIPPED: original VPN '+self.before['state']+'; no VPN start/stop/reload requested.')
+            return
+        # install_verified owns this fd for the complete install/activation.
+        # pass_fds retains the SAME flock open-file description after parent loss.
+        lock_fd = self.lock_fd
+        op = i.uuid.uuid4().hex
+        root = self.app / ('.core-reload-' + op)
+        root.mkdir(mode=0o700)  # never reuse a consumed/uncertain transaction
+        parent_fd = os.open(self.app, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        CORE_RELOAD_SUPPORT['put'](root, 'job.json', dict(app=str(self.app),operation_id=op,digest=digest,
+                                                       tag=tag,revision=revision,before=self.before))
+        CORE_RELOAD_SUPPORT['put'](root, 'pending.json', dict(operation_id=op))
+        progress('Core reload single-dispatch receipt: '+str(root))
+        try:
+            with private_append(root/'worker.log') as log:
+                child = subprocess.Popen([sys.executable,'-I','-B','-c',CORE_RELOAD_WORKER,str(root)],
+                                         stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,
+                                         cwd=str(root),env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},
+                                         pass_fds=(lock_fd,))
+            rc = child.wait(timeout=360)
+            result = i.strict_json((root/'result.json').read_bytes())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise ValueError('Core reload UNKNOWN; do not retry/reload/rollback. Read-only recovery of operation '+op+'; receipt: '+str(root)) from None
+        i.require(type(result) is dict, 'Core reload UNKNOWN; receipt: '+str(root))
+        i.require(rc==0 and result.get('state')=='SUCCEEDED' and result.get('operation_id')==op,
+                  'Core reload '+('REJECTED' if result.get('state')=='REJECTED' else 'UNKNOWN')+'; no automatic retry/rollback; receipt: '+str(root))
+        try:
+            # Only THIS observing parent may accept exit 0. Complete result bytes
+            # or a worker-created marker alone never clear UNKNOWN. Re-sync and
+            # read back the result before committing an operation/hash-bound ack.
+            regular(root/'result.json')
+            with (root/'result.json').open('rb') as receipt:
+                os.fsync(receipt.fileno())
+                i.require(i.strict_json(receipt.read()) == result, 'CORE_RELOAD_RESULT_DRIFT')
+            CORE_RELOAD_SUPPORT['put'](root, 'accepted.json',
+                                      dict(operation_id=op,result_sha256=sha256(root/'result.json')))
+            accepted = i.strict_json((root/'accepted.json').read_bytes())
+            i.require(accepted == dict(operation_id=op,result_sha256=sha256(root/'result.json')),
+                      'CORE_RELOAD_ACCEPTANCE_DRIFT')
+            # Durable commit is the synced acceptance with the pre-existing
+            # pending sentinel still present. Unlink is LAST and needs no sync:
+            # crash may resurrect pending (conservative HOLD), never acceptance.
+            # No automatic recovery, even if the child later succeeds.
+            (root/'pending.json').unlink()
+        except (OSError, ValueError):
+            raise ValueError('Core reload UNKNOWN; acceptance not committed; inspect receipt: '+str(root)) from None
+        print('Core reload SUCCEEDED: authenticated helper, matching operation/epoch, new core PID, old core gone and TUN readback; receipt: '+str(root)+'. FILE_BYTES provenance only; execution mapping NOT_ATTESTED; external network NOT_TESTED.')
+
+
+def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tty=None, webui_listen="0.0.0.0", reload_core=True):
     """Only called after every downloaded byte and manifest has been verified."""
+    with installation_lock(app) as lock_fd:
+        core_reload_guard(app)
+        return _install_verified(bundle, tag, app, home, runner, env, tty, webui_listen, reload_core, lock_fd)
+
+
+def _install_verified(bundle, tag, app, home, runner, env, tty, webui_listen, reload_core, lock_fd):
     target, config, link = app / "anytls-macos", app / "config.yaml", home / ".local/bin/anytls"
     check_link(target, link)
     if target.exists() or target.is_symlink():
@@ -555,6 +977,10 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
         regular(config)
     webui = WebUI(target, env, listen=webui_listen)
     webui.preflight()
+    # Capture BEFORE helper replacement; explicit opt-out performs no helper read.
+    activation = CoreReload(app) if reload_core else None
+    if activation is not None:
+        activation.lock_fd = lock_fd
     # A unique, regular candidate in appdir matches the helper's fixed path policy.
     fd, name = tempfile.mkstemp(prefix=".anytls-bin-candidate-", dir=app)
     candidate = Path(name)
@@ -608,6 +1034,9 @@ def install_verified(bundle, tag, app, home, runner=subprocess.run, env=None, tt
                 webui.restart()
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise ValueError("binary installed but WebUI start failed: " + str(exc) + "; inspect ~/.anytls/webui.log; VPN was not stopped/reloaded") from exc
+        if activation is not None:
+            info = i.strict_json((bundle / "BUILD-INFO.json").read_bytes())
+            activation.finish(candidate_digest, tag, info["source_commit"])
         configure_shell_path(home, os.environ if env is None else env)
         if created:
             print("Created 0600 config.yaml EXAMPLE ONLY. Enter your actual node/password/CA; no usable credentials were generated.")
@@ -639,6 +1068,7 @@ def update_only(args, transport=i.open_url, runner=subprocess.run, system=None, 
             env = {k: os.environ[k] for k in ("HOME", "PATH", "LANG", "TMPDIR") if k in os.environ}
         failure = 45
         with installation_lock(app):
+            core_reload_guard(app)
             with tempfile.TemporaryDirectory(prefix=".anytls-update-", dir=app) as temp:
                 work = Path(temp)
                 failure = 44
@@ -701,6 +1131,11 @@ def update_only(args, transport=i.open_url, runner=subprocess.run, system=None, 
 
 
 def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=None, euid=None, home=None, tty=None, env=None):
+    explicit_reload = getattr(args, "reload_core", None)
+    full_install = not (getattr(args, "update_only", False) or args.check_download)
+    reload_core = full_install if explicit_reload is None else explicit_reload
+    i.require(explicit_reload is not True or full_install,
+              "--reload-core is allowed only with full installation")
     if getattr(args, "update_only", False):
         return update_only(args, transport, runner, system, machine, euid, env)
     webui_listen = getattr(args, "webui_listen", None)
@@ -732,17 +1167,18 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
             return report
         if env is None:
             env = {k: os.environ[k] for k in ("HOME", "PATH", "SHELL", "ZDOTDIR", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR") if k in os.environ}
-        # Retain the verified package/licenses BEFORE any privileged change
-        # or executable publication. Retention failure leaves the old app intact.
-        progress("[3/6] 保留许可证、校验和与预编译程序包；已有配置及密码不覆盖")
-        kept = app / "releases" / (tag + "-" + i.uuid.uuid4().hex)
-        kept.parent.mkdir(mode=0o700, exist_ok=True)
-        os.replace(bundle, kept)
-        for name in ("SHA256SUMS", "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz"):
-            shutil.copyfile(work / name, kept / name)
-            i.require(sha256(work / name) == sha256(kept / name), "retained release material mismatch")
-        with installation_lock(app):
-            backup = install_verified(kept, tag, app, home, runner, env, tty, webui_listen=webui_listen)
+        with installation_lock(app) as lock_fd:
+            core_reload_guard(app)
+            # Retain before privileged change/publication, and under the same
+            # exclusion and pending guard as the helper and detached worker.
+            progress("[3/6] 保留许可证、校验和与预编译程序包；已有配置及密码不覆盖")
+            kept = app / "releases" / (tag + "-" + i.uuid.uuid4().hex)
+            kept.parent.mkdir(mode=0o700, exist_ok=True)
+            os.replace(bundle, kept)
+            for name in ("SHA256SUMS", "anytls-core-" + tag + "-darwin-" + arch + ".tar.gz"):
+                shutil.copyfile(work / name, kept / name)
+                i.require(sha256(work / name) == sha256(kept / name), "retained release material mismatch")
+            backup = _install_verified(kept, tag, app, home, runner, env, tty, webui_listen, reload_core, lock_fd)
         print("Installed " + tag + " from verified prebuilt release; authenticated helper status succeeded.")
         if backup:
             print("Previous executable backup: " + str(backup))
@@ -750,7 +1186,8 @@ def run(args, transport=i.open_url, runner=subprocess.run, system=None, machine=
         print("Run now by absolute path: " + shlex.quote(str(app / "anytls-macos")))
         print("The current terminal PATH is unchanged. Open a new terminal, or for bash/zsh run: export PATH=" +
               shlex.quote(str(home / ".local/bin")) + ':"$PATH"')
-        print("WebUI started using the new binary at " + webui_listen + ":18089. This installation uses --webui-listen or the default 0.0.0.0 (all IPv4 interfaces); old --listen arguments are not inherited. Open http://<real-host-or-IP>:18089/ using a reachable host/IP, not 0.0.0.0. HTTP is unencrypted; restrict access to trusted networks or protect it with a firewall/SSH tunnel/TLS reverse proxy. VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged.")
+        print("WebUI started using the new binary at " + webui_listen + ":18089. This installation uses --webui-listen or the default 0.0.0.0 (all IPv4 interfaces); old --listen arguments are not inherited. Open http://<real-host-or-IP>:18089/ using a reachable host/IP, not 0.0.0.0. HTTP is unencrypted; restrict access to trusted networks or protect it with a firewall/SSH tunnel/TLS reverse proxy." +
+              (" Default/explicit core reload outcome and receipt are reported above; external network was not tested." if reload_core else " --no-reload-core: VPN was NOT stopped, reloaded or restarted; its running snapshot is unchanged."))
         report["executed"] = True
         return report
 
@@ -769,6 +1206,11 @@ def main(argv=None):
     parser.add_argument("--webui-listen", type=canonical_ipv4, default=None,
                         help="this installation's WebUI IPv4 address; default 0.0.0.0 (all interfaces), never inherited from old argv; HTTP is unencrypted; not valid with --check-download or --update-only")
     parser.add_argument("--update-only", action="store_true", help="replace only the existing app executable; no helper, configuration or restart")
+    reload_options = parser.add_mutually_exclusive_group()
+    reload_options.add_argument("--reload-core", dest="reload_core", action="store_true", default=None,
+                                help="full install default: reload an originally running VPN once after readiness; never start a stopped VPN")
+    reload_options.add_argument("--no-reload-core", dest="reload_core", action="store_false",
+                                help="explicitly skip core reload; no effect in check-download/update-only")
     parser.add_argument("--app-dir")
     parser.add_argument("--target")
     parser.add_argument("--update-arch", choices=("arm64", "amd64"))
@@ -778,7 +1220,7 @@ def main(argv=None):
         print("UPDATE_VALIDATION_FAILED", file=sys.stderr)
         return 44
     if args.update_only:
-        if not all((args.app_dir, args.target, args.update_arch, args.version)) or args.arch is not None or args.check_download or args.webui_listen is not None:
+        if not all((args.app_dir, args.target, args.update_arch, args.version)) or args.arch is not None or args.check_download or args.webui_listen is not None or args.reload_core:
             print("UPDATE_VALIDATION_FAILED", file=sys.stderr)
             return 44
     elif any((args.app_dir, args.target, args.update_arch)):
@@ -787,6 +1229,8 @@ def main(argv=None):
         parser.error("--arch is allowed only with --check-download")
     if args.check_download and args.webui_listen is not None:
         parser.error("--webui-listen cannot be used with --check-download")
+    if args.check_download and args.reload_core:
+        parser.error("--reload-core cannot be used with --check-download")
     try:
         result = run(args)
         if args.update_only:
@@ -798,7 +1242,9 @@ def main(argv=None):
         return exc.code if exc.code in codes else 47
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
         detail = str(exc) if type(exc) is ValueError else type(exc).__name__
-        print("Binary installation failed: " + detail + "; no automatic source compilation or VPN stop/reload. Check release assets, platform, paths and local authorization. A successful helper change can precede a failed final publish; inspect `anytls helper status` before retrying.", file=sys.stderr)
+        print("Binary installation failed: " + detail + "; no automatic source compilation or recovery reload/rollback. " +
+              ("Default/explicit core reload may have been dispatched: preserve its receipt; UNKNOWN must be reconciled read-only, never retried to obtain a reply. " if not args.update_only and not args.check_download and args.reload_core is not False else "VPN was not stopped/reloaded. ") +
+              "Check release assets, platform, paths and local authorization. A successful helper change can precede a failed final publish; inspect `anytls helper status` before retrying.", file=sys.stderr)
         return 1
     return 0
 

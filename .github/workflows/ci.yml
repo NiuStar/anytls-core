@@ -35,6 +35,9 @@ jobs:
           mkdir -p "$TMPDIR"
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_binary_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_core_reload_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_core_reload_durability_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/bootstrap_reload_args_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/package_binary_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/update_binary_test.py
           bash -n install.sh

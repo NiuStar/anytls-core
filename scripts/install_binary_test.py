@@ -255,7 +255,7 @@ class InstallerTests(unittest.TestCase):
                             home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
         with mock.patch.object(b, "run", side_effect=isolated_run), contextlib.redirect_stdout(io.StringIO()) as out, \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(b.main(["--version", TAG]), 1)
+            self.assertEqual(b.main(["--version", TAG, "--no-reload-core"]), 1)
         self.assertIn("HELPER_STATUS_INVALID", err.getvalue())
         self.assertNotIn("private-secret-sentinel", out.getvalue() + err.getvalue())
         self.assertFalse((self.app / "anytls-macos").exists())
@@ -265,7 +265,7 @@ class InstallerTests(unittest.TestCase):
         self.app.mkdir(exist_ok=True)
         self.processes = []
         return b.install_verified(bundle, TAG, self.app, self.home, runner or self.runner,
-                                  env={"HOME": str(self.home)}, tty=lambda: io.BytesIO())
+                                  env={"HOME": str(self.home)}, tty=lambda: io.BytesIO(), reload_core=False)
 
     def assert_binary_only_requests(self):
         self.assertEqual([url for url in self.calls if "/releases/download/" in url],
@@ -298,7 +298,7 @@ class InstallerTests(unittest.TestCase):
                             return types.SimpleNamespace(stdout=b"0\n", returncode=0)
                         return self.runner(args, **kwargs)
                     with contextlib.redirect_stdout(io.StringIO()):
-                        result = b.run(types.SimpleNamespace(version=None, check_download=check),
+                        result = b.run(types.SimpleNamespace(version=None, check_download=check, reload_core=False),
                                        self.binary_only_transport, runner, system="Darwin",
                                        machine="arm64" if arch == "arm64" else "x86_64", euid=501,
                                        home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
@@ -340,7 +340,7 @@ class InstallerTests(unittest.TestCase):
             self.assertNotIn("受限助手", message)
             return contextlib.nullcontext()
         with mock.patch.object(b, "stage", side_effect=stages), mock.patch.object(b.WebUI, "restart"):
-            b.install_verified(bundle, TAG, self.app, self.home, runner, {"HOME": str(self.home)}, tty=lambda: terminal)
+            b.install_verified(bundle, TAG, self.app, self.home, runner, {"HOME": str(self.home)}, tty=lambda: terminal, reload_core=False)
         self.assertEqual(seen[0][:2], ["/usr/bin/sudo", "-v"])
         self.assertEqual(seen[1][1:], ["helper", "install"])
 
@@ -356,7 +356,7 @@ class InstallerTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, args)
             return original(args, **kwargs)
         with self.assertRaisesRegex(ValueError, "系统授权未完成"):
-            b.install_verified(bundle, TAG, self.app, self.home, runner, {"HOME": str(self.home)}, tty=lambda: io.BytesIO())
+            b.install_verified(bundle, TAG, self.app, self.home, runner, {"HOME": str(self.home)}, tty=lambda: io.BytesIO(), reload_core=False)
         self.assertEqual(target.read_bytes(), b"old-binary")
         self.assertFalse(any(args[1:] == ["helper", "install"] for args, _ in self.processes))
         self.assertFalse(list(self.app.glob(".anytls-bin-candidate-*")))
@@ -369,7 +369,7 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(self.url(self.source_name), self.calls)
 
     def test_check_download_no_config_no_process(self):
-        args = types.SimpleNamespace(version=TAG, check_download=True, arch="arm64")
+        args = types.SimpleNamespace(version=TAG, check_download=True, arch="arm64", reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), home=self.home)
         self.assertTrue(result["download_verified"])
@@ -556,7 +556,7 @@ class InstallerTests(unittest.TestCase):
         (self.app / "anytls-macos").write_bytes(b"old")
         (self.app / "config.yaml").write_bytes(b"private")
         (self.app / "releases").write_bytes(b"path conflict")
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with self.assertRaises(FileExistsError):
             b.run(args, self.transport, self.runner, system="Darwin", machine="arm64",
                   euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
@@ -574,7 +574,7 @@ class InstallerTests(unittest.TestCase):
         with mock.patch.object(b, "WebUI", create=True) as factory:
             factory.return_value.restart.side_effect = lambda: starts.append((self.app / "anytls-macos").read_bytes())
             b.install_verified(bundle, TAG, self.app, self.home, self.runner,
-                               env={"HOME": str(self.home)}, tty=lambda: io.BytesIO())
+                               env={"HOME": str(self.home)}, tty=lambda: io.BytesIO(), reload_core=False)
         self.assertEqual(starts, [BINARY], "successful binary installation must start the new WebUI")
 
     def test_cli_override_flows_through_run_to_webui(self):
@@ -584,7 +584,7 @@ class InstallerTests(unittest.TestCase):
             return real_run(args, self.transport, self.runner, system="Darwin", machine="arm64",
                             euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
         with mock.patch.object(b, "run", side_effect=isolated_run), contextlib.redirect_stdout(io.StringIO()) as stdout:
-            self.assertEqual(b.main(["--version", TAG, "--webui-listen=192.168.5.2"]), 0)
+            self.assertEqual(b.main(["--version", TAG, "--webui-listen=192.168.5.2", "--no-reload-core"]), 0)
         self.webui_factory.assert_called_once_with(self.app / "anytls-macos", {"HOME": str(self.home)}, listen="192.168.5.2")
         self.webui_factory.return_value.preflight.assert_called_once()
         self.webui_factory.return_value.restart.assert_called_once()
@@ -593,7 +593,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_complete_run_retains_binary_package_and_license(self):
         self.processes = []
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()):
             report = b.run(args, self.transport, self.runner, system="Darwin", machine="arm64",
                            euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
@@ -613,7 +613,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_success_output_explains_wildcard_real_host_and_http_risk(self):
         self.processes = []
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             b.run(args, self.transport, self.runner, system="Darwin", machine="arm64",
                   euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
@@ -666,11 +666,11 @@ class InstallerTests(unittest.TestCase):
         env = {"HOME": str(self.home), "SHELL": "/bin/bash"}
         self.webui_factory.return_value.restart.side_effect = lambda: self.assertFalse((self.home / ".bash_profile").exists())
         with contextlib.redirect_stdout(io.StringIO()):
-            b.install_verified(bundle, TAG, self.app, self.home, self.runner, env, tty=lambda: io.BytesIO())
+            b.install_verified(bundle, TAG, self.app, self.home, self.runner, env, tty=lambda: io.BytesIO(), reload_core=False)
         before = {name: (self.home / name).read_bytes() for name in (".bash_profile", ".bashrc")}
         self.webui_factory.return_value.restart.side_effect = None
         with contextlib.redirect_stdout(io.StringIO()):
-            b.install_verified(bundle, TAG, self.app, self.home, self.runner, env, tty=lambda: io.BytesIO())
+            b.install_verified(bundle, TAG, self.app, self.home, self.runner, env, tty=lambda: io.BytesIO(), reload_core=False)
         self.assertEqual(before, {name: (self.home / name).read_bytes() for name in before})
         self.assertEqual(before[".bash_profile"], b.PATH_BLOCK)
 
@@ -679,7 +679,7 @@ class InstallerTests(unittest.TestCase):
         outside = self.root / "outside"
         outside.write_bytes(b"unchanged")
         (self.home / ".bash_profile").symlink_to(outside)
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
             report = b.run(args, self.transport, self.runner, system="Darwin", machine="arm64", euid=501,
                            home=self.home, tty=lambda: io.BytesIO(), env={"SHELL": "/bin/bash", "HOME": str(self.home)})
@@ -694,7 +694,7 @@ class InstallerTests(unittest.TestCase):
         self.processes = []
         directory = self.home / "shell config"
         directory.mkdir()
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with mock.patch.dict(os.environ, {"HOME": str(self.home), "SHELL": "/bin/zsh", "ZDOTDIR": str(directory)}, clear=True), \
                 contextlib.redirect_stdout(io.StringIO()):
             b.run(args, self.transport, self.runner, system="Darwin", machine="arm64", euid=501,
@@ -707,7 +707,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_unknown_shell_install_still_prints_manual_and_absolute_commands(self):
         self.processes = []
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
             result = b.run(args, self.transport, self.runner, system="Darwin", machine="arm64", euid=501,
                            home=self.home, tty=lambda: io.BytesIO(), env={"SHELL": "/bin/fish"})
@@ -724,7 +724,7 @@ class InstallerTests(unittest.TestCase):
         with mock.patch.object(b, "configure_shell_path", side_effect=AssertionError("check-only configured PATH")), \
                 mock.patch.object(b.pwd, "getpwuid", side_effect=AssertionError("check-only shell lookup")), \
                 contextlib.redirect_stdout(io.StringIO()):
-            b.run(types.SimpleNamespace(version=TAG, check_download=True, arch="arm64"), self.transport,
+            b.run(types.SimpleNamespace(version=TAG, check_download=True, arch="arm64", reload_core=False), self.transport,
                   runner=lambda *a, **k: self.fail("process"), home=self.home)
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.home.iterdir()})
 
@@ -751,7 +751,7 @@ class InstallerTests(unittest.TestCase):
             if args[0] == "/usr/sbin/sysctl":
                 return types.SimpleNamespace(stdout=b"0\n", returncode=0)
             return self.runner(args, **kwargs)
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()):
             report = b.run(args, self.transport, runner, system="Darwin", machine="x86_64",
                            euid=501, home=self.home, tty=lambda: io.BytesIO(), env={"HOME": str(self.home)})
@@ -766,7 +766,7 @@ class InstallerTests(unittest.TestCase):
         self.webui_factory.return_value.restart.assert_called_once()
 
     def test_platform_and_root_rejected_before_download(self):
-        args = types.SimpleNamespace(version=None, check_download=False)
+        args = types.SimpleNamespace(version=None, check_download=False, reload_core=False)
         for system, machine, uid in (("Linux", "arm64", 501), ("Darwin", "unsupported", 501), ("Darwin", "arm64", 0), ("Darwin", "x86_64", 0)):
             with self.subTest(system=system, machine=machine, uid=uid), self.assertRaises(ValueError):
                 b.run(args, self.transport, runner=lambda *a, **k: self.fail("unexpected process"), system=system, machine=machine, euid=uid, home=self.home)
@@ -774,7 +774,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_intel_check_download_explicit_arch_on_linux(self):
         self.use_intel_fixture()
-        args = types.SimpleNamespace(version=TAG, check_download=True, arch="amd64")
+        args = types.SimpleNamespace(version=TAG, check_download=True, arch="amd64", reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()):
             result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), system="Linux", machine="x86_64", home=self.home)
         self.assertEqual(result["platform"], "darwin-amd64")
@@ -783,7 +783,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_intel_check_download_native_default_never_spawns(self):
         self.use_intel_fixture()
-        args = types.SimpleNamespace(version=TAG, check_download=True)
+        args = types.SimpleNamespace(version=TAG, check_download=True, reload_core=False)
         with contextlib.redirect_stdout(io.StringIO()):
             result = b.run(args, self.transport, runner=lambda *a, **k: self.fail("check-download spawned a process"), system="Darwin", machine="x86_64", home=self.home)
         self.assertEqual(result["platform"], "darwin-amd64")
@@ -791,7 +791,7 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.app.exists())
 
     def test_unresolved_hardware_stops_full_install_before_download(self):
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         for rc, value in ((1, b""), (0, b""), (0, b"invalid")):
             runner = mock.Mock(return_value=types.SimpleNamespace(returncode=rc, stdout=value))
             with self.subTest(rc=rc, value=value), self.assertRaisesRegex(ValueError, "cannot establish"):
@@ -811,7 +811,7 @@ class InstallerTests(unittest.TestCase):
                 return types.SimpleNamespace(returncode=1, stdout=b"", stderr=("sysctl: unknown oid '" + key + "'").encode())
             return self.runner(args, **kwargs)
         with contextlib.redirect_stdout(io.StringIO()):
-            result = b.run(types.SimpleNamespace(version=TAG, check_download=False), self.transport, runner,
+            result = b.run(types.SimpleNamespace(version=TAG, check_download=False, reload_core=False), self.transport, runner,
                            system="Darwin", machine="x86_64", euid=501, home=self.home, tty=lambda: io.BytesIO())
         self.assertEqual(result["platform"], "darwin-amd64")
         self.assertTrue(result["executed"])
@@ -820,14 +820,14 @@ class InstallerTests(unittest.TestCase):
 
     def test_install_arch_override_rejected_even_if_matching_host(self):
         for arch in ("arm64", "amd64"):
-            args = types.SimpleNamespace(version=TAG, check_download=False, arch=arch)
+            args = types.SimpleNamespace(version=TAG, check_download=False, arch=arch, reload_core=False)
             with self.assertRaisesRegex(ValueError, "only with --check-download"):
                 b.run(args, self.transport, runner=lambda *a, **k: self.fail("executed"), system="Darwin", machine="arm64", euid=501, home=self.home)
         self.assertFalse(self.app.exists())
         self.assertEqual(self.calls, [])
 
     def test_intel_missing_asset_rejects_legacy_arm64_release(self):
-        args = types.SimpleNamespace(version=TAG, check_download=False)
+        args = types.SimpleNamespace(version=TAG, check_download=False, reload_core=False)
         runner = lambda *a, **k: types.SimpleNamespace(stdout=b"0\n", returncode=0)
         with self.assertRaisesRegex(ValueError, "amd64 binary.*legacy"):
             b.run(args, self.transport, runner, system="Darwin", machine="x86_64", euid=501, home=self.home)
@@ -841,7 +841,7 @@ class InstallerTests(unittest.TestCase):
                 return types.SimpleNamespace(stdout=b"1\n", returncode=0)
             return self.runner(args, **kwargs)
         with contextlib.redirect_stdout(io.StringIO()):
-            result = b.run(types.SimpleNamespace(version=TAG, check_download=False), self.transport, runner,
+            result = b.run(types.SimpleNamespace(version=TAG, check_download=False, reload_core=False), self.transport, runner,
                            system="Darwin", machine="x86_64", euid=501, home=self.home, tty=lambda: io.BytesIO())
         self.assertEqual(result["platform"], "darwin-arm64")
         self.assertIn(self.url(self.binary_name), self.calls)
@@ -871,7 +871,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(args[0], "/usr/sbin/sysctl", "downloaded binary executed before architecture validation")
                 return types.SimpleNamespace(stdout=b"0\n", returncode=0)
             with self.subTest(magic=magic, cpu=cpu, filetype=filetype), self.assertRaisesRegex(ValueError, "amd64 Mach-O"):
-                b.run(types.SimpleNamespace(version=TAG, check_download=False), self.transport, runner,
+                b.run(types.SimpleNamespace(version=TAG, check_download=False, reload_core=False), self.transport, runner,
                       system="Darwin", machine="x86_64", euid=501, home=self.home)
         self.assertFalse((self.app / "anytls-macos").exists())
         self.webui_factory.assert_not_called()
