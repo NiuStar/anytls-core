@@ -388,12 +388,18 @@ def canonical_ipv4(host):
     return host
 
 
+class WebUIPreflightRejected(ValueError):
+    """No installer lifecycle mutation has been dispatched at this boundary."""
+
+
 class WebUI:
     """Only manage the exact current user's default-port WebUI, never the VPN."""
     def __init__(self, target, env, listen="0.0.0.0"):
         self.target, self.env = target, env
         self.timeout = 10
         self.old = None
+        self.managed = None
+        self.published_digest = None
         self.listen = canonical_ipv4(listen)
 
     def listeners(self):
@@ -434,7 +440,7 @@ class WebUI:
         options = {}
         for token in tokens:
             key, sep, value = token.partition("=")
-            if key not in ("--port", "--listen") or key in options:
+            if key not in ("--port", "--listen", "--managed-agent") or key in options:
                 return None
             options[key] = value if sep else next(tokens, "")
         if options.get("--port", "18089") != "18089":
@@ -445,8 +451,51 @@ class WebUI:
             canonical_ipv4(host)
         except ValueError:
             return None
+        if "--managed-agent" in options:
+            # A locator is not authority. Match Go's canonical self/config label;
+            # agent-status below verifies secure plist bytes AND the loaded job.
+            try:
+                label, _, _ = self.managed_spec()
+            except (OSError, ValueError, RuntimeError):
+                return None
+            if options["--managed-agent"] != label:
+                return None
+            return host, "--listen" in options, label
         # Match the console's canonical IPv4 syntax, including wildcard/public.
         return host, "--listen" in options
+
+    def managed_spec(self):
+        target = self.target.resolve(strict=True)
+        config = (target.parent / "config.yaml").resolve(strict=True)
+        i.require(target == self.target and config == target.parent / "config.yaml",
+                  "MANAGED_WEBUI_PATH")
+        home = Path((os.environ if self.env is None else self.env).get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
+        i.require(home.is_absolute() and home.resolve(strict=True) == home, "MANAGED_WEBUI_PATH")
+        label = "com.anytls.webui." + hashlib.sha256(
+            (str(os.getuid()) + "\0" + str(target) + "\0" + str(config)).encode("utf-8")).hexdigest()[:24]
+        return label, "gui/%d/%s" % (os.getuid(), label), home / "Library/LaunchAgents" / (label + ".plist")
+
+    def managed_status(self, pid):
+        try:
+            label, target, plist = self.managed_spec()
+            regular(self.target)
+            regular(plist)
+            before = plist.read_bytes()
+            result = subprocess.run([str(self.target), "webui", "agent-status", "--listen", self.listen,
+                                     "--port", "18089"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=10, check=False, env=self.env)
+            i.require(result.returncode == 0 and not result.stderr, "MANAGED_WEBUI_STATUS")
+            dto = i.strict_json(result.stdout)
+            i.require(type(dto) is dict and dto.keys() == {"label", "target", "plist", "pid", "restartManaged"} and
+                      type(dto["pid"]) is int and dto["pid"] == pid and pid > 0 and
+                      dto["restartManaged"] is True and type(dto["label"]) is str and dto["label"] == label and
+                      type(dto["target"]) is str and dto["target"] == target and
+                      type(dto["plist"]) is str and dto["plist"] == str(plist), "MANAGED_WEBUI_STATUS")
+            regular(plist)
+            i.require(plist.read_bytes() == before, "MANAGED_WEBUI_STATUS")
+            return before
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, UnicodeError):
+            raise ValueError("MANAGED_WEBUI_STATUS: existing CLI, secure plist and loaded job must verify") from None
 
     def known(self, identity):
         return self.listen_args(identity) is not None
@@ -459,11 +508,75 @@ class WebUI:
             identity = self.identity(pid)
             listen = self.listen_args(identity)
             i.require(listen is not None, "port 18089 is occupied by an unknown process/arguments or UID; close it yourself")
+            if len(listen) == 3:
+                i.require(listen[0] == self.listen, "MANAGED_WEBUI_LISTEN_MIGRATION_UNSUPPORTED: keep the existing managed listen address")
+                digest = sha256(self.target)
+                plist = self.managed_status(pid)
+                i.require(self.listeners() == {pid} and self.identity(pid) == identity and
+                          sha256(self.target) == digest, "managed WebUI identity/binary changed during preflight")
+                self.managed = (listen, plist)
             # Old argv establishes process authority, not this install's policy.
             self.old = (pid, identity)
         # Historical webui.pid is never read: a PID is not process authority.
 
+    def managed_unchanged(self, pid, identity):
+        i.require(self.published_digest is not None and sha256(self.target) == self.published_digest,
+                  "managed WebUI published binary changed")
+        i.require(self.managed_status(pid) == self.managed[1], "managed WebUI plist changed")
+        # Status may take seconds: re-read the exact full identity and listener
+        # after it returns, not just its PID (KeepAlive may have respawned).
+        i.require(sha256(self.target) == self.published_digest and
+                  self.listeners() == {pid} and self.identity(pid) == identity,
+                  "managed WebUI process birth/identity/listener changed")
+
+    def restart_managed(self):
+        pid, identity = self.old
+        i.require(self.listeners() == {pid} and self.identity(pid) == identity,
+                  "managed WebUI process birth/identity/listener changed; no process was signalled")
+        self.managed_unchanged(pid, identity)
+        # No bootout/kickstart: TERM lets the old app drain active actions; the
+        # existing, verified KeepAlive job alone owns replacement startup.
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            raise ValueError("MANAGED_WEBUI_UNKNOWN: old process disappeared before TERM; no retry") from None
+        deadline = time.monotonic() + self.timeout
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            while time.monotonic() < deadline:
+                old = self.identity(pid)
+                i.require(old is None or old == identity, "old process identity changed")
+                pids = self.listeners()
+                if old is None and pids:
+                    i.require(len(pids) == 1 and pid not in pids, "managed listener ownership changed")
+                    new_pid = next(iter(pids))
+                    new = self.identity(new_pid)
+                    i.require(new is not None and new[0] == identity[0] and new[2] == identity[2] and
+                              self.listen_args(new) == self.managed[0], "foreign managed listener")
+                    self.managed_unchanged(new_pid, new)
+                    try:
+                        host = "127.0.0.1" if self.listen == "0.0.0.0" else self.listen
+                        with opener.open("http://" + host + ":18089/", timeout=1) as response:
+                            ready = response.status == 200 and b"<title>AnyTLS" in response.read(1024 * 1024)
+                    except OSError:
+                        ready = False
+                    if ready:
+                        self.managed_unchanged(new_pid, new)
+                        i.require(self.identity(pid) is None and time.monotonic() < deadline,
+                                  "old WebUI still exists or readiness deadline expired")
+                        return
+                elif old is not None and not pids <= {pid}:
+                    # TERM/drain can finish between the ps and lsof reads.
+                    # Never accept the replacement until the next full pass.
+                    i.require(self.identity(pid) is None, "foreign listener during old WebUI drain")
+                time.sleep(0.1)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise ValueError("MANAGED_WEBUI_UNKNOWN: readiness/identity not verified; no SIGKILL or second start") from exc
+        raise ValueError("MANAGED_WEBUI_UNKNOWN: old WebUI drain/KeepAlive readiness timed out; no SIGKILL or second start")
+
     def restart(self):
+        if self.managed is not None:
+            return self.restart_managed()
         pids = self.listeners()
         if self.old:
             pid, identity = self.old
@@ -976,7 +1089,10 @@ def _install_verified(bundle, tag, app, home, runner, env, tty, webui_listen, re
     if config.exists() or config.is_symlink():
         regular(config)
     webui = WebUI(target, env, listen=webui_listen)
-    webui.preflight()
+    try:
+        webui.preflight()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise WebUIPreflightRejected("WEBUI_PREFLIGHT_REJECTED: no helper install, binary publish, WebUI signal or core reload dispatched: " + str(exc)) from exc
     # Capture BEFORE helper replacement; explicit opt-out performs no helper read.
     activation = CoreReload(app) if reload_core else None
     if activation is not None:
@@ -1029,6 +1145,7 @@ def _install_verified(bundle, tag, app, home, runner, env, tty, webui_listen, re
         progress("[5/6] 备份旧程序并原子替换为已验证版本")
         backup = i.publish_binary(candidate, target, app)
         command_version(target, tag, runner, env)
+        webui.published_digest = candidate_digest
         try:
             with stage("[6/6] 切换至新版 WebUI 并验证页面就绪；VPN 保持运行"):
                 webui.restart()
@@ -1240,6 +1357,9 @@ def main(argv=None):
                  45: "UPDATE_PUBLISH_FAILED", 46: "UPDATE_VERIFY_FAILED", 47: "UPDATE_UNAVAILABLE"}
         print(codes.get(exc.code, "UPDATE_UNAVAILABLE"), file=sys.stderr)
         return exc.code if exc.code in codes else 47
+    except WebUIPreflightRejected as exc:
+        print("Binary installation failed: " + str(exc) + "; close/inspect the existing WebUI; no automatic recovery attempted.", file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as exc:
         detail = str(exc) if type(exc) is ValueError else type(exc).__name__
         print("Binary installation failed: " + detail + "; no automatic source compilation or recovery reload/rollback. " +
