@@ -51,13 +51,13 @@ try{
   await page.waitForFunction(()=>document.getElementById('runtime-history').textContent.includes('v2026-10-01-01'));await go('debug/versions');
   const summary=()=>page.evaluate(()=>JSON.parse(AnyTLSRuntime.summary()));
   const overflow=async()=>assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'no horizontal overflow');
-  assert.equal((await summary()).versions.installed.value,null);assert.equal((await summary()).versions.coreCurrent.value,null);assert.equal((await summary()).health.network,'NOT_OBSERVED');
-  await page.evaluate(async()=>{await status();await status();});assert.equal(requests.filter(r=>r.path.endsWith('/update-check')).length,0);assert.equal(requests.filter(r=>r.path.endsWith('/dns-runtime')).length,0);
+  await page.waitForFunction(()=>document.getElementById('runtime-installed').textContent.includes('v2026-11-03-01'));assert.equal((await summary()).versions.installed.value,'v2026-11-03-01');assert.equal((await summary()).versions.coreCurrent.value,null);assert.equal((await summary()).health.network,'NOT_OBSERVED');
+  await page.evaluate(async()=>{await status();await status();});assert.equal(requests.filter(r=>r.path.endsWith('/update-check')).length,1);assert.equal(requests.filter(r=>r.path.endsWith('/dns-runtime')).length,0);
   await overflow();await page.locator('#runtime-panel').screenshot({path:out+`/initial-${width}.png`});
   await page.locator('#runtime-check').click();await page.waitForFunction(()=>document.getElementById('runtime-installed').textContent.includes('v2026-11-03-01'));
-  assert.equal(requests.filter(r=>r.path.endsWith('/update-check')).length,1);assert.match(await page.locator('#runtime-difference').textContent(),/版本标签不同/);
+  assert.equal(requests.filter(r=>r.path.endsWith('/update-check')).length,2);assert.match(await page.locator('#runtime-difference').textContent(),/版本标签不同/);
   // SPEC-02: use the real update-page click handler, then read overview summary.
-  await go('settings/update');await page.locator('#check-update').click();await page.waitForFunction(()=>document.getElementById('update-result').textContent.includes('已安装新版'));
+  await go('settings/update');await page.locator('#check-update').click();await page.waitForFunction(()=>document.getElementById('update-result').textContent.includes('已安装新版')&&updateCheckOwner===null);
   const beforeUpdateFailure=(await summary()).versions.installed;checkFail=true;
   await page.locator('#check-update').click();await page.waitForFunction(()=>document.getElementById('update-result').textContent.includes('检查未完成'));assert.match(await page.locator('#runtime-error').textContent(),/安装版本检查失败/);
   await go('debug/versions');await page.waitForFunction(()=>JSON.parse(AnyTLSRuntime.summary()).versions.installed.refreshStatus==='FAILED');
@@ -88,16 +88,16 @@ try{
   const race=await page.evaluate(async()=>{
    const original=fetch;let oldResolve,newResolve;
    window.fetch=(...args)=>String(args[0]).endsWith('/update-check')?new Promise(r=>oldResolve=r):original(...args);
-   const old=AnyTLSRuntime.check();showLogin();csrf='SYNTHETIC_NEW';sessionGeneration++;$('console-view').hidden=false;$('login-view').hidden=true;
+   const old=AnyTLSRuntime.check();await Promise.resolve();showLogin();csrf='SYNTHETIC_NEW';sessionGeneration++;$('console-view').hidden=false;$('login-view').hidden=true;
    window.fetch=(...args)=>String(args[0]).endsWith('/update-check')?new Promise(r=>newResolve=r):original(...args);
-   const fresh=AnyTLSRuntime.check();oldResolve(new Response('{"error":"AUTH_REQUIRED"}',{status:401}));await old;
+   const fresh=AnyTLSRuntime.check();await Promise.resolve();oldResolve(new Response('{"error":"AUTH_REQUIRED"}',{status:401}));await old;
    const retained=csrf==='SYNTHETIC_NEW'&&!$('console-view').hidden&&$('runtime-check').disabled;
-   newResolve(new Response(JSON.stringify({installed:'v2026-11-03-01',status:'UP_TO_DATE',available:false,sourceOnly:false,updated:false,restartRequired:false})));await fresh;window.fetch=original;
+   newResolve(new Response(JSON.stringify({current:'v2026-11-03-01',installed:'v2026-11-03-01',latest:'v2026-11-03-01',status:'UP_TO_DATE',available:false,sourceOnly:false,updated:false,restartRequired:false})));await fresh;window.fetch=original;
    return retained&&!$('runtime-check').disabled&&JSON.parse(AnyTLSRuntime.summary()).versions.installed.value==='v2026-11-03-01';
   });assert.equal(race,true);
-  const hidden=await page.evaluate(async()=>{const original=fetch;let resolve;window.fetch=()=>new Promise(r=>resolve=r);const p=AnyTLSRuntime.check();Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));resolve(new Response(JSON.stringify({installed:'v2099-01-01-01',status:'UP_TO_DATE',available:false,sourceOnly:false,updated:false,restartRequired:false})));await p;window.fetch=original;return JSON.parse(AnyTLSRuntime.summary()).versions.installed.value!=='v2099-01-01-01';});assert.equal(hidden,true);
+  const hidden=await page.evaluate(async()=>{const original=fetch;let resolve;window.fetch=()=>new Promise(r=>resolve=r);const p=AnyTLSRuntime.check();await Promise.resolve();Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));resolve(new Response(JSON.stringify({installed:'v2099-01-01-01',status:'UP_TO_DATE',available:false,sourceOnly:false,updated:false,restartRequired:false})));await p;window.fetch=original;return JSON.parse(AnyTLSRuntime.summary()).versions.installed.value!=='v2099-01-01-01';});assert.equal(hidden,true);
   assert.deepEqual(errors,[]);fs.writeFileSync(out+`/requests-${width}.json`,JSON.stringify(requests,null,2));fs.writeFileSync(out+`/summary-${width}.json`,text);
-  results.push({width,mode:'BROWSER_SYNTHETIC',states:['initial','observed','update-page-failed','unknown','error'],updatePageFailureSummarySync:true,updatePageOldValueTimePreserved:true,realCandidateDOM:true,noOverflow:true,noAutomaticDNSOrUpdate:true,manualDNSTwoStep:true,coreAlwaysUnknown:true,summaryAllowlist:true,clipboardInjectedSuccessDeniedAndManual:true,actualAppSaveNoticePreserved:true,old401AndFinallyGuard:true,hiddenCancellation:true,pageErrors:errors});await context.close();
+  results.push({width,mode:'BROWSER_SYNTHETIC',states:['initial','observed','update-page-failed','unknown','error'],updatePageFailureSummarySync:true,updatePageOldValueTimePreserved:true,realCandidateDOM:true,noOverflow:true,noAutomaticDNS:true,automaticUpdateOnLogin:true,manualDNSTwoStep:true,coreAlwaysUnknown:true,summaryAllowlist:true,clipboardInjectedSuccessDeniedAndManual:true,actualAppSaveNoticePreserved:true,old401AndFinallyGuard:true,hiddenCancellation:true,pageErrors:errors});await context.close();
  }
  const staticSource=fs.readFileSync(new URL('./web_static.go',import.meta.url),'utf8');
  assert.match(staticSource,/\{"\/runtime\.js", "runtime\.js", "text\/javascript; charset=utf-8"\}/,'runtime asset must be in the source store manifest');

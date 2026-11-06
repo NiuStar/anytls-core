@@ -66,7 +66,7 @@
  // Preserve the original auth lifecycle and clear every product-owned late completion.
  const authObserver=new MutationObserver(()=>{
   authEpoch++;readEpoch++;subscriptionInputEpoch++;subscriptionPreview=null;cancelMetrics();closeModal();
-  if(active()){brand={version:null,state:'unchecked'};renderBrand();renderRoute(true);}
+  if(active()){brand={version:null,state:'unchecked'};renderBrand();updateCheckPublish();renderRoute(true);}
   else{profiles=[];subscriptions=[];subscriptionPreview=null;subPreview.hidden=true;subPreview.replaceChildren();metrics=null;copyEpoch++;$('subscriptions-list').replaceChildren();$('subscriptions-status').textContent='';$('active-profile').replaceChildren(el('option','尚未读取'));$('active-profile').disabled=true;$('subscription-name').value='';$('subscription-url').value='';$('report-summary').textContent='';$('report-json').textContent='';$('logs-text').textContent='';$('manual-copy').value='';$('manual-copy').hidden=true;brand={version:null,state:'unchecked'};renderBrand();}
  });authObserver.observe($('console-view'),{attributes:true,attributeFilter:['hidden']});
  function renderPower(){if(serviceState?.availability==='AVAILABLE')$('connection-detail').textContent='服务管理器运行状态；不代表 VPN 出口已验证。';const known=serviceState?.availability==='AVAILABLE',running=known&&serviceState.running===true,b=$('power-toggle');b.disabled=busy||!known||!active();b.classList.toggle('off',known&&!running);b.setAttribute('aria-pressed',String(Boolean(running)));b.setAttribute('aria-label',known?(running?'停止连接':'启动连接'):'服务状态未知');$('power-action').textContent=busy?'请稍候':known?(running?'点击停止':'点击启动'):'状态未知';}
@@ -74,9 +74,9 @@
  const serviceObserver=new MutationObserver(renderPower);serviceObserver.observe(document.querySelector('.connection-panel'),{attributes:true,attributeFilter:['data-state']});serviceObserver.observe($('notice'),{childList:true,subtree:true});
  const safeVersion=v=>typeof v==='string'&&v.length<=128&&/^v[0-9]+(?:[.-][0-9]+)+(?:[-+](?:rc|beta|alpha)[0-9]+)?$/.test(v)?v:null;
  function publishRuntime(kind,data){if(!active()||document.hidden)return;if(kind==='status'){brand.version=safeVersion(data?.version);}else if(kind==='statusError'){brand.version=null;}else return;renderBrand();}
- function renderBrand(){const b=$('brand-version');b.dataset.state=brand.state;$('brand-version-number').textContent=brand.version||'—';$('brand-version-status').textContent=({unchecked:'更新未检查',failed:'更新检查失败',available:'有更新',current:'无更新'})[brand.state];b.title='控制台版本 '+(brand.version||'不可用')+' · '+$('brand-version-status').textContent+(brand.disk?'；上次检查磁盘版本 '+brand.disk+' · '+brand.checkedAt:'');b.setAttribute('aria-label',b.title+'；查看版本更新');}
- const originalRenderUpdate=renderUpdate;renderUpdate=function(data,install){originalRenderUpdate(data,install);const disk=safeVersion(data?.installed);if(disk){brand.disk=disk;brand.checkedAt=new Date().toISOString();brand.state=install?(disk===data.latest?'current':'unchecked'):data.available?'available':data.status==='UP_TO_DATE'?'current':'unchecked';renderBrand();}};
- const originalUpdateOperation=updateOperation;updateOperation=async function(install){const session=sessionGeneration,epoch=routeEpoch;await originalUpdateOperation(install);if(session!==sessionGeneration||epoch!==routeEpoch||!active()||document.hidden)return;if(!install&&$('update-result').textContent.startsWith('检查未完成')){brand.state='failed';renderBrand();}};
+ function renderBrand(){const b=$('brand-version');b.dataset.state=brand.state;$('brand-version-number').textContent=brand.version||'—';$('brand-version-status').textContent=({unchecked:'更新未检查',checking:'检查中',paused:'检查已暂停',failed:'更新检查失败',unsupported:'更新不可安装',restart:'需重启控制台',available:'有更新',current:'无更新'})[brand.state];b.title='控制台版本 '+(brand.version||'不可用')+' · '+$('brand-version-status').textContent+(brand.disk?'；上次检查磁盘版本 '+brand.disk+' · '+brand.checkedAt:'');b.setAttribute('aria-label',b.title+'；查看版本更新');}
+ function updateCheck(snapshot){if(!active())return;brand.state=snapshot.state;const observation=snapshot.observation;if(observation){brand.disk=observation.data.installed;brand.checkedAt=observation.checkedAt;}else{delete brand.disk;delete brand.checkedAt;}renderBrand();}
+ const originalRenderUpdate=renderUpdate;renderUpdate=function(data,install){originalRenderUpdate(data,install);if(install){brand.disk=data.installed;brand.checkedAt=new Date().toISOString();brand.state='restart';renderBrand();}};
  $('check-update').onclick=()=>updateOperation(false);
  // All node/group selection paths disclose reconnect before entering the existing save chain.
  for(const id of ['nodes-list','groups-list'])$(id).addEventListener('click',event=>{const b=event.target.closest('button');if(!b||b.disabled||!(b.dataset.nodeSelect||['设为启动节点','保存选择'].includes(b.textContent)))return;event.preventDefault();event.stopImmediatePropagation();const handler=b.onclick;confirmAction('保存线路选择？',['运行中的服务会由服务端自动应用，期间可能短暂重连。未运行时仅保存，不会启动。'],()=>handler?.());},true);
@@ -205,12 +205,27 @@
   const history=s&&!s.saturated?s.history:[],provisional=!history.length&&s?.rate&&!s.saturated?s.rate:null,intervals=provisional?[provisional]:history,max=Math.max(.01,...intervals.flatMap(i=>[mbps(i,'download_bytes'),mbps(i,'upload_bytes')])),elapsed=s?BigInt(s.elapsed_ns):0n,windowNS=86400000000000n;
   // Zoom only the actual observed span (bounded to 24h); never invent padding periods.
   const cutoff=elapsed>windowNS?elapsed-windowNS:0n,start=intervals.length?(BigInt(intervals[0].start_ns)>cutoff?BigInt(intervals[0].start_ns):cutoff):0n,span=elapsed-start;
-  chart.querySelector('.sectionhead p').textContent=provisional?'实时区间 · 尚无已完成分钟；未计入历史峰值':'近 24 小时内 · 自观察起自适应显示；仅实际完成区间，缺口未记录';
-  axis.replaceChildren(...[1,.75,.5,.25,0].map(n=>el('span',(max*n).toFixed(max<1?3:1))));overlay.hidden=intervals.length>0;overlay.querySelector('b').textContent=s?'尚无可显示的网速区间':'还没有网速记录';overlay.querySelector('p').textContent=s?'首次采样或计数饱和时不补造速率。':message;
+  const speedLabel=value=>value.toFixed(max<1?3:2);
+  chart.querySelector('.sectionhead p').textContent=provisional?'实时区间 · 尚无已完成分钟；未计入历史峰值':'自观察起（近 24 小时内）· 区间平均网速；连续区间连线，缺测断开';
+  axis.replaceChildren(...[1,.75,.5,.25,0].map(n=>el('span',speedLabel(max*n))));overlay.hidden=intervals.length>0;overlay.querySelector('b').textContent=s?'尚无可显示的网速区间':'还没有网速记录';overlay.querySelector('p').textContent=s?'首次采样或计数饱和时不补造速率。':message;
   const x=v=>40+Number((BigInt(v)-start)*958000n/span)/1000;
-  for(const [key,color,width]of [['download_bytes','#3478ee',5],['upload_bytes','#24a291',2]])for(const i of intervals){const line=document.createElementNS('http://www.w3.org/2000/svg','line'),y=200-mbps(i,key)/max*190;for(const [k,v]of Object.entries({x1:x(i.start_ns),x2:x(i.end_ns),y1:y,y2:y,stroke:color,'stroke-width':width,'stroke-linecap':'round','data-kind':provisional?'rate':'history'}))line.setAttribute(k,String(v));svg.append(line);}
+  const localTime=ns=>new Date(Date.parse(s.sampled_at)-Number((elapsed-BigInt(ns))/1000000n)).toLocaleString('zh-CN',{hour12:false});
+  const shape=(tag,attrs)=>{const node=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,value]of Object.entries(attrs))node.setAttribute(key,String(value));svg.append(node);return node;};
+  // A point is an actual interval average at its midpoint, not an instantaneous sample.
+  // Split on exact nanosecond adjacency: even the smallest real gap stays unconnected.
+  const runs=[];for(const i of history){if(!runs.length||runs.at(-1).at(-1).end_ns!==i.start_ns)runs.push([]);runs.at(-1).push(i);}
+  for(const [key,color,width,label,radius]of [['download_bytes','#3478ee',5,'下载',3],['upload_bytes','#24a291',2,'上传',1.5]]){
+   const y=i=>200-mbps(i,key)/max*190,mid=i=>(BigInt(i.start_ns)+BigInt(i.end_ns))/2n;
+   if(provisional){shape('line',{x1:x(provisional.start_ns),x2:x(provisional.end_ns),y1:y(provisional),y2:y(provisional),stroke:color,'stroke-width':width,'stroke-linecap':'round','data-kind':'rate'});continue;}
+   for(const run of runs)if(run.length>1)shape('polyline',{points:run.map(i=>x(mid(i))+','+y(i)).join(' '),fill:'none',stroke:color,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round','data-kind':'history','data-series':key});
+   for(const i of history){
+    const detail=label+' · '+localTime(i.start_ns)+' 至 '+localTime(i.end_ns)+' · 区间平均 '+speedLabel(mbps(i,key))+' Mbps · '+i[key]+' bytes / '+(BigInt(i.end_ns)-BigInt(i.start_ns))+' ns';
+    const point=shape('circle',{cx:x(mid(i)),cy:y(i),r:radius,fill:color,stroke:color,'stroke-width':key==='download_bytes'?5:4,'vector-effect':'non-scaling-stroke','data-kind':'history','data-series':key,'aria-label':detail});
+    const title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent=detail;point.append(title);
+   }
+  }
   const xaxis=chart.querySelector('.xaxis');xaxis.replaceChildren(...(intervals.length?[0,.25,.5,.75,1].map(f=>{const ns=start+span*BigInt(Math.round(f*100))/100n,date=new Date(Date.parse(s.sampled_at)-Number((elapsed-ns)/1000000n)),label=date.toLocaleTimeString('zh-CN',{hour12:false});const node=el('span',label);node.title=date.toLocaleString('zh-CN',{hour12:false});return node;}):[el('span','尚无观察区间')]));
-  svg.setAttribute('aria-label',provisional?'实时网速区间；尚无已完成分钟历史':history.length?'本实例实际网速区间；空缺未记录':'尚无下载和上传速度记录');$('peak-label').textContent=history.length?'已完成区间下载峰值 '+Math.max(...history.map(i=>mbps(i,'download_bytes'))).toFixed(2)+' Mbps':'下载峰值 —';
+  svg.setAttribute('aria-label',provisional?'实时网速区间；尚无已完成分钟历史':history.length?'本实例区间平均网速；点为实际区间中点，连续区间连线仅表示趋势，缺测断开':'尚无下载和上传速度记录');$('peak-label').textContent=history.length?'区间平均下载最高值 '+speedLabel(Math.max(...history.map(i=>mbps(i,'download_bytes'))))+' Mbps':'下载峰值 —';
  }
  // Fixed-schema HTTPS metrics remain independently scoped.
  function cancelMetrics(){cancelTraffic();if(metricsOwner){metricsOwner.controller.abort();clearTimeout(metricsOwner.timeout);}metricsOwner=null;clearTimeout(metricsTimer);metricsTimer=null;}
@@ -241,6 +256,6 @@
  $('log-search').oninput=renderLogs;$('logs-refresh').onclick=()=>{startupResume();renderLogs();};const logObserver=new MutationObserver(()=>{if(route==='debug/logs')renderLogs();});logObserver.observe($('startup-status'),{childList:true,subtree:true});logObserver.observe($('startup-summary'),{childList:true,subtree:true});
  document.addEventListener('visibilitychange',()=>{copyEpoch++;if(document.hidden){cancelMetrics();readEpoch++;closeModal();}else if(active()){if(route==='overview'){loadMetrics();loadTraffic();}}});
  window.addEventListener('pagehide',()=>{cancelMetrics();readEpoch++;copyEpoch++;closeModal();});
- window.AnyTLSProduct=Object.freeze({publishRuntime,nodeDetails:(n,edit,tcp)=>modal(n.name,[el('p',n.server+':'+n.port+' · '+(n.hasPassword?'已配置密码':'未配置密码')),el('p','当前启动节点仅表示配置选择，不代表当前已连接。'),tcp,edit,el('p','删除节点请使用原始配置；保存前由现有配置校验与确认流程处理。')]),notice:routeNotice,statusVisible:()=>route==='overview',acceptRuntime:kind=>kind!=='dns'||route==='debug/dns',routes:routes.map(r=>r[0])});
+ window.AnyTLSProduct=Object.freeze({publishRuntime,updateCheck,nodeDetails:(n,edit,tcp)=>modal(n.name,[el('p',n.server+':'+n.port+' · '+(n.hasPassword?'已配置密码':'未配置密码')),el('p','当前启动节点仅表示配置选择，不代表当前已连接。'),tcp,edit,el('p','删除节点请使用原始配置；保存前由现有配置校验与确认流程处理。')]),notice:routeNotice,statusVisible:()=>route==='overview',acceptRuntime:kind=>kind!=='dns'||route==='debug/dns',routes:routes.map(r=>r[0])});
  renderRoute(true);renderMetrics();renderPower();renderBrand();
 })();

@@ -46,6 +46,13 @@ func TestR10RealHTTPBrowser(t *testing.T) {
 	w.serviceAction = func(context.Context, string, bool) error { t.Error("browser invoked privileged action"); return nil }
 	w.importFetch = func(context.Context, string) ([]byte, error) { return []byte(webImportYAML), nil }
 	w.trafficRequest = func(context.Context) (ts.Response, error) { return ts.Unavailable(), nil }
+	// Stable release lookup is synthetic; admission, auth and response are real HTTP.
+	w.updateAction = func(_ context.Context, check bool) (json.RawMessage, error) {
+		if !check {
+			t.Error("browser attempted automatic installation")
+		}
+		return json.RawMessage(`{"current":"v2026-11-06-02","installed":"v2026-11-06-02","latest":"v2026-11-07-01","status":"UPDATE_AVAILABLE","available":true,"sourceOnly":false,"updated":false,"restartRequired":false}`), nil
+	}
 	// Create a genuine login session through the application's existing login handler.
 	// The cookie stays in anonymous child stdin, not argv, disk or the evidence log.
 	w.port = 18089

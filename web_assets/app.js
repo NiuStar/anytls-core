@@ -143,16 +143,16 @@ async function operation(label, fn) {
  try { await fn(); if (finishOperation===finish&&session===sessionGeneration&&$('notice').textContent === `${label}，请稍候…`) notice(`${label}已完成。`); } catch (e) { if(finishOperation===finish&&session===sessionGeneration)notice(e.message, true); }
  finally { finish(); }
 }
-function showLogin() {globalThis.AnyTLSRuntime?.cancel(true);cancelUpdateRestart();if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();ruleCommitting=false;$('rule-fields').disabled=false;cancelStatus();recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();const target=readUpdateTarget();if(target)$('login-error').textContent='先前更新的目标版本为 '+target+'，尚未确认当前运行版本。请重新登录后核验；VPN 未重载。';}
-async function enterConsole(data) {cancelStatus();cancelUpdateRestart();if(finishOperation)finishOperation();sessionGeneration++;const session=sessionGeneration;csrf=data.csrf;if(typeof startupResume==='function')startupResume();$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status(()=>true,{explicit:true});if(session===sessionGeneration&&csrf){const target=readUpdateTarget();if(target)await operation('核验更新后版本',()=>waitForUpdatedConsole(target,true));}}
+function showLogin() {cancelUpdateCheck(true);globalThis.AnyTLSRuntime?.cancel(true);cancelUpdateRestart();if(typeof startupCancel==='function')startupCancel(true);if(finishOperation)finishOperation();ruleCommitting=false;$('rule-fields').disabled=false;cancelStatus();recordsResetFilters();cancelRecords(true);sessionGeneration++;invalidateRules();invalidateGroups();clearProfiles();invalidateNodes();clearImportSecrets();serviceState=null;renderServiceButtons();csrf='';etag='';clearUpdate();$('yaml-editor').value='';$('yaml-editor').disabled=true;$('profile-name').value='';$('nodes-list').replaceChildren();$('groups-list').replaceChildren();nodesLoaded=false;$('nodes-search').value='';$('nodes-count').textContent='尚未读取';$('groups-count').textContent='尚未读取';$('update-result').textContent='尚未检查。';$('console-view').hidden=true;$('login-view').hidden=false;$('password').value='';renderExtraButtons();closeDrawer();const target=readUpdateTarget();if(target)$('login-error').textContent='先前更新的目标版本为 '+target+'，尚未确认当前运行版本。请重新登录后核验；VPN 未重载。';}
+async function enterConsole(data) {cancelUpdateCheck(true);cancelStatus();cancelUpdateRestart();if(finishOperation)finishOperation();sessionGeneration++;const session=sessionGeneration;csrf=data.csrf;scheduleUpdateCheck();if(typeof startupResume==='function')startupResume();$('password').value='';$('login-view').hidden=true;$('console-view').hidden=false;$('login-error').textContent='';if(currentView==='connections')openRecords();await status(()=>true,{explicit:true});if(session===sessionGeneration&&csrf){const target=readUpdateTarget();if(target)await operation('核验更新后版本',()=>waitForUpdatedConsole(target,true));}}
 $('login-form').addEventListener('submit',async event=>{
- event.preventDefault();cancelStatus();cancelUpdateRestart();if(finishOperation)finishOperation();sessionGeneration++;
+ event.preventDefault();cancelUpdateCheck(true);cancelStatus();cancelUpdateRestart();if(finishOperation)finishOperation();sessionGeneration++;
  const request=++loginRequest,session=sessionGeneration,button=event.submitter;button.disabled=true;$('login-error').textContent='正在验证…';
  try{const data=await api('/login',{method:'POST',body:{username:$('username').value,password:$('password').value}});if(request!==loginRequest||session!==sessionGeneration)return;await enterConsole(data);}
  catch(e){if(request===loginRequest&&session===sessionGeneration){$('password').value='';$('login-error').textContent=e.message;}}
  finally{if(request===loginRequest)button.disabled=false;}
 });
-$('logout').addEventListener('click',()=>{cancelStatus();if(updateRestartOwner){cancelUpdateRestart();if(finishOperation)finishOperation();}forgetUpdateTarget();cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
+$('logout').addEventListener('click',()=>{cancelUpdateCheck(true);cancelStatus();if(updateRestartOwner){cancelUpdateRestart();if(finishOperation)finishOperation();}forgetUpdateTarget();cancelRecords(true);return operation('退出登录',async()=>{await api('/logout',{method:'POST',body:{}});showLogin();});});
 function cancelStatus() {
  const owner=polling;if(!owner)return;polling=false;clearTimeout(owner.timer);owner.controller.abort();owner.cancel();
 }
@@ -550,9 +550,11 @@ function clearUpdate(text='尚未检查。') {
 }
 function renderUpdate(data,install) {
  const statuses={UPDATED:'磁盘程序已安装',RESTART_REQUIRED:'已安装新版，需重启控制台',UPDATE_AVAILABLE:'发现可用更新',UP_TO_DATE:'磁盘程序已是最新版本'};
- if(!data||!['current','installed','latest'].every(k=>typeof data[k]==='string'&&data[k].trim())||!['available','sourceOnly','updated','restartRequired'].every(k=>typeof data[k]==='boolean')||!own(statuses,data.status)||['restartScheduled','restartManaged'].some(k=>own(data,k)&&typeof data[k]!=='boolean')||own(data,'restartError')&&typeof data.restartError!=='string'||install&&(data.status!=='UPDATED'||!data.updated||!data.restartRequired)||data.restartScheduled===true&&(!install||!validUpdateTarget(data.installed)||data.installed!==data.latest||data.status!=='UPDATED'||!data.updated||!data.restartRequired))throw new Error('更新响应不完整，安装结果待核对。请重新检查；不会自动回滚或重启。');
+ if(!data||!['current','installed','latest'].every(k=>validUpdateTarget(data[k]))||!['available','sourceOnly','updated','restartRequired'].every(k=>typeof data[k]==='boolean')||!own(statuses,data.status)||['restartScheduled','restartManaged'].some(k=>own(data,k)&&typeof data[k]!=='boolean')||own(data,'restartError')&&typeof data.restartError!=='string'||install&&(data.status!=='UPDATED'||!data.updated||!data.restartRequired)||data.restartScheduled===true&&(!install||!validUpdateTarget(data.installed)||data.installed!==data.latest||data.status!=='UPDATED'||!data.updated||!data.restartRequired))throw new Error('更新响应不完整，安装结果待核对。请重新检查；不会自动回滚或重启。');
+ if(!install&&(data.updated||data.restartScheduled===true||data.status==='UPDATED'||(data.status==='UPDATE_AVAILABLE')!==data.available||data.restartRequired!==(data.current!==data.installed)||data.status==='RESTART_REQUIRED'&&!data.restartRequired||data.status==='UP_TO_DATE'&&data.restartRequired))throw new Error('检查更新失败，未取得可信版本信息。');
  updateRestartManaged=data.restartManaged===true;
  updateAvailable=data.available&&!data.sourceOnly&&data.status==='UPDATE_AVAILABLE';
+ $('run-update').disabled=busy||!updateAvailable;
  const restart=data.restartRequired||data.current!==data.installed;
  const lines=[statuses[data.status],'当前控制台（内存）：'+data.current,'已安装程序（磁盘）：'+data.installed,'官方最新版本：'+data.latest];
  if(data.sourceOnly)lines.push('当前平台仅有源码或缺少完整预编译材料，不能安装；不会调用 Go 编译。');
@@ -561,27 +563,98 @@ function renderUpdate(data,install) {
  if(install)lines.push('配置已保留；更新不调用特权助手或系统授权。',helperActivationGuidance);
  $('update-result').textContent=lines.join('\n');
 }
-function updateOperation(install) {
- if(busy||!csrf||install&&!updateAvailable)return;
- if(install&&!confirm('将下载并校验官方预编译程序，备份程序并保留配置；无需 Go、特权助手或系统授权。'+(updateRestartManaged?'安装验证通过后将自动重启 Web 控制台，浏览器等待恢复并核验版本；可能需要重新登录。':'当前控制台未确认受托管，安装后需手动重启 Web 控制台。')+'不会重载 VPN。继续？'))return;
- return operation(install?'安装更新':'检查新版本',async()=>{
-  const session=sessionGeneration,current=()=>session===sessionGeneration&&Boolean(csrf)&&(!runtimeCheckToken||globalThis.AnyTLSRuntime.checkCurrent(runtimeCheckToken));
-  const runtimeCheckToken=!install?globalThis.AnyTLSRuntime?.checkToken():null;
-  clearUpdate(install?'正在下载、校验并安装预编译更新…':'正在检查官方稳定版本…');
-  try {
-   const data=await api(install?'/update':'/update-check',install?{method:'POST',body:{confirm:true}}:{},current);
+// One authenticated-document owner for automatic, update-page and debug reads.
+// This is intentionally independent of route/status polling and mutation busy UI.
+let updateCheckOwner=null,updateCheckTimer=null,updateCheckDue=0,updateCheckSession=-1,updateInstalling=false;
+let updateCheckObservation=null,updateCheckState='unchecked',updateCheckAttemptAt=null;
+function updateCheckPublish(){
+ globalThis.AnyTLSRuntime?.publish('updateCheck');
+ globalThis.AnyTLSProduct?.updateCheck?.({state:updateCheckState,observation:updateCheckObservation,attemptedAt:updateCheckAttemptAt});
+}
+function cancelUpdateCheck(reset=false){
+ clearTimeout(updateCheckTimer);updateCheckTimer=null;
+ const old=updateCheckOwner;updateCheckOwner=null;
+ if(old){clearTimeout(old.timer);old.controller.abort();old.cancel();}
+ if(reset){updateCheckSession=-1;updateCheckDue=0;updateCheckObservation=null;updateCheckState='unchecked';updateCheckAttemptAt=null;}
+ else if(old){updateCheckDue=0;updateCheckState=updateCheckObservation?'paused':'unchecked';}
+ updateCheckPublish();
+}
+function scheduleUpdateCheck(){
+ clearTimeout(updateCheckTimer);updateCheckTimer=null;
+ if(!csrf||document.hidden||globalThis.navigator?.onLine===false||updateCheckOwner||updateInstalling||updateRestartOwner)return;
+ // A canceled/logout document cannot silently re-admit a prior session's timer.
+ if(updateCheckSession!==sessionGeneration){updateCheckSession=sessionGeneration;updateCheckDue=0;}
+ updateCheckTimer=setTimeout(()=>{updateCheckTimer=null;checkUpdate();},Math.max(0,updateCheckDue-Date.now()));
+}
+function checkUpdate(){
+ if(updateCheckOwner)return updateCheckOwner.promise;
+ if(!csrf||document.hidden||globalThis.navigator?.onLine===false||updateInstalling||updateRestartOwner)return Promise.resolve();
+ updateCheckSession=sessionGeneration;clearTimeout(updateCheckTimer);updateCheckTimer=null;
+ const o={session:sessionGeneration,controller:new AbortController(),timer:null,cancel:null,promise:null};
+ updateCheckOwner=o;updateCheckDue=Date.now()+900000;
+ const token=globalThis.AnyTLSRuntime?.checkToken();
+ const current=()=>updateCheckOwner===o&&o.session===sessionGeneration&&Boolean(csrf)&&!document.hidden&&!o.controller.signal.aborted&&(!token||globalThis.AnyTLSRuntime?.checkCurrent(token));
+ updateAvailable=false;$('run-update').disabled=true;updateCheckState='checking';updateCheckAttemptAt=new Date().toISOString();
+ $('update-result').textContent='正在后台检查官方稳定版本…'+(updateCheckObservation?'\n上次成功检查：'+updateCheckObservation.checkedAt+'\n'+updateCheckObservation.text:'');updateCheckPublish();
+ const cancelled=new Promise((_,reject)=>o.cancel=()=>reject(new Error('检查已取消。')));
+ cancelled.catch(()=>{}); // Cancellation can precede the deferred worker.
+ o.timer=setTimeout(()=>{if(updateCheckOwner===o){o.controller.abort();o.cancel();}},35000);
+ // Defer the worker so even synchronous fixture completions see an assigned promise.
+ o.promise=Promise.resolve().then(async()=>{
+  try{
    if(!current())return;
-   renderUpdate(data,install);
-   if(!install&&runtimeCheckToken&&!globalThis.AnyTLSRuntime.acceptCheck(data,runtimeCheckToken))throw new Error('检查更新失败，未取得可信版本信息。请重新检查。');
-   if(install&&data.restartScheduled===true){rememberUpdateTarget(data.installed);await waitForUpdatedConsole(data.installed);return;}
-   notice(install?'预编译更新已安装；请查看版本与重启提示。':'版本检查完成，请查看下方结果。');
-  } catch(error) {
+   const data=await Promise.race([api('/update-check',{signal:o.controller.signal},current),cancelled]);
    if(!current())return;
-   if(!install)globalThis.AnyTLSRuntime?.checkFailure(runtimeCheckToken);
-   clearUpdate((install?'安装未能确认完成。':'检查未完成。')+'\n'+(error.code==='UPDATE_UNAVAILABLE'?messages.UPDATE_UNAVAILABLE:error.message));
-   throw error;
+   renderUpdate(data,false); // Validates the whole DTO before committing install authority.
+   if(token)globalThis.AnyTLSRuntime?.acceptCheck(data,token);
+   updateCheckObservation={data,checkedAt:new Date().toISOString(),text:$('update-result').textContent};
+   updateCheckState=data.sourceOnly?'unsupported':data.status==='RESTART_REQUIRED'?'restart':data.available?'available':'current';
+   $('update-result').textContent+='\n上次成功检查：'+updateCheckObservation.checkedAt;
+   updateCheckDue=Date.now()+3600000;
+  }catch{
+   // Timeouts are current failures, but cancel/session/token changes are not.
+   if(updateCheckOwner!==o||o.session!==sessionGeneration||!csrf||document.hidden||token&&!globalThis.AnyTLSRuntime?.checkCurrent(token))return;
+   updateAvailable=false;$('run-update').disabled=true;updateCheckState='failed';
+   if(token)globalThis.AnyTLSRuntime?.checkFailure(token);
+   $('update-result').textContent='检查未完成。未取得可信版本信息；15 分钟后重试，也可手动检查。'+(updateCheckObservation?'\n保留上次成功检查：'+updateCheckObservation.checkedAt+'\n'+updateCheckObservation.text:'');
+   updateCheckDue=Date.now()+900000;
+  }finally{
+   clearTimeout(o.timer);
+   if(updateCheckOwner===o){updateCheckOwner=null;updateCheckPublish();scheduleUpdateCheck();}
   }
  });
+ return o.promise;
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelUpdateCheck();else scheduleUpdateCheck();});
+if(typeof window!=='undefined'){
+ window.addEventListener('pagehide',()=>cancelUpdateCheck());
+ window.addEventListener('pageshow',scheduleUpdateCheck);
+ window.addEventListener('offline',()=>cancelUpdateCheck());
+ window.addEventListener('online',scheduleUpdateCheck);
+}
+function updateOperation(install) {
+ if(!install)return checkUpdate();
+ if(busy||!csrf||!updateAvailable)return;
+ if(install&&!confirm('将下载并校验官方预编译程序，备份程序并保留配置；无需 Go、特权助手或系统授权。'+(updateRestartManaged?'安装验证通过后将自动重启 Web 控制台，浏览器等待恢复并核验版本；可能需要重新登录。':'当前控制台未确认受托管，安装后需手动重启 Web 控制台。')+'不会重载 VPN。继续？'))return;
+ cancelUpdateCheck();
+ updateInstalling=true;
+ return operation('安装更新',async()=>{
+  const session=sessionGeneration,current=()=>session===sessionGeneration&&Boolean(csrf);
+  clearUpdate('正在下载、校验并安装预编译更新…');
+  try {
+   const data=await api('/update',{method:'POST',body:{confirm:true}},current);
+   if(!current())return;
+   renderUpdate(data,install);
+
+   if(install&&data.restartScheduled===true){rememberUpdateTarget(data.installed);await waitForUpdatedConsole(data.installed);return;}
+   notice('预编译更新已安装；请查看版本与重启提示。');
+  } catch(error) {
+   if(!current())return;
+
+   clearUpdate('安装未能确认完成。\n'+(error.code==='UPDATE_UNAVAILABLE'?messages.UPDATE_UNAVAILABLE:error.message));
+   throw error;
+  }
+ }).finally(()=>{updateInstalling=false;updateCheckDue=Date.now()+3600000;if(updateCheckSession===sessionGeneration)scheduleUpdateCheck();});
 }
 $('check-update').onclick=()=>updateOperation(false);
 function renderExtraButtons(){

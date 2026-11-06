@@ -7,8 +7,9 @@ const root=process.env.WEB_ROOT||new URL('./web_assets/',import.meta.url).pathna
 function full(){const h=harness();h.run('window=globalThis;isSecureContext=false;navigator={};addEventListener=()=>{};currentView="update";');h.run(fs.readFileSync(root+'runtime.js','utf8'));return h;}
 const disk={installed:'v2026-11-03-01',current:'v2026-11-02-02',latest:'v2026-11-03-01',status:'RESTART_REQUIRED',available:false,sourceOnly:false,updated:false,restartRequired:true};
 const read=h=>JSON.parse(h.run('AnyTLSRuntime.summary()')).versions.installed;
+const flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
 async function seed(h){h.respond(disk);await h.get('check-update').onclick();return read(h);}
-const fixed='安装版本检查失败；保留上次显式观察，不代表实时磁盘状态。';
+const fixed='安装版本检查失败；保留上次观察，不代表实时磁盘状态。';
 for(const failure of ['503','throw','invalid','invalid-version'])test(`update page ${failure} after success marks FAILED and retains value/time`,async()=>{
  const h=full(),before=await seed(h);
  if(failure==='503')h.respond({error:'UPDATE_CHECK_FAILED'},503);
@@ -21,19 +22,19 @@ for(const failure of ['503','throw','invalid','invalid-version'])test(`update pa
 });
 for(const boundary of ['hidden-visible','new-session','new-epoch'])test(`late update-page 401 after ${boundary} cannot revoke session or mark newer observation failed`,async()=>{
  const h=full();await seed(h);let release;h.queue.push(()=>new Promise(resolve=>release=()=>resolve({ok:false,status:401,json:async()=>({error:'AUTH_REQUIRED'})})));const old=h.get('check-update').onclick();
- if(boundary==='hidden-visible'){h.document.hidden=true;h.emit('visibilitychange');h.document.hidden=false;h.emit('visibilitychange');}
+ await flush();if(boundary==='hidden-visible'){h.document.hidden=true;h.emit('visibilitychange');h.document.hidden=false;h.emit('visibilitychange');}
  if(boundary==='new-session')h.run('showLogin();csrf="NEW_SESSION";currentView="update";');
  h.run(`AnyTLSRuntime.acceptCheck(${JSON.stringify({...disk,installed:'v2026-11-04-01'})},AnyTLSRuntime.checkToken())`);
  const before=read(h),session=h.run('csrf');release();await old;
  assert.equal(h.run('csrf'),session);assert.deepEqual(read(h),before);assert.equal(read(h).refreshStatus,'NOT_FAILED');
 });
-for(const failure of ['503','throw'])test(`late update-page ${failure} after newer panel observation cannot mark it failed`,async()=>{
+for(const failure of ['503','throw'])test(`update-page and panel coalesce ${failure}, then manual retry replaces failed observation`,async()=>{
  const h=full();await seed(h);let release;h.queue.push(()=>new Promise((resolve,reject)=>release=()=>failure==='throw'?reject(Error('SECRET')):resolve({ok:false,status:503,json:async()=>({error:'UPDATE_CHECK_FAILED'})})));
- const old=h.get('check-update').onclick();h.run('busy=false');h.respond({...disk,installed:'v2026-11-04-01'});await h.run('AnyTLSRuntime.check()');const before=read(h);release();await old;assert.deepEqual(read(h),before);assert.equal(h.run('csrf'),'session');
+ const old=h.get('check-update').onclick();await flush();const joined=h.run('AnyTLSRuntime.check()');assert.equal(h.requests.length,2,'manual/debug share the current owner');release();await Promise.all([old,joined]);assert.equal(read(h).refreshStatus,'FAILED');h.respond({...disk,installed:'v2026-11-04-01'});await h.run('AnyTLSRuntime.check()');assert.equal(read(h).value,'v2026-11-04-01');assert.equal(read(h).refreshStatus,'NOT_FAILED');assert.equal(h.run('csrf'),'session');
 });
 test('hidden-visible alone fences late update failure without any newer check',async()=>{
  const h=full();await seed(h);let release;h.queue.push(()=>new Promise(resolve=>release=()=>resolve({ok:false,status:503,json:async()=>({error:'UPDATE_CHECK_FAILED'})})));
- const before=read(h),old=h.get('check-update').onclick();h.document.hidden=true;h.emit('visibilitychange');h.document.hidden=false;h.emit('visibilitychange');release();await old;assert.deepEqual(read(h),before);assert.equal(h.run('csrf'),'session');
+ const before=read(h),old=h.get('check-update').onclick();await flush();h.document.hidden=true;h.emit('visibilitychange');h.document.hidden=false;h.emit('visibilitychange');release();await old;assert.deepEqual(read(h),before);assert.equal(h.run('csrf'),'session');
 });
 test('current update-page 401 still invalidates the authenticated session',async()=>{
  const h=full();await seed(h);h.respond({error:'AUTH_REQUIRED'},401);await h.get('check-update').onclick();assert.equal(h.run('csrf'),'');assert.equal(read(h).value,null);

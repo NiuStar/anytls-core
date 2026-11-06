@@ -18,7 +18,7 @@
  }
  const label=v=>v.value||'UNKNOWN · 未取得证据';
  function render(){
-  $('runtime-installed').textContent=label(installed)+(installed.observedAt?' · 上次检查 '+installed.observedAt:' · 仅显式检查更新')+(installed.refreshFailed?' · 本次读取失败':'');
+  $('runtime-installed').textContent=label(installed)+(installed.observedAt?' · 上次检查 '+installed.observedAt:' · 登录后自动检查更新')+(installed.refreshFailed?' · 本次读取失败':'');
   $('runtime-webui').textContent=label(webui)+' · 内存版本';
   $('runtime-helper').textContent=label(helper)+' · '+(helper.available===true?'已认证助手':'助手可用性未确认');
   $('runtime-core').textContent='UNKNOWN · 缺少当前进程与版本的可靠关联';
@@ -33,7 +33,7 @@
   $('runtime-difference').textContent=differences.join(' ')+' 版本标签相同不证明字节相同；助手 SHA 仅启动时文件字节，非执行映射。';
   $('runtime-error').textContent=error;$('runtime-error').hidden=!error;
   $('runtime-summary').value=summary();
-  $('runtime-check').disabled=Boolean(owner)||!csrf||document.hidden;
+  $('runtime-check').disabled=Boolean(owner)||(typeof updateCheckOwner!=='undefined'&&Boolean(updateCheckOwner))||!csrf||document.hidden;
  }
  function publish(kind,data){
   if(!csrf||document.hidden)return;
@@ -69,7 +69,7 @@
  const checkCurrent=token=>Boolean(token&&token.epoch===epoch&&token.session===sessionGeneration&&csrf&&!document.hidden);
  function checkFailure(token){
   if(!checkCurrent(token))return false;
-  installed.refreshFailed=true;error='安装版本检查失败；保留上次显式观察，不代表实时磁盘状态。';render();return true;
+  installed.refreshFailed=true;error='安装版本检查失败；保留上次观察，不代表实时磁盘状态。';render();return true;
  }
  function acceptCheck(data,token){
   if(!checkCurrent(token))return false;
@@ -78,6 +78,7 @@
   installed={value,evidence:'DISK_CHECK',observedAt:stamp(),freshness:'LAST_OBSERVED'};error='';render();return true;
  }
  async function check(){
+  if(typeof checkUpdate==='function')return checkUpdate();
   if(owner||!csrf||busy||document.hidden)return;
   const token=checkToken(),o={session:sessionGeneration,controller:new AbortController(),timer:null};owner=o;
   const current=()=>owner===o&&token.epoch===epoch&&o.session===sessionGeneration&&Boolean(csrf)&&!document.hidden;
