@@ -2,7 +2,7 @@
 // No HTML strings are populated from API data. Credentials remain in memory only.
 const $ = id => document.getElementById(id);
 // Optional B1/B2 observer; status/API ownership remains in this file.
-function runtimePublish(kind,data){if(globalThis.AnyTLSProduct?.acceptRuntime?.(kind)===false)return;globalThis.AnyTLSRuntime?.publish(kind,data);}
+function runtimePublish(kind,data){if(globalThis.AnyTLSProduct?.acceptRuntime?.(kind)===false)return;globalThis.AnyTLSProduct?.publishRuntime?.(kind,data);globalThis.AnyTLSRuntime?.publish(kind,data);}
 let csrf = '', busy = false, etag = '', polling = false, currentView = 'overview', updateAvailable = false, serviceState = null;
 let sessionGeneration=0, loginRequest=0, profilesRequest=0, profilesEtag='', nodesRequest=0, nodesEtag='', groupsRequest=0, groupsEtag='', probeGeneration=0, probeRunning=false, probeBatch=null, finishOperation=null;
 const messages = {

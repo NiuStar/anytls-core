@@ -11,11 +11,16 @@ try{
  for(const width of [1440,390]){
   const context=await browser.newContext({viewport:{width,height:1000},acceptDownloads:true});
   await context.addCookies([{name:config.cookie_name,value:config.cookie_value,url:config.origin,httpOnly:true,sameSite:'Strict'}]);
-  const page=await context.newPage();page.on('pageerror',e=>errors.push(String(e)));
+  const page=await context.newPage(),apiRequests=[];page.on('request',r=>{if(r.url().includes('/api/v1/'))apiRequests.push(r.url());});page.on('pageerror',e=>errors.push(String(e)));
   // There are no route fulfillment callbacks: documents, assets and API calls
   // all go to the actual Go ServeHTTP implementation.
   await page.goto(config.origin,{waitUntil:'networkidle'});
   await page.waitForFunction(()=>!document.getElementById('console-view').hidden&&window.AnyTLSProduct);
+  const acceptedStatus=await page.evaluate(async()=>{await status();return serviceState;});
+  check('brand equals authenticated handler console version',await page.locator('#brand-version-number').textContent()===acceptedStatus.version,width);
+  check('brand console version authority explicit',(await page.locator('#brand-version').getAttribute('title')).includes('控制台版本'),width);
+  check('brand no automatic disk version check',!apiRequests.some(u=>u.includes('/update-check')),width);
+  check('packet loss honestly unmeasured without percent',await page.locator('[data-metric="packet-loss"]').evaluate(e=>e.textContent==='未测量'&&!e.parentElement.textContent.includes('%')),width);
   const go=async route=>{await page.evaluate(r=>location.hash=r,route);await page.waitForTimeout(160);};
   const shot=async name=>{await page.evaluate(async()=>{await document.fonts.ready;document.documentElement.style.scrollBehavior='auto';window.scrollTo({top:0,behavior:'instant'});});await page.waitForTimeout(120);const cdp=await context.newCDPSession(page);await cdp.send('DOM.enable');await cdp.send('CSS.enable');const document=await cdp.send('DOM.getDocument');const node=await cdp.send('DOM.querySelector',{nodeId:document.root.nodeId,selector:'#route-heading'});const fonts=await cdp.send('CSS.getPlatformFontsForNode',{nodeId:node.nodeId});await cdp.detach();check('actual Chinese glyphs '+name,fonts.fonts.some(f=>f.familyName==='Noto Sans CJK SC'&&f.glyphCount>0),width);const path=config.evidence+'/'+name+'-'+width+'.png';await page.screenshot({path,fullPage:true});shots.push({width,name,path,fonts:fonts.fonts});};
   const routes=await page.evaluate(()=>AnyTLSProduct.routes);check('exact 16 product routes',routes.length===16,width);
