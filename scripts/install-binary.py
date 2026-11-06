@@ -394,7 +394,10 @@ def core_reload_guard(app):
         if not safe:
             try:
                 reconciliation_lock_required(app)
-                safe = reconcile_preflight(app, root)
+                if os.path.lexists(root/'operator-reconciled.json'):
+                    safe = operator_reconciliation_safe(app, root)
+                else:
+                    safe = reconcile_preflight(app, root)
             except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError, subprocess.SubprocessError):
                 safe = False
         i.require(safe, 'Core reload UNKNOWN/pending; do not install or dispatch again; inspect receipt: '+str(root))
@@ -1044,7 +1047,7 @@ CORE_RELOAD_SUPPORT = {'__name__': 'installer_reload_support'}
 exec(CORE_RELOAD_WORKER, CORE_RELOAD_SUPPORT)
 
 
-def reconciliation_receipt(root, name):
+def reconciliation_receipt(root, name, *, raw_bytes=False):
     """Bounded no-follow read, binding inode/security metadata and complete bytes."""
     n = CORE_RELOAD_SUPPORT
     path = root / name
@@ -1060,7 +1063,106 @@ def reconciliation_receipt(root, name):
         raw = f.read(768*1024+1)
         n['need'](len(raw)==st.st_size and stamp(os.fstat(f.fileno()))==stamp(st) and
                   stamp(path.lstat())==stamp(st))
-    return n['strict'](raw), hashlib.sha256(raw).hexdigest()
+    return (raw if raw_bytes else n['strict'](raw)), hashlib.sha256(raw).hexdigest()
+
+
+def operator_reconciliation_safe(app, root):
+    """Read an explicit operator record, never author it or replay lifecycle work.
+
+    This is an app-user journal, not root attestation. Authentication, worker
+    absence and present config stability belong to the authorized writer; future
+    installers validate its frozen evidence without requiring VPN to stay stopped.
+    """
+    import base64
+    import datetime
+    reconciliation_lock_required(app)
+    n = CORE_RELOAD_SUPPORT
+    need, shape = n['need'], n['shape']
+    op = root.name.removeprefix('.core-reload-')
+    st = root.lstat()
+    need(n['hexstr'](op,32) and root.parent==app and app.is_absolute() and
+         app.resolve(strict=True)==app and root.resolve(strict=True)==root and
+         stat.S_ISDIR(st.st_mode) and st.st_uid==os.getuid() and stat.S_IMODE(st.st_mode)==0o700)
+    need(not any(os.path.lexists(root/name) for name in ('pending.json','accepted.json','reconciled.json')))
+    marker, _ = reconciliation_receipt(root,'operator-reconciled.json')
+    shape(marker,'schema status operation_id helper_epoch receipt_sha256 pending_raw_base64 pending_sha256 stop_read current authorization historical_process_identity action')
+    need(type(marker['schema']) is int and marker['schema']==1 and
+         marker['status']=='RECONCILED_RELOAD_STOPPED' and marker['operation_id']==op and
+         marker['authorization']=='EXPLICIT_OPERATOR' and marker['historical_process_identity']=='UNAVAILABLE' and
+         marker['action']=='UNLINK_PENDING_ONLY')
+    names = ('job.json','intent.json','response.json','result.json','claim.json','timeline.json','worker.log')
+    shape(marker['receipt_sha256'],' '.join(names))
+    receipts = {name:reconciliation_receipt(root,name,raw_bytes=name=='worker.log') for name in names}
+    need(all(n['hexstr'](marker['receipt_sha256'][name],64) and
+             receipts[name][1]==marker['receipt_sha256'][name] for name in names))
+    job, intent, response, result, claim, timeline = [receipts[name][0] for name in names[:-1]]
+    shape(job,'app operation_id digest tag revision before')
+    shape(intent,'operation_id helper_epoch action allow_insecure single_dispatch')
+    shape(result,'state operation_id error_class code')
+    shape(claim,'pid')
+    need(job['app']==str(app) and job['operation_id']==op and n['hexstr'](job['digest'],64) and
+         n['hexstr'](job['revision'],40) and type(job['tag']) is str and
+         re.fullmatch(r'v[0-9A-Za-z.+_-]+',job['tag']) and type(claim['pid']) is int and claim['pid']>0 and
+         result==dict(state='UNKNOWN',operation_id=op,error_class='ValueError',code='CORE_RELOAD_NEW_PROCESS'))
+    shape(job['before'],'state config core'+(' status' if 'status' in job['before'] else ''))
+    need(job['before']['state']=='RUNNING')
+    reconciliation_core(job['before']['core'],app)
+    pin = job['before']['config']
+    reconciliation_config(pin)
+    # Path identity, not a forever-equal historical config/selection content pin.
+    need(pin['identity']==hashlib.sha256(str(app/'config.yaml').encode()).hexdigest())
+    if 'status' in job['before']:
+        prior = job['before']['status']
+        need(type(prior) is dict and n['hexstr'](prior.get('helper_sha256'),64) and
+             type(prior.get('helper_version')) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',prior['helper_version']))
+        n['status_check'](prior,prior['helper_sha256'],prior['helper_version'],pin['identity'])
+        need(prior['loaded'] is True and prior['running'] is True)
+    epoch = intent['helper_epoch']
+    need(n['hexstr'](epoch,32) and marker['helper_epoch']==epoch and intent['operation_id']==op and
+         intent['action']=='reload' and type(intent['allow_insecure']) is bool and intent['single_dispatch'] is True)
+    shape(response,'timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics')
+    need(type(response['timeline_schema']) is int and response['timeline_schema']==1 and
+         response['code']=='' and response['ok'] is True and response['loaded'] is True and response['running'] is True and
+         response['operation_id']==op and response['helper_epoch']==epoch and response['timeline_availability']=='AVAILABLE' and
+         response['helper_sha256']==job['digest'] and response['helper_version']==job['tag'] and response['config_identity']==pin['identity'])
+    n['diagnostics'](response['diagnostics'])
+    n['trace_check'](timeline,job,epoch)
+    need(timeline['trace']['diagnostics']==response['diagnostics'] and
+         timeline['trace']['receipt_result']=='WRITTEN' and timeline['trace']['web_return']=='NOT_ATTEMPTED' and
+         len(timeline['trace']['streams'])==2 and {s['role'] for s in timeline['trace']['streams']}=={'HELPER','CORE'} and
+         all(s['provenance']==dict(version=job['tag'],git_revision=job['revision'],dirty=False,
+             sha256=job['digest'],sha_kind='FILE_BYTES',execution_mapping='NOT_ATTESTED') and
+             s['provenance']['dirty'] is False for s in timeline['trace']['streams']))
+    need(type(marker['pending_raw_base64']) is str and len(marker['pending_raw_base64'])<=4096 and n['hexstr'](marker['pending_sha256'],64))
+    pending = base64.b64decode(marker['pending_raw_base64'],validate=True)
+    need(base64.b64encode(pending).decode('ascii')==marker['pending_raw_base64'] and
+         hashlib.sha256(pending).hexdigest()==marker['pending_sha256'] and n['strict'](pending)==dict(operation_id=op))
+    stop = marker['stop_read']
+    n['timeline_shape'](stop)
+    stop_op = stop['operation_id']
+    need(n['hexstr'](stop_op,32) and stop_op!=op)
+    reconciliation_stop_trace(stop,stop_op,epoch,job)
+    # The existing STOP parser checks canonical wall times/spans. Parse both
+    # operation boundaries to order fractional RFC3339 timestamps correctly.
+    def wall(value):
+        need(type(value) is str and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{0,8}[1-9])?Z',value))
+        dt = datetime.datetime.strptime(value[:19],'%Y-%m-%dT%H:%M:%S')
+        fraction = value.partition('.')[2].removesuffix('Z') if '.' in value else ''
+        return (dt.year,dt.month,dt.day,dt.hour,dt.minute,dt.second,int(fraction.ljust(9,'0')))
+    need(wall(timeline['trace']['started_at'])<=wall(timeline['trace']['finished_at'])<=
+         wall(stop['trace']['started_at'])<=wall(stop['trace']['finished_at']))
+    current = marker['current']
+    shape(current,'state config core status')
+    reconciliation_config(current['config'])
+    need(current['state']=='STOPPED' and current['core'] is None and current['config']['identity']==pin['identity'])
+    n['status_check'](current['status'],job['digest'],job['tag'],pin['identity'])
+    need(current['status']['loaded'] is False and current['status']['running'] is False)
+    # Read-only receiver: in particular no worker probe, IPC, stop or unlink.
+    need(all(reconciliation_receipt(root,name,raw_bytes=name=='worker.log')==receipts[name] for name in names) and
+         reconciliation_receipt(root,'operator-reconciled.json')[0]==marker and
+         not any(os.path.lexists(root/name) for name in ('pending.json','accepted.json','reconciled.json')) and
+         all(getattr(root.lstat(),k)==getattr(st,k) for k in ('st_dev','st_ino','st_mode','st_uid','st_gid')))
+    return True
 
 
 def rejection_trace(r, job, epoch, diag):

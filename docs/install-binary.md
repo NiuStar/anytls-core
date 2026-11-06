@@ -67,6 +67,14 @@ curl -fsS https://raw.githubusercontent.com/NiuStar/anytls-core/main/get.sh | ba
 
 该功能由可信 main 安装脚本提供，不改变既有 `v2026-11-04-01` 二进制包；`--version` 固定下载包，不固定安装脚本版本。
 
+## 显式操作者对账记录（不自动创建）
+
+对于原助手回复／timeline 已成功 RELOAD/TUN、但安装 worker 以 `UNKNOWN / CORE_RELOAD_NEW_PROCESS` 结束的历史事务，自动预检拒绝对账**不适用**；当前 STOPPED 或单独删除 pending 也不能解除 guard。只有操作者另外明确授权、独立核对原回执及同 epoch 的后续认证 `MANUAL_STOP / SUCCEEDED`、当前完整 STOPPED 捕获、配置稳定和 worker 已退出后，才能在安装锁内先持久写入独立 `operator-reconciled.json`，最后只删除对应 `pending.json`。安装器不会创建该记录、自动 STOP 这种事务，或把原 result 改为成功。
+
+记录 schema=1，status=`RECONCILED_RELOAD_STOPPED`，authorization=`EXPLICIT_OPERATOR`，historical_process_identity=`UNAVAILABLE`，action=`UNLINK_PENDING_ONLY`；绑定原 operation／helper epoch，`receipt_sha256` 精确覆盖 `job.json intent.json response.json result.json claim.json timeline.json worker.log`，并保留原 pending 完整字节的 `pending_raw_base64` 与 `pending_sha256`、认证 `stop_read` 和完整 `current` 捕获。所有原回执保持原地不变；marker 不是 `accepted.json`，也不证明历史新进程完整身份或网络成功。
+
+后续 guard 仅在锁内只读验证：事务目录为实际用户所有的 canonical 0700 目录、各回执为相同用户所有的 0600 普通单链接文件，摘要／严格 JSON／类型／原成功回复及实际 trace_check／停止时间顺序／来源 SHA-tag-revision／配置路径身份全部匹配，pending 和 accepted／自动 reconciled 记录均不存在。marker 缺失、畸形、绑定失败或 pending 重现继续阻断；不修复、不归档、不发 IPC 或生命周期请求。当前配置内容及 VPN 状态允许操作者以后更改：冻结的 STOPPED 证据不是永远禁止启动。该记录和既有 journal 一样由应用用户控制，不是 root 签名／不可篡改证明；认证、最新性、配置稳定和 worker absence 是授权写入时的检查责任。
+
 ## 仅验证下载
 
 ```sh
