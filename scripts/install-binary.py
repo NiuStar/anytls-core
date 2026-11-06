@@ -889,8 +889,8 @@ def processes(app, timeout=5):
             rows.append(dict(pid=int(f[0]), uid=int(f[1]), birth=' '.join(f[2:7]), command=cmd))
     return rows
 
-def core_command(app, op, epoch):
-    return str(app/'service/anytls-macos')+' -config '+str(app/'service/config.yaml')+' -network tun -record-service -allow-insecure -startup-operation '+op+' -startup-epoch '+epoch+' -dns-observe-service run'
+def core_command(app, op, epoch, insecure=True):
+    return str(app/'service/anytls-macos')+' -config '+str(app/'service/config.yaml')+' -network tun -record-service'+(' -allow-insecure' if insecure else '')+' -startup-operation '+op+' -startup-epoch '+epoch+' -dns-observe-service run'
 
 def tun_readback():
     # Kernel route lookup only: this sends no packet and performs no DNS/TLS.
@@ -1011,8 +1011,10 @@ def worker(root):
         need(status['loaded'] and status['running'])
         unchanged()
         rows = processes(app)
+        # Reload permission permits saved insecure TLS; Go emits the flag only
+        # when compiled outbounds actually need it. Accept exactly its two forms.
         need(len(rows)==1 and rows[0]['uid']==0 and rows[0]['pid']!=job['before']['core']['pid'] and
-             rows[0]['command']==core_command(app,op,epoch), 'CORE_RELOAD_NEW_PROCESS')
+             rows[0]['command'] in (core_command(app,op,epoch,False), core_command(app,op,epoch,True)), 'CORE_RELOAD_NEW_PROCESS')
         # Re-read the entire census: old PID/identity must be absent, no second core.
         need(processes(app)==rows, 'CORE_RELOAD_PROCESS_DRIFT')
         interface = tun_readback()

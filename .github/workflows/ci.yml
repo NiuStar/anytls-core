@@ -38,6 +38,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_download_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_managed_webui_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_core_reload_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_core_argv_policy_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_process_rows_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_core_reload_durability_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_reconcile_test.py

@@ -221,12 +221,12 @@ class Worker(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
         self.assertEqual(sum(q['action']=='reload' for q in self.requests), 1)
 
-    def test_missing_allow_flag_is_unknown_without_resend(self):
+    def test_strict_command_without_allow_flag_succeeds_without_resend(self):
         self.new['command'] = self.new['command'].replace(' -allow-insecure', '')
-        self.assertEqual(self.run_worker(), 1)
+        self.assertEqual(self.run_worker(), 0)
         result = json.loads((self.tx/'result.json').read_bytes())
-        self.assertEqual(result['state'], 'UNKNOWN')
-        self.assertEqual(result['code'], 'CORE_RELOAD_NEW_PROCESS')
+        self.assertEqual(result['state'], 'SUCCEEDED')
+        self.assertEqual(result['new_core'], self.new)
         self.assertEqual(self.n['worker'](self.tx), 1)
         self.assertEqual(sum(q['action']=='reload' for q in self.requests), 1)
 
@@ -372,6 +372,16 @@ def tun_readback(): return 'utun123'
         self.n['SOCKET']=self.app/'missing.sock'
         self.n['HELPER']=self.app/'missing-helper'
         self.n['processes']=lambda app:[]
+        real_lexists = os.path.lexists
+        helper_plist = '/Library/LaunchDaemons/com.nousresearch.anytls-control.plist'
+        with mock.patch.object(os.path, 'lexists', side_effect=lambda p: True if str(p)==helper_plist else real_lexists(p)), \
+             mock.patch.object(self.n['subprocess'], 'run') as runner:
+            with self.assertRaisesRegex(ValueError, 'HELPER_UNAVAILABLE'):
+                self.n['capture'](self.app)
+            runner.assert_not_called()
+        plist_absent = mock.patch.object(os.path, 'lexists', side_effect=lambda p: False if str(p)==helper_plist else real_lexists(p))
+        plist_absent.start()
+        self.addCleanup(plist_absent.stop)
         def absent(argv,**kwargs):
             label=argv[-1].split('/')[-1]
             return types.SimpleNamespace(returncode=113,stdout=b'',stderr=('Bad request.\nCould not find service "'+label+'" in domain for system\n').encode())
