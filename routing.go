@@ -32,6 +32,7 @@ func applyRoutingRecords(path string, b []byte, nodes []node, selected node, cfg
 
 func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cfg map[string]any, allowInsecure bool, manifest *cr.Manifest, sources *[]fp.Source) error {
 	var doc struct {
+		IPv6      yaml.Node              `yaml:"ipv6"`
 		Rules     []string               `yaml:"rules"`
 		Groups    []proxyGroup           `yaml:"proxy-groups"`
 		Providers map[string]any         `yaml:"rule-providers"`
@@ -42,6 +43,10 @@ func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cf
 	}
 	if len(doc.Providers) > 0 {
 		return errors.New("remote rule-providers require audited conversion to rule-sets; refusing silent fallback")
+	}
+	ipv6, err := configuredIPv6(&doc.IPv6)
+	if err != nil {
+		return err
 	}
 	for _, g := range doc.Groups {
 		if _, err := resolveGroup(g.Name, nodes, doc.Groups); err != nil {
@@ -58,6 +63,7 @@ func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cf
 		manifest.Rules = append(manifest.Rules, syntheticOrigin("hijack-dns", cr.SyntheticHijack), syntheticOrigin("sniff", cr.SyntheticSniff), syntheticOrigin("hijack-dns", cr.SyntheticHijack))
 	}
 	if len(doc.Rules) == 0 {
+		applyTUNAddressFamily(cfg, ipv6)
 		return nil
 	}
 	route := cfg["route"].(map[string]any)
@@ -281,5 +287,6 @@ func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cf
 	if inbound["type"] == "tun" {
 		inbound["route_exclude_address"] = excluded
 	}
+	applyTUNAddressFamily(cfg, ipv6)
 	return nil
 }

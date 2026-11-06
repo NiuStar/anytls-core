@@ -72,6 +72,9 @@ func TestUnifiedDNSCaptureIndependentOfUserRules(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o, config, set := recordsCompilerFixture(t, tc.rules)
+			// This contract intentionally exercises the explicit dual-stack mode.
+			config = append([]byte("ipv6: true\n"), config...)
+			runtimeWrite(t, o.Config, config, 0600)
 			o.Mode = "tun"
 			compiled, err := prepareRuntimeWithRecords(&o)
 			if err != nil {

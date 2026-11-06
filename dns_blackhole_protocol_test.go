@@ -124,7 +124,7 @@ func dnsBHStart(t *testing.T, answer func(http.ResponseWriter, *http.Request, *d
 	caPath := filepath.Join(dir, "ca.pem")
 	runtimeWrite(t, caPath, ca, 0600)
 	path := filepath.Join(dir, "config.yaml")
-	runtimeWrite(t, path, []byte(fmt.Sprintf("nodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nrules:\n - IP-CIDR,127.0.0.1/32,DIRECT\n - MATCH,P\n", peerPort, caPath)), 0600)
+	runtimeWrite(t, path, []byte(fmt.Sprintf("ipv6: true\nnodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nrules:\n - IP-CIDR,127.0.0.1/32,DIRECT\n - MATCH,P\n", peerPort, caPath)), 0600)
 	compiled, err := prepareRuntimeWithRecords(&runtimeOptions{Config: path, NodeName: "P", Mode: "tun", LocalPort: 11080})
 	if err != nil {
 		t.Fatal(err)

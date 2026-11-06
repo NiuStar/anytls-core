@@ -79,6 +79,35 @@ anytls webui --listen 0.0.0.0 --port 18089
 
 SOCKS／HTTP 代理模式默认监听 `0.0.0.0:11080`；使用 `--local-listen 127.0.0.1` 可限制为本机。代理入口没有入站认证，不应直接暴露到不可信网络。请通过防火墙限制访问。TUN 及特权助手 Unix socket 不属于 TCP 监听，不改为网络服务。
 
+### TUN 初始地址族策略（本地候选，尚未发布）
+
+**默认改为 IPv4-only；这是有意的默认行为迁移，不是自动探测或失败后换族。**
+顶层 `ipv6` 缺省或 `false` 时，TUN 只配置 `172.19.0.1/30`，不配置虚拟 IPv6
+地址；自动路由保持启用。统一严格 DoH 使用 `ipv4_only`：正常返回 A，AAAA 返回
+`NOERROR` 空答案（NODATA），不改为 REFUSED、不转发到其他解析器。
+
+确实需要双栈的旧配置须显式加入：
+
+```yaml
+ipv6: true
+nodes:
+  # 保留原节点、证书与分流配置
+```
+
+仅接受 YAML 布尔值 `true` / `false`（以及解析为布尔的别名）；`null`、空值、
+字符串（包括 `off`、`"false"`）、数字、列表和映射均拒绝，代理模式导入／校验也不
+静默丢弃坏值。Clash 导入、保存和导出保留显式 `false`。
+
+`ipv6: true` 恢复原 TUN `fdfe:dcba:9876::1/126` 和双栈 DNS，前提是所选业务出口
+确有可用 IPv6 目标连接能力；程序不检测或承诺此能力。物理主机 IPv6、虚拟 TUN、
+AnyTLS 外层服务器地址族与远端目标地址族不同，不能由服务器是 IPv4／IPv6 推断出口。
+IPv6 服务器仍保留 `/128` 物理旁路。`-server` / `-password-file` 构建默认同为
+IPv4-only，无新增命令行开关；需双栈时使用 YAML。普通 mixed／proxy 模式不继承
+本节的 TUN 地址／DNS 变化。严格 TLS、leaf pin、选择与分流、DoH detour 不变；
+不新增 fallback、连接重试、目标域名特例或静态目标 IP。
+
+本地无特权 SDK／loopback 验证不等于 macOS 正式 TUN、浏览器或目标站点验收。
+
 ## 功能
 
 ### 当前候选控制台与运行边界

@@ -141,13 +141,17 @@ func loadNodes(path string) ([]node, error) {
 
 func loadNodesBytes(b []byte) ([]node, error) {
 	var doc struct {
-		Proxies []node `yaml:"proxies"`
-		Nodes   []node `yaml:"nodes"`
+		IPv6    yaml.Node `yaml:"ipv6"`
+		Proxies []node    `yaml:"proxies"`
+		Nodes   []node    `yaml:"nodes"`
 	}
 	if err := yaml.Unmarshal(b, &doc); err != nil {
 		return nil, err
 	}
 	nodes := append(doc.Proxies, doc.Nodes...)
+	if _, err := configuredIPv6(&doc.IPv6); err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	for _, n := range nodes {
 		if n.Name == "" || seen[n.Name] {
@@ -278,9 +282,10 @@ func buildNodeWithListen(n node, mode string, port int, allowInsecure bool, list
 		if net.ParseIP(n.Server).To4() == nil {
 			prefix = "/128"
 		}
-		cfg["inbounds"] = []any{map[string]any{"type": "tun", "tag": "tun-in", "address": []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"}, "mtu": 1500, "auto_route": true, "route_exclude_address": []string{n.Server + prefix}, "dns_mode": "hijack", "stack": "mixed"}}
+		cfg["inbounds"] = []any{map[string]any{"type": "tun", "tag": "tun-in", "mtu": 1500, "auto_route": true, "route_exclude_address": []string{n.Server + prefix}, "dns_mode": "hijack", "stack": "mixed"}}
 		cfg["dns"] = unifiedTUNDNS()
 		cfg["route"].(map[string]any)["rules"] = unifiedTUNDNSRules()
+		applyTUNAddressFamily(cfg, false)
 	default:
 		return nil, errors.New("mode must be proxy or tun")
 	}

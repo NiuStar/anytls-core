@@ -97,7 +97,7 @@ func TestBrowserDefaultCompiledHTTPSFallback(t *testing.T) {
 			dir := t.TempDir()
 			caPath := filepath.Join(dir, "ca.pem")
 			runtimeWrite(t, caPath, ca, 0600)
-			config := fmt.Sprintf("nodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\n - {name: Q, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nrules:\n", pp, caPath, qp, caPath)
+			config := fmt.Sprintf("ipv6: true\nnodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\n - {name: Q, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nrules:\n", pp, caPath, qp, caPath)
 			source := []byte(`{"version":3,"rules":[{"ip_cidr":["127.0.0.0/8","2001:db8::/32"]}]}`)
 			if tc.reject {
 				source = []byte(`{"version":3,"rules":[{"ip_cidr":["127.0.0.0/8"]}]}`)

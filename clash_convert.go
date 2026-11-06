@@ -44,6 +44,9 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 	if err != nil {
 		return nil, r, err
 	}
+	if _, err := configuredIPv6(conversionField(root, "ipv6")); err != nil {
+		return nil, r, errWebConversionInvalid
+	}
 	native, clash := conversionField(root, "nodes") != nil, conversionField(root, "proxies") != nil || conversionField(root, "proxy-providers") != nil
 	if native && clash {
 		return nil, r, errWebConversionInvalid
@@ -90,6 +93,9 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 	r.Format = "clash"
 	r.Converted = true
 	out := conversionMap()
+	if ipv6 := conversionField(root, "ipv6"); ipv6 != nil {
+		conversionSet(out, "ipv6", ipv6)
+	}
 	c := conversionState{ctx: ctx, fetch: fetch, report: &r, nodes: conversionSeq(), providers: map[string][]string{}, ruleProviders: map[string]conversionRuleProvider{}}
 	if n := conversionField(root, "proxies"); n != nil {
 		c.addNodes(n, "proxies")
@@ -252,7 +258,7 @@ func webConvertConfiguration(ctx context.Context, input []byte, remote bool, fet
 	for i := 0; i < len(root.Content); i += 2 {
 		key := root.Content[i].Value
 		switch key {
-		case "proxies", "proxy-providers", "proxy-groups", "rules", "rule-providers", "rule-sets":
+		case "proxies", "proxy-providers", "proxy-groups", "rules", "rule-providers", "rule-sets", "ipv6":
 		default:
 			c.warn(conversionPublicField(key, i/2) + ": Clash control field is not applicable to native configuration")
 		}

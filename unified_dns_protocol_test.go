@@ -321,6 +321,12 @@ type unifiedDNSFixture struct {
 
 func unifiedDNSStart(t *testing.T, rules, failure string) *unifiedDNSFixture {
 	t.Helper()
+	// The existing A+AAAA contracts intentionally select dual-stack.
+	return unifiedDNSStartPolicy(t, rules, failure, "ipv6: true\n")
+}
+
+func unifiedDNSStartPolicy(t *testing.T, rules, failure, policy string) *unifiedDNSFixture {
+	t.Helper()
 	f := &unifiedDNSFixture{failure: failure, questions: make(map[string]int)}
 	// High-port trap is mandatory and calibrated. Low-port trap is supplementary:
 	// SOCKS clients can address :53 without binding it, including on ordinary UID.
@@ -402,7 +408,7 @@ func unifiedDNSStart(t *testing.T, rules, failure string) *unifiedDNSFixture {
 	if failure == "password" {
 		password = "synthetic-wrong-only"
 	}
-	config := fmt.Sprintf("nodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: %s, sni: g21.invalid, ca: %q, min-idle-session: 0}\n - {name: Q, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nproxy-groups:\n - {name: business, type: select, proxies: [Q], selected: Q}\n", pPort, password, caPath, qPort, caPath)
+	config := policy + fmt.Sprintf("nodes:\n - {name: P, type: anytls, server: 127.0.0.1, port: %d, password: %s, sni: g21.invalid, ca: %q, min-idle-session: 0}\n - {name: Q, type: anytls, server: 127.0.0.1, port: %d, password: synthetic-unified-only, sni: g21.invalid, ca: %q, min-idle-session: 0}\nproxy-groups:\n - {name: business, type: select, proxies: [Q], selected: Q}\n", pPort, password, caPath, qPort, caPath)
 	if rules == "ruleset" {
 		b := []byte(`{"version":3,"rules":[{"ip_cidr":["127.0.0.0/8"]}]}`)
 		runtimeWrite(t, filepath.Join(dir, "loop.json"), b, 0600)
