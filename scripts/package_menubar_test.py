@@ -19,6 +19,89 @@ spec.loader.exec_module(p)
 TAG = 'v2026-11-07-02'
 
 
+class DiagnosticTests(unittest.TestCase):
+    def exercise(self, stdout, reason, *, rc=0, timeout=False, actual=None, label=None, summary_kind='file'):
+        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
+            root = Path(tmp)
+            summary = root / 'summary'
+            summary.write_text('existing\n')
+            if summary_kind == 'symlink':
+                link = root / 'link'
+                link.symlink_to(summary)
+                summary_env = str(link)
+            else:
+                summary_env = str(summary)
+            captured, annotations = io.StringIO(), io.StringIO()
+            error = subprocess.TimeoutExpired('fixture', 90, output=stdout.encode(), stderr=b'secret stderr /private/path')
+            result = subprocess.CompletedProcess([], rc, stdout, 'secret stderr /private/path')
+            with mock.patch.dict(os.environ, dict(GITHUB_ACTIONS='true', GITHUB_STEP_SUMMARY=summary_env)), \
+                 mock.patch.object(p.subprocess, 'run', side_effect=error if timeout else None, return_value=result) as run, \
+                 mock.patch('sys.stdout', captured), mock.patch('sys.stderr', annotations):
+                with self.assertRaises(RuntimeError if rc or timeout else ValueError) as raised:
+                    p.run_tests(root / 'binaries', root / 'evidence')
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.kwargs['timeout'], 90)
+            if rc:
+                self.assertEqual(str(raised.exception), 'AnyTLSMenuBarTests failed: ' + str(rc))
+            if timeout:
+                self.assertIs(raised.exception.__cause__, error)
+            self.assertEqual((root / 'evidence/AnyTLSMenuBarTests.stdout').read_bytes(), stdout.encode())
+            self.assertEqual((root / 'evidence/AnyTLSMenuBarTests.stderr').read_bytes(), b'secret stderr /private/path')
+            annotation = annotations.getvalue()
+            self.assertIn('::error::AnyTLSMenuBarTests reason=' + reason + ' expected=95 actual=' + (str(actual) if actual is not None else 'unknown'), annotation)
+            self.assertNotIn('secret stderr', annotation)
+            self.assertNotIn('/private/path', annotation)
+            if label:
+                self.assertIn('label=' + label, annotation)
+            text = summary.read_text()
+            if summary_kind == 'symlink':
+                self.assertEqual(text, 'existing\n')
+            else:
+                self.assertIn(reason, text)
+                self.assertNotIn('secret stderr', text)
+                self.assertNotIn('/private/path', text)
+            return annotation, text
+
+    def test_nonzero_fail_label_preserves_rc_and_raw_output(self):
+        self.exercise('FAIL: first assertion 50%\nFAIL later\n', 'nonzero', rc=7, label='first assertion 50%25')
+
+    def test_timeout_retains_output_and_cause(self):
+        self.exercise('FAIL timed assertion\n', 'timeout', timeout=True, label='timed assertion')
+
+    def test_count_mismatch_fails_fast(self):
+        self.exercise(json.dumps(dict(status='PASS', checks=['one'])), 'count', actual=1)
+
+    def test_malformed_json_fails_fast_without_payload_leak(self):
+        annotation, text = self.exercise('{"private": "sensitive-json"', 'json')
+        self.assertNotIn('sensitive-json', annotation + text)
+
+    def test_inventory_failure_fails_fast(self):
+        self.exercise(json.dumps(dict(status='FAIL', checks=[])), 'inventory')
+
+    def test_sensitive_labels_redacted_before_truncation(self):
+        for key in ('password', 'TOKEN', 'secret', 'credential', 'api_token'):
+            annotation, text = self.exercise('FAIL: ' + 'x' * 220 + key + '=sensitive-value\n', 'nonzero', rc=1, label='[redacted]')
+            self.assertNotIn('sensitive-value', annotation + text)
+
+    def test_label_bounded_controls_removed(self):
+        annotation, text = self.exercise('FAIL: a\x1bb' + 'x' * 300 + '\n', 'nonzero', rc=1)
+        self.assertNotIn('\x1b', annotation + text)
+        self.assertEqual(len(annotation.split('label=')[1].rstrip('\n')), 200)
+
+    def test_local_failure_has_no_annotation_or_summary(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
+            result = subprocess.CompletedProcess([], 3, 'FAIL: local assertion\n', 'raw stderr\n')
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(p.subprocess, 'run', return_value=result), mock.patch('sys.stdout', stdout), mock.patch('sys.stderr', stderr):
+                with self.assertRaisesRegex(RuntimeError, 'failed: 3'):
+                    p.run_tests(Path(tmp) / 'test', Path(tmp) / 'evidence')
+            self.assertEqual(stdout.getvalue(), result.stdout + result.stderr)
+            self.assertEqual(stderr.getvalue(), '')
+
+    def test_symlink_summary_not_followed(self):
+        self.exercise('FAIL: assertion\n', 'nonzero', rc=1, summary_kind='symlink')
+
+
 class PackageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
@@ -60,7 +143,7 @@ class PackageTests(unittest.TestCase):
             path.chmod(0o755)
         self.info = dict(CFBundleIdentifier='org.anytls.menubar.candidate', CFBundleExecutable='AnyTLSMenuBar',
                          CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.2',
-                         CFBundleVersion='0.4.2.20261107.2', AnyTLSCoreVersion=TAG,
+                         CFBundleVersion='0.4.2.20261107.3', AnyTLSCoreVersion=TAG,
                          LSMinimumSystemVersion='13.0', LSUIElement=True)
         self.write_info()
         self.runtime = self.app / 'Contents/Resources/runtime/anytls-macos'
@@ -160,7 +243,7 @@ class PackageTests(unittest.TestCase):
             info = json.loads(archive.read('BUILD-INFO.json'))
             self.assertEqual(info['architecture'], 'amd64')
             self.assertEqual(info['app_version'], '0.4.2')
-            self.assertEqual(info['app_build'], '0.4.2.20261107.2')
+            self.assertEqual(info['app_build'], '0.4.2.20261107.3')
             self.assertEqual(info['corresponding_source'], self.prefix + '-darwin-amd64-corresponding-source.tar.gz')
             self.assertIn(b'Intel x86_64 ONLY', archive.read('README.txt'))
 
@@ -342,8 +425,15 @@ class PackageTests(unittest.TestCase):
                     filename = 'focus-checks.json' if name == 'FocusTests' else 'desktop-checks.json'
                     (root / filename).write_text(json.dumps(dict(count=n, checks=checks)))
             return subprocess.CompletedProcess(args, 0, stdout, '')
-        with mock.patch.object(p.subprocess, 'run', side_effect=fixture):
+        captured, annotations = io.StringIO(), io.StringIO()
+        with mock.patch.object(p.subprocess, 'run', side_effect=fixture), mock.patch('sys.stdout', captured), mock.patch('sys.stderr', annotations):
             self.assertEqual(p.run_tests(self.root / 'test', evidence), p.SUITES)
+        self.assertEqual(annotations.getvalue(), '')
+        self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
+        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 95, 'QuitTests': 250,
+                                    'ConnectivityTests': 49, 'FocusTests': 67,
+                                    'DesktopRuntimeTests': 81})
+        self.assertEqual(sum(p.SUITES.values()), 542)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())

@@ -36,6 +36,29 @@ final class QuitMockProtocol: URLProtocol {
     }
     func fail() { client?.urlProtocol(self,didFailWithError:URLError(.networkConnectionLost)) }
 }
+// Only the stalled-STOP fixtures use this adapter. The real model must reach
+// the held authenticated STOP before beginQuit returns, because the coordinator
+// creates its watchdog after that return. This is not a production deadline
+// policy: the separate slow-preflight case below uses the unwrapped model.
+private final class HeldStopQuitDriver: QuitDriver {
+    let model: MenuModel
+    let reachedStop: () -> Bool
+    init(model: MenuModel, reachedStop: @escaping () -> Bool) {
+        self.model=model; self.reachedStop=reachedStop
+    }
+    var quitContext: QuitAuthContext? { model.quitContext }
+    func beginQuit(context: QuitAuthContext, completion: @escaping (QuitOutcome) -> Void) {
+        model.beginQuit(context:context,completion:completion)
+        // Called from the top-level main run loop, not a main-queue block:
+        // nesting inside a dispatch callback would starve the fixture replies.
+        let end=Date().addingTimeInterval(4)
+        while !reachedStop() && Date()<end {
+            _=RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.005))
+        }
+        guard reachedStop() else { fputs("FAIL: held STOP fixture gate\n",stderr); exit(1) }
+    }
+    func abandonQuit(context: QuitAuthContext) { model.abandonQuit(context:context) }
+}
 @main struct QuitTests {
     static var checks: [String] = []
     static func check(_ ok: @autoclosure () -> Bool, _ name: String) {
@@ -163,7 +186,8 @@ final class QuitMockProtocol: URLProtocol {
         for mode in ["held","401","reset"] {
             let m=fixture(); var held: QuitMockProtocol?
             stopReply={ p in held=p; if mode == "401" { p.reply(401,["error":"AUTH_REQUIRED"]) } }
-            let q=QuitCoordinator(model:m,deadline:0.12); var result: Bool?
+            let driver=HeldStopQuitDriver(model:m,reachedStop:{ held != nil })
+            let q=QuitCoordinator(driver:driver,deadline:0.12); var result: Bool?
             q.start { result=$0 }; wait { held != nil }
             if mode == "reset" { m.api.reset() }
             wait { result != nil }
@@ -175,6 +199,38 @@ final class QuitMockProtocol: URLProtocol {
                 _=RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.04))
                 check(q.state == .blocked && m.uncertain,"late receipt cannot reopen expired quit")
             }
+            m.api.reset()
+        }
+        do {
+            let m=fixture(); let ordinaryHandler=QuitMockProtocol.handler!
+            var preflight: QuitMockProtocol?; var released=false
+            QuitMockProtocol.handler={ req,p in
+                if req.url!.path == "/api/v1/status" {
+                    // Record/authenticate the actual GET normally, but hold its
+                    // successful response beyond the unchanged 120ms deadline.
+                    check(req.url?.host == "127.0.0.1","slow preflight loopback fixture only")
+                    check(req.httpMethod == "GET","slow preflight GET method")
+                    preflight=p
+                    DispatchQueue.main.asyncAfter(deadline:.now()+0.25) {
+                        p.reply(200,["availability":"AVAILABLE","loaded":true,"running":true])
+                        released=true
+                    }
+                } else { ordinaryHandler(req,p) }
+            }
+            let q=QuitCoordinator(model:m,deadline:0.12); var results: [Bool]=[]
+            q.start { results.append($0) }
+            q.start { _ in check(false,"slow preflight repeated termination must coalesce") }
+            wait { preflight != nil }; wait { !results.isEmpty }
+            check(results == [false] && q.state == .blocked && m.uncertain && !m.pending,"slow preflight deadline preserves UNKNOWN without STOP")
+            check(posts() == 0,"slow preflight deadline sends zero STOP")
+            wait { released }
+            // A queued main turn drains the API's asynchronous result delivery;
+            // do not inspect immediately in the URLProtocol callback itself.
+            var drained=false; DispatchQueue.main.async { drained=true }; wait { drained }
+            check(results == [false] && q.state == .blocked && m.uncertain,"late preflight success cannot reopen expired quit")
+            check(posts() == 0 && QuitMockProtocol.calls.filter { $0.url!.path != "/api/v1/login" }.count == 1,"late preflight dispatches neither helper nor STOP")
+            var again: Bool?; q.start { again=$0 }; wait { again != nil }
+            check(again == false && posts() == 0 && m.uncertain,"slow preflight never retries after UNKNOWN")
             m.api.reset()
         }
         print(String(data:try! JSONSerialization.data(withJSONObject:["status":"PASS","checks":checks],options:[.prettyPrinted,.sortedKeys]),encoding:.utf8)!)

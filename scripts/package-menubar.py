@@ -6,6 +6,8 @@ The optional test mode runs only the five build-menubar.sh fixture executables.
 """
 import argparse
 import hashlib
+import html
+import sys
 import json
 import os
 from pathlib import Path
@@ -17,7 +19,7 @@ import tarfile
 import tempfile
 import zipfile
 
-SUITES = {'AnyTLSMenuBarTests': 95, 'QuitTests': 236, 'ConnectivityTests': 49,
+SUITES = {'AnyTLSMenuBarTests': 95, 'QuitTests': 250, 'ConnectivityTests': 49,
           'FocusTests': 67, 'DesktopRuntimeTests': 81}
 APP_SOURCES = ('macos/Model.swift', 'macos/Connectivity.swift', 'macos/Client.swift',
                'macos/QuitCoordinator.swift', 'macos/DesktopMigration.swift',
@@ -104,7 +106,7 @@ def verify_app(app, tag, arch='arm64'):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     expected = dict(CFBundleIdentifier='org.anytls.menubar.candidate',
                     CFBundleExecutable='AnyTLSMenuBar', CFBundlePackageType='APPL',
-                    CFBundleShortVersionString='0.4.2', CFBundleVersion='0.4.2.20261107.2',
+                    CFBundleShortVersionString='0.4.2', CFBundleVersion='0.4.2.20261107.3',
                     AnyTLSCoreVersion=tag, LSMinimumSystemVersion='13.0', LSUIElement=True)
     if any(info.get(key) != value for key, value in expected.items()):
         raise ValueError('unexpected app metadata')
@@ -126,6 +128,37 @@ def verify_app(app, tag, arch='arm64'):
     return manifest
 
 
+def suite_failure(name, reason, expected, actual, stdout):
+    """Publish only bounded diagnostics, never exception text or raw payloads."""
+    if name not in SUITES or reason not in ('nonzero', 'timeout', 'json', 'inventory', 'count'):
+        return
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode('utf-8', errors='replace')
+    match = re.search(r'^FAIL:? (.*)$', stdout, re.MULTILINE)
+    label = ''.join(c for c in match[1] if c.isprintable()) if match else ''
+    if re.search(r'password|token|secret|credential', label, re.I):
+        label = '[redacted]'
+    elif re.search(r'[/\\]|[{}]', label):
+        label = '[redacted]'
+    label = label[:200]
+    message = f'{name} reason={reason} expected={expected} actual={actual if actual is not None else "unknown"}'
+    if label:
+        message += ' label=' + label
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        escaped = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        print('::error::' + escaped, file=sys.stderr, flush=True)
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary:
+        try:
+            fd = os.open(summary, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'a') as stream:
+                if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    # Plain text in HTML pre prevents labels from becoming Markdown/HTML.
+                    stream.write('<pre>' + html.escape(message) + '</pre>\n')
+        except OSError:
+            pass  # Optional diagnostics must not replace the original failure.
+
+
 def run_tests(test_dir, evidence):
     test_dir = Path(test_dir).resolve()
     evidence = Path(evidence).resolve()
@@ -143,32 +176,45 @@ def run_tests(test_dir, evidence):
         except subprocess.TimeoutExpired as error:
             (evidence / (name + '.stdout')).write_bytes(error.stdout or b'')
             (evidence / (name + '.stderr')).write_bytes(error.stderr or b'')
+            suite_failure(name, 'timeout', expected, None, error.stdout or b'')
             raise RuntimeError(name + ' timed out; retained raw output') from error
         (evidence / (name + '.stdout')).write_text(run.stdout)
         (evidence / (name + '.stderr')).write_text(run.stderr)
         print(run.stdout, end='', flush=True)
         print(run.stderr, end='', flush=True)
         if run.returncode:
+            suite_failure(name, 'nonzero', expected, None, run.stdout)
             raise RuntimeError(name + ' failed: ' + str(run.returncode))
-        if name in ('AnyTLSMenuBarTests', 'QuitTests'):
-            data = json.loads(run.stdout)
-            if data.get('status') != 'PASS':
-                raise ValueError(name + ' missing PASS inventory')
-            checks = data['checks']
-        else:
-            checks = [line for line in run.stdout.splitlines() if line.startswith(('PASS: ', 'PASS '))]
-            marker = {'ConnectivityTests': 'CONNECTIVITY_TESTS_PASS assertions=',
-                      'FocusTests': 'FOCUS_TESTS_OK checks=',
-                      'DesktopRuntimeTests': 'DESKTOP_TESTS_OK checks='}[name]
-            if not re.search(re.escape(marker) + str(expected) + r'(?:\s|$)', run.stdout):
-                raise ValueError(name + ' missing completion marker')
-            if name != 'ConnectivityTests':
-                filename = 'focus-checks.json' if name == 'FocusTests' else 'desktop-checks.json'
-                data = json.loads((evidence / name / filename).read_text())
-                if data['count'] != expected or data['checks'] != [re.sub(r'^PASS:? ', '', line) for line in checks]:
-                    raise ValueError(name + ' evidence inventory mismatch')
-        if len(checks) != expected:
-            raise ValueError(name + ' assertion count mismatch')
+        reason, actual = 'inventory', None
+        try:
+            if name in ('AnyTLSMenuBarTests', 'QuitTests'):
+                reason = 'json'
+                data = json.loads(run.stdout)
+                reason = 'inventory'
+                if data.get('status') != 'PASS':
+                    raise ValueError(name + ' missing PASS inventory')
+                checks = data['checks']
+            else:
+                checks = [line for line in run.stdout.splitlines() if line.startswith(('PASS: ', 'PASS '))]
+                actual = len(checks)
+                marker = {'ConnectivityTests': 'CONNECTIVITY_TESTS_PASS assertions=',
+                          'FocusTests': 'FOCUS_TESTS_OK checks=',
+                          'DesktopRuntimeTests': 'DESKTOP_TESTS_OK checks='}[name]
+                if not re.search(re.escape(marker) + str(expected) + r'(?:\s|$)', run.stdout):
+                    raise ValueError(name + ' missing completion marker')
+                if name != 'ConnectivityTests':
+                    filename = 'focus-checks.json' if name == 'FocusTests' else 'desktop-checks.json'
+                    reason = 'json'
+                    data = json.loads((evidence / name / filename).read_text())
+                    reason = 'inventory'
+                    if data['count'] != expected or data['checks'] != [re.sub(r'^PASS:? ', '', line) for line in checks]:
+                        raise ValueError(name + ' evidence inventory mismatch')
+            reason, actual = 'count', len(checks)
+            if len(checks) != expected:
+                raise ValueError(name + ' assertion count mismatch')
+        except (ValueError, KeyError, TypeError, AttributeError, OSError):
+            suite_failure(name, reason, expected, actual, run.stdout)
+            raise
         results[name] = len(checks)
     (evidence / 'native-suites.json').write_text(json.dumps(results, indent=2) + '\n')
     return results
@@ -221,7 +267,7 @@ def package(root, app, out, tag, arch='arm64'):
             location = 'https://github.com/NiuStar/anytls-core/releases/download/' + tag + '/' + source
             delivery.writestr('SOURCE-LOCATION.txt', location + '\n')
             delivery.writestr('README.txt', 'AnyTLS unified windowless menu app 0.4.2\n' + {'arm64': 'Apple Silicon arm64', 'amd64': 'Intel x86_64'}[arch] + ' ONLY; macOS 13 or newer.\nAd-hoc signed; NOT Developer ID signed or notarized.\nNative administrator consent and production first-use/VPN end-to-end: NOT_RUN by packaging.\nNo credentials, Keychain data, configuration or helper installation is included.\nCorresponding source (full tracked Swift, tests, build tooling, Go dependencies and toolchain):\n' + location + '\n')
-            delivery.writestr('BUILD-INFO.json', json.dumps(dict(source_commit=commit, core_version=tag, app_version='0.4.2', app_build='0.4.2.20261107.2', architecture=arch, original_core_sha256=original_core_sha, signed_runtime_sha256=manifest['sha256'], corresponding_source=source, signing='ad-hoc', notarization='NOT_RUN', production_end_to_end='NOT_RUN'), sort_keys=True, indent=2) + '\n')
+            delivery.writestr('BUILD-INFO.json', json.dumps(dict(source_commit=commit, core_version=tag, app_version='0.4.2', app_build='0.4.2.20261107.3', architecture=arch, original_core_sha256=original_core_sha, signed_runtime_sha256=manifest['sha256'], corresponding_source=source, signing='ad-hoc', notarization='NOT_RUN', production_end_to_end='NOT_RUN'), sort_keys=True, indent=2) + '\n')
         extracted = work / 'extracted'
         extracted.mkdir()
         subprocess.run(['/usr/bin/ditto', '-x', '-k', str(archive), str(extracted)], check=True)
