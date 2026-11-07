@@ -237,8 +237,8 @@ private final class DesktopHTTP: URLProtocol {
         let adoptionBinary=adoptionHome+"/.anytls/anytls-macos", adoptionConfig=adoptionHome+"/.anytls/config.yaml"
         try FileManager.default.createDirectory(atPath:adoptionHome+"/.anytls",withIntermediateDirectories:true)
         try FileManager.default.copyItem(atPath:CommandLine.arguments[0],toPath:adoptionBinary)
-        let manual=Process(); manual.executableURL=URL(fileURLWithPath:adoptionBinary); manual.arguments=["webui","--listen","0.0.0.0","--port","18089"]; try manual.run()
-        var adoptionSecrets=0, adoptionLogins=0
+        var manual=Process(); manual.executableURL=URL(fileURLWithPath:adoptionBinary); manual.arguments=["webui","--listen","0.0.0.0","--port","18089"]; try manual.run()
+        var adoptionSecrets=0, adoptionLogins=0, adoptionManaged=false
         let adoptionRunner: DesktopRuntime.Runner={ _,args,_,done in
             if args==["desktop","inspect"] {
                 let body:[String:Any]=["schema":1,"version":"fixture","binary":adoptionBinary,"config":adoptionConfig,"config_identity":DesktopRuntime.sum(Data(adoptionConfig.utf8)),"binary_sha256":sha,"endpoint":"http://127.0.0.1:18089","listen":"0.0.0.0","port":18089,"uid":Int(getuid()),"home":adoptionHome,"helper_state":"ready"]
@@ -250,7 +250,7 @@ private final class DesktopHTTP: URLProtocol {
             else if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)) }
             else if args.first=="webui" {
                 let label="com.anytls.webui."+String(DesktopRuntime.sum(Data("\(getuid())\0\(adoptionBinary)\0\(adoptionConfig)".utf8)).prefix(24))
-                let body:[String:Any]=["label":label,"target":"gui/\(getuid())/"+label,"plist":adoptionHome+"/Library/LaunchAgents/"+label+".plist","restartManaged":false,"pid":0]
+                let body:[String:Any]=["label":label,"target":"gui/\(getuid())/"+label,"plist":adoptionHome+"/Library/LaunchAgents/"+label+".plist","restartManaged":adoptionManaged,"pid":adoptionManaged ? Int(manual.processIdentifier) : 0]
                 done(DesktopCommandResult(code:0,data:try! JSONSerialization.data(withJSONObject:body),timedOut:false))
             } else { done(DesktopCommandResult(code:0,data:Data("p\(manual.processIdentifier)\nu\(getuid())\n".utf8),timedOut:false)) }
         }
@@ -379,6 +379,72 @@ private final class DesktopHTTP: URLProtocol {
         unlink(alias); unlink(lockPath)
         check(symlink("authorization.json",lockPath)==0 && (try? leaseStore.acquireLease())==nil,"symlink lease refuses acquisition without following target")
         unlink(lockPath)
+        // Preserve the complete original inventory above; append argv regressions.
+        manual=Process(); manual.executableURL=URL(fileURLWithPath:adoptionBinary); manual.arguments=["webui","--port","18089","--listen","0.0.0.0"]; try manual.run()
+        adoptionSecrets=0; adoptionLogins=0
+        let reversedAdoption=DesktopRuntime(bundle:app.path,home:adoptionHome,uid:Int(getuid()),run:adoptionRunner,exists:{FileManager.default.fileExists(atPath:$0)},digest:{_ in sha},portFree:{false},fixtureStateRoot:root.appendingPathComponent("adoption-reversed-state").path,candidateSafe:{_ in true})
+        reversedAdoption.attach { _,_,done in adoptionLogins += 1; done(true) }
+        let reversedAccepted=adoptionLogins==1 && adoptionSecrets==1 && !reversedAdoption.busy && manual.isRunning
+        manual.terminate(); manual.waitUntilExit()
+        check(reversedAccepted,"reversed port listen canonical manual console is adopted before private credential login")
+        let adoptionLabel="com.anytls.webui."+String(DesktopRuntime.sum(Data("\(getuid())\0\(adoptionBinary)\0\(adoptionConfig)".utf8)).prefix(24))
+        let integrationCases:[(String,[String],Bool,Bool)]=[
+            ("managed reordered",["webui","--managed-agent",adoptionLabel,"--port","18089","--listen","0.0.0.0"],true,true),
+            ("manual duplicate",["webui","--port","18089","--port","18089"],false,false),
+            ("manual managed flag",["webui","--listen","0.0.0.0","--port","18089","--managed-agent",adoptionLabel],false,false),
+            ("managed missing flag",["webui","--port","18089","--listen","0.0.0.0"],true,false),
+            ("managed wrong label",["webui","--port","18089","--managed-agent",adoptionLabel+"suffix","--listen","0.0.0.0"],true,false)
+        ]
+        for (name,args,managed,accepted) in integrationCases {
+            manual=Process(); manual.executableURL=URL(fileURLWithPath:adoptionBinary); manual.arguments=args; try manual.run()
+            adoptionSecrets=0; adoptionLogins=0; adoptionManaged=managed
+            let runtime=DesktopRuntime(bundle:app.path,home:adoptionHome,uid:Int(getuid()),run:adoptionRunner,exists:{FileManager.default.fileExists(atPath:$0)},digest:{_ in sha},portFree:{false},fixtureStateRoot:root.appendingPathComponent("argv-"+name).path,candidateSafe:{_ in true})
+            runtime.attach { _,_,done in adoptionLogins += 1; done(true) }
+            let valid=adoptionSecrets==(accepted ? 1 : 0) && adoptionLogins==(accepted ? 1 : 0) && !runtime.busy && manual.isRunning
+            manual.terminate(); manual.waitUntilExit()
+            check(valid,"real native observed argv adoption boundary: "+name)
+        }
+        let listen=["--listen","0.0.0.0"], port=["--port","18089"], agent=["--managed-agent",adoptionLabel]
+        let prefix=[adoptionBinary,"webui"]
+        for (index,pairs) in [[listen,port],[port,listen]].enumerated() {
+            check(DesktopRuntime.consoleArguments(prefix+pairs.flatMap{$0},binary:adoptionBinary,managed:false,label:adoptionLabel),"manual option pair permutation \(index)")
+        }
+        let permutations=[[listen,port,agent],[listen,agent,port],[port,listen,agent],[port,agent,listen],[agent,listen,port],[agent,port,listen]]
+        for (index,pairs) in permutations.enumerated() {
+            check(DesktopRuntime.consoleArguments(prefix+pairs.flatMap{$0},binary:adoptionBinary,managed:true,label:adoptionLabel),"managed option pair permutation \(index)")
+        }
+        let invalid:[(String,[String])]=[
+            ("empty",[]), ("path only",[adoptionBinary]), ("missing options",prefix),
+            ("wrong path",[adoptionBinary+"suffix","webui"]+listen+port),
+            ("noncanonical path",[adoptionHome+"/.anytls/./anytls-macos","webui"]+listen+port),
+            ("wrong command",[adoptionBinary,"agent-status"]+listen+port),
+            ("wrong host",prefix+["--listen","127.0.0.1"]+port),
+            ("wrong port",prefix+listen+["--port","18090"]),
+            ("missing listen",prefix+port), ("missing port",prefix+listen),
+            ("missing value",prefix+listen+["--port"]),
+            ("option as value",prefix+["--listen","--port","18089"]),
+            ("duplicate equal listen",prefix+listen+listen),
+            ("duplicate equal port",prefix+port+port),
+            ("duplicate extra",prefix+listen+port+port),
+            ("duplicate unequal",prefix+listen+port+["--port","18090"]),
+            ("unknown option",prefix+["--host","0.0.0.0"]+port),
+            ("extra unknown",prefix+listen+port+["--unknown","value"]),
+            ("positional",prefix+["0.0.0.0","--listen"]+port),
+            ("extra positional",prefix+listen+port+["value"]),
+            ("swapped values",prefix+["--listen","18089","--port","0.0.0.0"]),
+            ("equals form",prefix+["--listen=0.0.0.0","--port=18089"]),
+            ("alias",prefix+["-listen","0.0.0.0"]+port),
+            ("terminator",prefix+["--"]+listen+port)
+        ]
+        for (name,argv) in invalid {
+            check(!DesktopRuntime.consoleArguments(argv,binary:adoptionBinary,managed:false,label:adoptionLabel),"manual argv rejects "+name)
+            check(!DesktopRuntime.consoleArguments(argv+agent,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv rejects "+name)
+        }
+        check(!DesktopRuntime.consoleArguments(prefix+listen+port+agent,binary:adoptionBinary,managed:false,label:adoptionLabel),"manual argv rejects managed flag")
+        check(!DesktopRuntime.consoleArguments(prefix+listen+port,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv requires flag")
+        check(!DesktopRuntime.consoleArguments(prefix+listen+port+["--managed-agent",adoptionLabel+"suffix"],binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv requires exact label")
+        check(!DesktopRuntime.consoleArguments(prefix+listen+agent+agent,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv rejects equal duplicate flag replacing port")
+        check(!DesktopRuntime.consoleArguments(prefix+listen+port+agent+agent,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv rejects extra duplicate flag")
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"systemAuthorization":"NOT_RUN","productionChanges":false],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("desktop-checks.json"))
         print("DESKTOP_TESTS_OK checks=\(checks.count)")
     }

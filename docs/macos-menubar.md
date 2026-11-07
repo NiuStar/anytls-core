@@ -1,8 +1,8 @@
-# AnyTLS macOS 菜单栏客户端 0.4.2
+# AnyTLS macOS 菜单栏客户端 0.4.3
 
-原生 Swift / AppKit 统一 App 0.4.2（build 0.4.2.20261107.3），发行标签 `v2026-11-07-05`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
+原生 Swift / AppKit 统一 App 0.4.3（build 0.4.3.20261107.1），发行标签 `v2026-11-07-06`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
 
-从本标签 Release 按芯片下载 `anytls-core-v2026-11-07-05-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-07-05-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
+从本标签 Release 按芯片下载 `anytls-core-v2026-11-07-06-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-07-06-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
 
 组件生命周期使用独立私有根目录中的 0600 `lifecycle.lock` 内核排他 flock；校验物理父目录、所有者、普通文件与单链接，不跟随符号链接，不删除或偷取锁。竞争 App 在 prepare、授权、STOP、TERM 前拒绝。锁覆盖异步操作至本次完成；崩溃释放内核锁但不清除持久 UNKNOWN/ARMED/ACTIVATION_UNKNOWN。仅有锁文件的安全目录不代表授权记录；未知目录成员、读权限错误保持 HOLD。正常退出 drain 失败仅撤销该次 ready 证明；下次 Quit 必须新鲜 STOP。原生受控进程测试不代表真实 launchd KeepAlive、管理员授权或 VPN 路由验收；用户需另行在本机接受这些关卡。
 
@@ -12,7 +12,7 @@
 
 菜单首个可执行操作「安装／更新组件…」执行包内 `desktop prepare`，再执行固定已准备 runtime 的 `desktop inspect`。校验包 SHA 清单、准备后 SHA、UID、系统账户 HOME、固定 binary/config、路径 identity、endpoint、bind、版本和状态；只有 `helper_state=missing` 才通过 `/usr/bin/osascript` 原生管理员授权执行固定 `helper-install-root UID HOME`。不会接收、保存或记录系统密码。每次授权前将精确 operation/stage/SHA、控制台 PID/UID/出生时间/argv、恢复选择写入独立 `~/.anytls-desktop-state` 0700 目录的 0600 JSON，并 fsync/rename/fsync；不保存密码。部分首次准备也持久阻止重放。重启 App 不清除 ARMED/UNKNOWN；下一次主动操作只读 inspect 并尝试 Go finish 的新助手就绪检查，不重发 STOP 或系统授权。只有原生明确用户取消 (-128) 记 DENIED，单独菜单「重试已取消的授权…」在重新核对后授权一次；其他错误/超时不能证明 root worker 已结束，保持阻塞人工核实，不提供假恢复。恢复 START 前另写 ACTIVATION_UNKNOWN，丢失回执跨重启不自动再启动；显示“组件已安装，恢复结果未知”。
 
-正常启动不弹窗，仅尝试匹配已准备组件；不自动 prepare 或授权。拒绝未知端口监听。既有托管控制台必须由规范旧 binary（不是 bundle binary）返回真实 `webui agent-status` JSON，并通过 Go 的精确 plist/launchctl 策略校验，再核对 lsof UID/PID、proc_pidinfo 出生时间和 proc_pidpath/KERN_PROCARGS2 精确可执行路径与 argv。未知所有权在 commit/STOP 之前 HOLD。更新发布后只对事前绑定旧进程单次 TERM；托管 KeepAlive 按原批准 plist 自行拉起新 binary，GUI 不启动第二个子进程；等待新 PID/监听、同一策略和认证 `/status` 的 version/listenHost。手动控制台仅接受精确规范 argv，无托管 job/plist，TERM 后等监听消失再启动自有 Process。不用新磁盘 SHA 冒充旧进程映像 SHA，不 SIGKILL/bootout 共享控制台。普通退出保留托管控制台空闲，只 drain 自有子进程。新控制台只允许自有直接 Process、`0.0.0.0:18089`，预先检查 launchd 与端口，再验证自有子进程绑定。应用密码仅经匿名私有管道进入内存，登录后检查认证 `/status` 的版本和 listenHost，不写入文本框、偏好设置、日志或证据。普通启动不查询钥匙串；不再提供手动应用密码入口。只有上述精确验证的手动／托管既有控制台可复用，未知监听仍拒绝。
+正常启动不弹窗，仅尝试匹配已准备组件；不自动 prepare 或授权。拒绝未知端口监听。既有托管控制台必须由规范旧 binary（不是 bundle binary）返回真实 `webui agent-status` JSON，并通过 Go 的精确 plist/launchctl 策略校验，再核对 lsof UID/PID、proc_pidinfo 出生时间和 proc_pidpath/KERN_PROCARGS2 精确可执行路径与 argv。未知所有权在 commit/STOP 之前 HOLD。更新发布后只对事前绑定旧进程单次 TERM；托管 KeepAlive 按原批准 plist 自行拉起新 binary，GUI 不启动第二个子进程；等待新 PID/监听、同一策略和认证 `/status` 的 version/listenHost。手动控制台仅接受规范可执行路径与 webui 子命令、完整且各一次的固定参数键值对；--listen 与 --port 可交换顺序，进程原始 argv 的身份绑定不变，无托管 job/plist，TERM 后等监听消失再启动自有 Process。不用新磁盘 SHA 冒充旧进程映像 SHA，不 SIGKILL/bootout 共享控制台。普通退出保留托管控制台空闲，只 drain 自有子进程。新控制台只允许自有直接 Process、`0.0.0.0:18089`，预先检查 launchd 与端口，再验证自有子进程绑定。应用密码仅经匿名私有管道进入内存，登录后检查认证 `/status` 的版本和 listenHost，不写入文本框、偏好设置、日志或证据。普通启动不查询钥匙串；不再提供手动应用密码入口。只有上述精确验证的手动／托管既有控制台可复用，未知监听仍拒绝。
 
 「退出并停止 VPN」及 Cmd-Q 经 NSApplication 的 terminateLater → 保留的 QuitCoordinator。即使看起来已停止，也须认证 STOP 的成功清理回执和停止读回；UNKNOWN/失败拒绝退出且不盲重试。成功后仅 TERM 自有控制台并异步有界等待退出，不杀共享控制台，助手保留安装且空闲。全新未安装退出须独立检查固定 helper/runtime/snapshot 不存在和两个固定 system launchd label 明确不存在；部分安装不走此例外。强杀不能保证收尾。
 
@@ -28,7 +28,7 @@ open ./macos/build/AnyTLSMenuBar.app
 
 架构为 `arm64` 或 `amd64`，分别仅在对应原生 Mac 上构建和验包；拒绝跨架构／universal 核心，防止 App 与内嵌核心架构不一致。Intel 使用 `CORE=/absolute/path/to/qualified/amd64/anytls-macos bash scripts/build-menubar.sh amd64 ./macos/build`。必须提供显式本地 CORE，不下载。构建使用 Swift 6.1.2 的 Swift 5 语言模式、macOS 13 deployment target，无第三方依赖；先 ad-hoc 签核心、生成实际签后 SHA 清单，再签 App 并严格验证。**不是 Developer ID、公证或 Gatekeeper 放行证明**。
 
-构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-07-05-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-07-05-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
+构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-07-06-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-07-06-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
 
 ## 无窗口自动连接
 

@@ -331,6 +331,16 @@ final class DesktopRuntime {
               !managed || o["pid"] as? Int==Int(pid) else { return nil }
         return managed
     }
+    // Compare option/value pairs without changing the native pin's exact argv.
+    static func consoleArguments(_ argv: [String], binary: String, managed: Bool, label: String)->Bool {
+        guard argv.count == (managed ? 8 : 6), argv[0]==binary, argv[1]=="webui" else { return false }
+        var remaining=["--listen":"0.0.0.0","--port":"18089"]
+        if managed { remaining["--managed-agent"]=label }
+        for index in stride(from:2,to:argv.count,by:2) {
+            guard let value=remaining.removeValue(forKey:argv[index]), argv[index+1]==value else { return false }
+        }
+        return remaining.isEmpty
+    }
     private func locateConsole(sha: String, done: @escaping (Bool,DesktopConsolePin?)->Void) {
         run("/usr/sbin/lsof",["-nP","-iTCP:18089","-sTCP:LISTEN","-Fpu"],5) { r in
             if r.code==1 && !r.timedOut && r.data.isEmpty {
@@ -343,8 +353,7 @@ final class DesktopRuntime {
             // refer to the actual canonical image, not Resources/runtime.
             self.run(self.binary,["webui","agent-status","--listen","0.0.0.0","--port","18089"],10) { result in
                 guard let managed=Self.consolePolicy(result,label:self.managedLabel,uid:self.uid,home:self.home,pid:pid) else { done(false,nil); return }
-                let manual=[self.binary,"webui","--listen","0.0.0.0","--port","18089"]
-                guard let pin=DesktopConsolePin.observe(pid,sha:sha,managed:managed), pin.uid==UInt32(self.uid), pin.argv==(managed ? manual+["--managed-agent",self.managedLabel] : manual), self.digest(self.binary)==sha else { done(false,nil); return }
+                guard let pin=DesktopConsolePin.observe(pid,sha:sha,managed:managed), pin.uid==UInt32(self.uid), Self.consoleArguments(pin.argv,binary:self.binary,managed:managed,label:self.managedLabel), self.digest(self.binary)==sha else { done(false,nil); return }
                 if managed { done(true,pin) }
                 else { self.absentJob("gui/\(self.uid)/"+self.managedLabel) { absent in done(absent && !self.exists(self.home+"/Library/LaunchAgents/"+self.managedLabel+".plist"),pin) } }
             }
