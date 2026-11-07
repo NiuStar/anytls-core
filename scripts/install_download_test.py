@@ -89,11 +89,15 @@ class DownloadPhaseTests(unittest.TestCase):
         cert = ssl.SSLCertVerificationError(1, 'secret')
         errors = [cert, b.i.urllib.error.URLError(cert), ssl.SSLError(1, 'secret'),
                   ValueError('untrusted redirect'), PermissionError('disk'), OSError(28, 'full')]
-        errors += [b.i.urllib.error.HTTPError('https://secret', code, 'secret', {}, None)
+        # Real HTTP failures carry a response; None breaks Python 3.9 wrapper cleanup.
+        errors += [b.i.urllib.error.HTTPError('https://secret', code, 'secret', {}, io.BytesIO(b'fixture'))
                    for code in (401, 403, 404, 429, 500)]
         for error in errors:
             if isinstance(error, b.i.urllib.error.HTTPError):
-                self.addCleanup(error.close)
+                def close_and_check(error=error):
+                    error.close()
+                    self.assertTrue(error.fp.closed)
+                self.addCleanup(close_and_check)
             with self.subTest(error=type(error).__name__):
                 target = self.root / 'absent'
                 opens = mock.Mock(side_effect=error)

@@ -291,7 +291,7 @@ class GateTests(unittest.TestCase):
 
     def test_http_unavailable_retries_only_within_original_deadline(self):
         def unavailable(path, query):
-            raise urllib.error.HTTPError("https://api.github.com", 503, "Unavailable", {}, None)
+            raise urllib.error.HTTPError("https://api.github.com", 503, "Unavailable", {}, io.BytesIO(b"fixture"))
         self.http.handler = unavailable
         self.blocked("deadline")
         self.assertEqual(self.clock.now, 5)
@@ -300,7 +300,7 @@ class GateTests(unittest.TestCase):
 
     def test_transport_recovery_and_rate_limit_can_pass(self):
         for failure in (urllib.error.URLError("offline"), TimeoutError(),
-                        urllib.error.HTTPError("https://api.github.com", 429, "rate limited", {}, None)):
+                        urllib.error.HTTPError("https://api.github.com", 429, "rate limited", {}, io.BytesIO(b"fixture"))):
             with self.subTest(failure=type(failure).__name__):
                 self.clock = FakeClock()
                 self.http = HTTP()
@@ -315,10 +315,52 @@ class GateTests(unittest.TestCase):
     def test_auth_and_nonretryable_http_errors_fail_immediately(self):
         for status in (401, 403, 404, 422):
             def unavailable(path, query):
-                raise urllib.error.HTTPError("https://api.github.com", status, "Denied", {}, None)
+                raise urllib.error.HTTPError("https://api.github.com", status, "Denied", {}, io.BytesIO(b"fixture"))
             self.http.handler = unavailable
             self.blocked("HTTP " + str(status))
             self.assertFalse(self.clock.sleeps)
+
+    def test_http_error_closes_response_body_and_preserves_classification(self):
+        class Body(io.BytesIO):
+            def __init__(self):
+                super().__init__(b"fixture")
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+                super().close()
+
+        for status in (401, 403, 404, 422, 429, 500, 503, 999):
+            for has_body in (False, True):
+                with self.subTest(status=status, has_body=has_body):
+                    body = Body() if has_body else None
+                    error = urllib.error.HTTPError("https://api.github.com", status, "fixture", {}, body)
+                    self.http.handler = mock.Mock(side_effect=error)
+                    expected = gate.Unavailable if status == 429 or 500 <= status <= 599 else gate.GateError
+                    with self.assertRaisesRegex(expected, "HTTP " + str(status)):
+                        self.make().get("fixture")
+                    if body is not None:
+                        self.assertTrue(body.closed)
+                        self.assertEqual(body.close_calls, 1)
+                        # Repeated HTTPError cleanup is idempotent, not a second body close.
+                        error.close()
+                        self.assertEqual(body.close_calls, 1)
+                    self.assertFalse(self.clock.sleeps)
+                    self.assertFalse(any(line.startswith("PASS:") for line in self.logs))
+
+    def test_http_error_cleanup_failure_is_not_ignored(self):
+        body = io.BytesIO(b"fixture")
+        error = urllib.error.HTTPError("https://api.github.com", 503, "fixture", {}, body)
+        self.http.handler = mock.Mock(side_effect=error)
+        failure = OSError("fixture cleanup failed")
+        with mock.patch.object(error, "close", side_effect=failure) as close:
+            with self.assertRaises(OSError) as caught:
+                self.make().get("fixture")
+        self.assertIs(caught.exception, failure)
+        close.assert_called_once_with()
+        error.close()
+        self.assertTrue(body.closed)
+        self.assertFalse(self.clock.sleeps)
 
     def test_slow_reads_cannot_pass_after_deadline(self):
         def slow(path, query):

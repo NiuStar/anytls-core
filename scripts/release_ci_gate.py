@@ -74,7 +74,9 @@ class Gate:
                 data = json.load(response)
         except urllib.error.HTTPError as exc:
             status = exc.code
-            exc.close()
+            # Bodyless HTTPError is valid, but Python 3.9 cannot close its wrapper.
+            if exc.fp is not None:
+                exc.close()
             if status == 429 or 500 <= status <= 599:
                 raise Unavailable("GitHub HTTP " + str(status)) from exc
             raise GateError("GitHub HTTP " + str(status)) from exc
