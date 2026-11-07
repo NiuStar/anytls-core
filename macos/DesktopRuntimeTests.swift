@@ -307,7 +307,16 @@ private final class DesktopHTTP: URLProtocol {
         },exists:{_ in true},digest:{_ in sha},fixtureStateRoot:leaseStore.root)
         afterCrash.initialize(login:login)
         check(inspected==1 && authorized==0 && afterCrash.blocksQuit,"crashed lockholder UNKNOWN only reconciles and never reauthorizes")
-        let member=leaseStore.root+"/unexpected"; FileManager.default.createFile(atPath:member,contents:Data())
+        let member=leaseStore.root+"/unexpected"
+        // createFile can return false under the release sandbox without creating
+        // the fixture. Require successful publication before testing the guard.
+        try Data().write(to:URL(fileURLWithPath:member),options:.withoutOverwriting)
+        var memberStat=stat()
+        guard lstat(member,&memberStat)==0, memberStat.st_mode & S_IFMT == S_IFREG,
+              memberStat.st_size==0, memberStat.st_uid==getuid(), memberStat.st_nlink==1,
+              try FileManager.default.contentsOfDirectory(atPath:leaseStore.root).contains("unexpected") else {
+            throw CocoaError(.fileWriteUnknown)
+        }
         check(leaseStore.present && (try? leaseStore.acquireLease())==nil,"unknown private-root member conservatively refuses mutation")
         try FileManager.default.removeItem(atPath:member)
         let lockPath=leaseStore.root+"/lifecycle.lock"
