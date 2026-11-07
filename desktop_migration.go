@@ -193,7 +193,10 @@ func (m desktopMigration) pending(except string) error {
 	for _, entry := range entries {
 		n := entry.Name()
 		if strings.HasPrefix(n, ".core-reload-") {
-			return desktopError("CORE_RELOAD_PENDING")
+			if err := m.reloadTerminal(n); err != nil {
+				return err
+			}
+			continue
 		}
 		if !strings.HasPrefix(n, ".desktop-migration-") {
 			continue

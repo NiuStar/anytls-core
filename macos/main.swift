@@ -133,7 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         add("AnyTLS · \(state)",enabled:false)
         if model.api.authenticated { add(model.message,enabled:false) }
-        add("安装／更新组件…",#selector(initializeDesktop),enabled:desktop?.busy == false && !terminationPending)
+        add("安装／更新组件…",#selector(initializeDesktop),enabled:desktop?.busy == false && !terminationPending && !model.pending && !model.uncertain)
+        if model.pending || model.uncertain { add(model.message+"；暂不能安装／更新组件，请先在完整控制台核实",enabled:false) }
         if let desktop=desktop { add(desktop.message,enabled:false); if desktop.authorizationRetryAllowed { add("重试已取消的授权…",#selector(retryDesktopAuthorization)) } }
         if !quitCoordinator.message.isEmpty { add(quitCoordinator.message,enabled:false) }
         if !connectionMessage.isEmpty { add(connectionMessage,enabled:false) }
@@ -227,7 +228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resume.state=wasRunning ? .on : .off; resume.isEnabled=wasRunning; return resume
     }
     @objc func initializeDesktop() {
-        guard !terminationPending, !model.pending, !model.uncertain else { return }
+        guard !terminationPending, !model.pending, !model.uncertain else {
+            connectionMessage = model.uncertain ? "当前操作结果未知，未开始安装／更新组件；请在完整控制台核实" : "当前操作进行中，未开始安装／更新组件；请等待结果后核实"
+            renderIfReady(); return
+        }
         // This explicit install click is the only app-owned setup confirmation.
         // Migration inspection is asynchronous, so do not queue a later modal.
         guard confirm("安装／更新 AnyTLS 组件？更新将停止 VPN，保留配置；更新完成后须从菜单恢复 VPN。",risk:false) else { return }

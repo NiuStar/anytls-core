@@ -59,8 +59,8 @@ class PackageTests(unittest.TestCase):
             path.write_bytes(b'fixture executable, NOT a native binary')
             path.chmod(0o755)
         self.info = dict(CFBundleIdentifier='org.anytls.menubar.candidate', CFBundleExecutable='AnyTLSMenuBar',
-                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.1',
-                         CFBundleVersion='0.4.1.20261107.1', AnyTLSCoreVersion=TAG,
+                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.2',
+                         CFBundleVersion='0.4.2.20261107.1', AnyTLSCoreVersion=TAG,
                          LSMinimumSystemVersion='13.0', LSUIElement=True)
         self.write_info()
         self.runtime = self.app / 'Contents/Resources/runtime/anytls-macos'
@@ -159,8 +159,8 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.out / result['asset']) as archive:
             info = json.loads(archive.read('BUILD-INFO.json'))
             self.assertEqual(info['architecture'], 'amd64')
-            self.assertEqual(info['app_version'], '0.4.1')
-            self.assertEqual(info['app_build'], '0.4.1.20261107.1')
+            self.assertEqual(info['app_version'], '0.4.2')
+            self.assertEqual(info['app_build'], '0.4.2.20261107.1')
             self.assertEqual(info['corresponding_source'], self.prefix + '-darwin-amd64-corresponding-source.tar.gz')
             self.assertIn(b'Intel x86_64 ONLY', archive.read('README.txt'))
 

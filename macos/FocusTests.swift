@@ -5,6 +5,7 @@ import ObjectiveC.runtime
 // credential storage and OS polling/observers are isolated. No real VPN or WAN.
 private enum PresentationProbe {
     static var activations=0, fronts=0, sheets=0, modals=0
+    static var response: NSApplication.ModalResponse = .alertSecondButtonReturn
     static var counts: [Int] { [activations,fronts,sheets,modals] }
     static func install(_ type: AnyClass, _ a: Selector, _ b: Selector) {
         method_exchangeImplementations(class_getInstanceMethod(type,a)!,class_getInstanceMethod(type,b)!)
@@ -26,7 +27,7 @@ extension NSAlert {
         PresentationProbe.sheets += 1 // Record a regression without blocking on a modal.
     }
     @objc func focus_runModal() -> NSApplication.ModalResponse {
-        PresentationProbe.modals += 1; return .alertSecondButtonReturn
+        PresentationProbe.modals += 1; return PresentationProbe.response
     }
 }
 private final class FocusHTTP: URLProtocol {
@@ -152,6 +153,43 @@ private final class FocusHTTP: URLProtocol {
         check(saved.item.menu!.items.contains {$0.title=="恢复 VPN…"},"pending resume appears in status menu")
         saved.desktop?.onMigrationResume?(); saved.model.tick(); pump(0.3); quiet(saved,"repeated stale migration callback")
         check(!FocusHTTP.requests.contains {$0.contains("/service/") || $0.contains("/selection")},"all background paths send zero VPN mutations")
+        // Real production menu action: explicit Continue, then held asynchronous
+        // admission failure. Swizzles suppress the physical modal/activation.
+        let installUI=launch(missing:true)
+        let fixtureRuntime=installUI.desktop!
+        var installCommands=[[String]](), inspectDone: ((DesktopCommandResult)->Void)?
+        let installRuntime=DesktopRuntime(bundle:fixtureRuntime.bundle,home:fixtureRuntime.home,uid:fixtureRuntime.uid,run:{ _,args,_,done in
+            installCommands.append(args)
+            if args==["desktop","prepare"] { done(DesktopCommandResult(code:1,data:Data("{\"error\":\"UPDATE_REQUIRED\"}".utf8),timedOut:false)) }
+            else if args==["desktop","migration-inspect"] { inspectDone=done }
+            else { fatalError("Installation refusal must not mutate or authorize") }
+        },exists:{$0==fixtureRuntime.binary},digest:{_ in String(repeating:"a",count:64)},fixtureStateRoot:root.appendingPathComponent("install-feedback").path,candidateSafe:{_ in true})
+        installUI.desktop=installRuntime; installRuntime.onChange={ [weak installUI] in installUI?.render() }; installUI.render()
+        func installRow()->NSMenuItem { installUI.item.menu!.items.first {$0.action == #selector(AppDelegate.initializeDesktop)}! }
+        PresentationProbe.response = .alertFirstButtonReturn
+        let dispatched=autoreleasepool { NSApp.sendAction(installRow().action!,to:installRow().target,from:installRow()) }
+        check(dispatched,"installation Continue dispatches actual production menu action")
+        PresentationProbe.response = .alertSecondButtonReturn
+        check(inspectDone != nil && installRuntime.busy && PresentationProbe.counts == [1,0,0,1],"Continue starts read-only inspection with only immediate explicit confirmation")
+        PresentationProbe.activations=0; PresentationProbe.modals=0
+        inspectDone?(DesktopCommandResult(code:1,data:Data("{\"error\":\"CORE_RELOAD_PENDING\",\"detail\":\"PRIVATE_SENTINEL\"}".utf8),timedOut:false))
+        check(installRuntime.message.contains("旧重载事务尚未完成或回执无法验证（CORE_RELOAD_PENDING）") && !installRuntime.busy,"Continue failure exposes allowlisted migration reason")
+        check(installUI.item.button!.toolTip!.contains(installRuntime.message) && installUI.item.menu!.items.contains {$0.title==installRuntime.message},"installation failure retained in menu and tooltip")
+        check(!installRuntime.message.contains("PRIVATE_SENTINEL") && installCommands == [["desktop","prepare"],["desktop","migration-inspect"]],"installation refusal reveals no raw output and sends zero STOP authorization or credentials")
+        quiet(installUI,"asynchronous installation refusal")
+        // Use the real mutation owner's synchronous pending/unknown seams; no
+        // HTTP callback can run between beginQuit and the stale-row action.
+        func savedInstallRow()->NSMenuItem { saved.item.menu!.items.first {$0.action == #selector(AppDelegate.initializeDesktop)}! }
+        let context=saved.model.quitContext!
+        saved.model.beginQuit(context:context) {_ in}
+        check(saved.model.pending && !savedInstallRow().isEnabled,"pending operation disables installation menu")
+        saved.initializeDesktop()
+        check(saved.connectionMessage.contains("当前操作进行中") && PresentationProbe.counts == [0,0,0,0],"stale pending install action explains refusal without dispatch")
+        saved.model.abandonQuit(context:context)
+        check(saved.model.uncertain && !savedInstallRow().isEnabled,"unknown result disables installation menu")
+        saved.initializeDesktop()
+        check(saved.connectionMessage.contains("当前操作结果未知") && saved.connectionMessage.contains("未开始安装") && PresentationProbe.counts == [0,0,0,0],"stale unknown install action explains refusal without retry")
+        quiet(saved,"pending and unknown installation refusal")
         for ui in delegates {ui.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification)); NSStatusBar.system.removeStatusItem(ui.item)}
         for child in children where child.isRunning {child.terminate(); child.waitUntilExit()}
         check(children.allSatisfy {!$0.isRunning},"all owned fixture children reaped")

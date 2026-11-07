@@ -220,9 +220,27 @@ final class DesktopRuntime {
         intent.state = !result.timedOut && result.code != 0 && text.trimmingCharacters(in:.whitespacesAndNewlines).hasSuffix("(-128)") ? "DENIED" : (result.code==0 && !result.timedOut ? "READY" : "UNKNOWN")
         do { try intents.save(intent) } catch { setupUncertain=true }
     }
+    private static func migrationInspectionFailure(_ result: DesktopCommandResult)->String {
+        let fallback="旧组件迁移检查 HOLD；未停止 VPN、未覆盖配置。请检查规范目录或待恢复事务"
+        // Only fixed machine codes may enter UI; never echo stdout, stderr,
+        // backend detail strings, paths, credentials or config content.
+        guard !result.timedOut, result.code != 0, result.data.count<=4096,
+              let body=try? JSONSerialization.jsonObject(with:result.data) as? [String:Any],
+              let code=body["error"] as? String else { return fallback }
+        let reasons=[
+            "CORE_RELOAD_PENDING":"旧重载事务尚未完成或回执无法验证",
+            "HOLD_PENDING":"旧迁移事务尚未完成或回执无法验证",
+            "MIGRATION_UNKNOWN":"旧迁移操作结果未知，请先核实",
+            "MIGRATION_HOLD":"旧迁移状态无法安全检查",
+            "HELPER_UNAVAILABLE":"旧助手不可用或身份无法验证",
+            "HELPER_CONFIG_MISMATCH":"旧助手与配置身份不匹配"
+        ]
+        guard let reason=reasons[code] else { return fallback }
+        return "\(reason)（\(code)）；未停止 VPN、未更新组件"
+    }
     private func inspectMigration(login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
         run(source,["desktop","migration-inspect"],12) { result in
-            guard let preview=DesktopMigration.parse(result), preview.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), preview.phase=="INSPECTED", self.digest(self.binary)==preview.old_binary_sha256 else { self.fail("旧组件迁移检查 HOLD；未停止 VPN、未覆盖配置。请检查规范目录或待恢复事务"); return }
+            guard let preview=DesktopMigration.parse(result), preview.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), preview.phase=="INSPECTED", self.digest(self.binary)==preview.old_binary_sha256 else { self.fail(Self.migrationInspectionFailure(result)); return }
             self.locateConsole(sha:preview.old_binary_sha256) { safe,pin in
                 guard safe else { self.fail("现有控制台身份或托管策略无法证明；更新前 HOLD，未停止 VPN"); return }
                 guard let resume=self.consentMigration?(preview.was_running) else { self.fail("已取消更新；未停止 VPN"); return }

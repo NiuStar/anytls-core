@@ -78,6 +78,28 @@ private final class DesktopHTTP: URLProtocol {
             rejectedAttach.attach(login:rejectLogin); messages.append(rejectedAttach.message)
             check(dispatches==0 && authorizations==0 && credentials==0 && logins==0 && messages[0].contains("拒绝安装") && messages[1]==idleMessage && !rejectedSetup.busy && !rejectedAttach.busy && rejectedSetup.console==nil && rejectedAttach.console==nil && !rejectedSetup.intents.present && !rejectedAttach.intents.present,"foreign manifest initialize and attach refuse before commands authorization credentials or login")
         }
+        let migrationErrors=["CORE_RELOAD_PENDING","HOLD_PENDING","MIGRATION_UNKNOWN","MIGRATION_HOLD","HELPER_UNAVAILABLE","HELPER_CONFIG_MISMATCH"]
+        var refusals=[(String,DesktopCommandResult,String?)]()
+        for code in migrationErrors {
+            refusals.append((code,DesktopCommandResult(code:1,data:try JSONSerialization.data(withJSONObject:["error":code,"detail":"PRIVATE_SENTINEL"]),timedOut:false),code))
+        }
+        let knownError=Data("{\"error\":\"CORE_RELOAD_PENDING\"}".utf8)
+        refusals += [
+            ("unknown",DesktopCommandResult(code:1,data:Data("{\"error\":\"PRIVATE_SENTINEL\"}".utf8),timedOut:false),nil),
+            ("timeout",DesktopCommandResult(code:1,data:knownError,timedOut:true),nil),
+            ("oversized",DesktopCommandResult(code:1,data:knownError+Data(repeating:32,count:4096),timedOut:false),nil),
+            ("malformed",DesktopCommandResult(code:1,data:Data("PRIVATE_SENTINEL".utf8),timedOut:false),nil),
+            ("success-code",DesktopCommandResult(code:0,data:knownError,timedOut:false),nil)
+        ]
+        for (name,result,expected) in refusals {
+            var commands=[[String]]()
+            let refusal=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in
+                commands.append(args)
+                done(args==["desktop","prepare"] ? DesktopCommandResult(code:1,data:Data(),timedOut:false) : result)
+            },exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:root.appendingPathComponent("refusal-"+name).path,candidateSafe:{_ in true})
+            refusal.initialize { _,_,_ in fatalError("Refused inspection must not login") }
+            check(!refusal.busy && !refusal.intents.present && !refusal.message.contains("PRIVATE_SENTINEL") && (expected.map {refusal.message.contains("（"+$0+"）")} ?? refusal.message.contains("检查 HOLD")) && commands == [["desktop","prepare"],["desktop","migration-inspect"]],"migration inspection bounded nonsecret refusal: "+name)
+        }
         var calls=[(String,[String])](), state="missing", ready=false, auths=0
         func metadata(_ prepare: Bool=false)->Data { try! JSONSerialization.data(withJSONObject:["schema":1,"version":"fixture","binary":binary,"config":config,"config_identity":DesktopRuntime.sum(Data(config.utf8)),"binary_sha256":sha,"endpoint":"http://127.0.0.1:18089","listen":"0.0.0.0","port":18089,"uid":uid,"home":home,"helper_state":prepare ? "not_checked" : state]) }
         let runner: DesktopRuntime.Runner = { path,args,_,done in
