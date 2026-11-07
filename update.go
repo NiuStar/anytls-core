@@ -202,8 +202,22 @@ func readUpdateRelease(ctx context.Context, client *http.Client, endpoint, versi
 	result.SourceOnly = (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") || names[binary] != 1 || names[ccs] != 1
 	result.LatestVersion, result.ReleaseURL = release.TagName, release.HTMLURL
 	// Only explicit --version permits rollback or switching version schemes.
-	result.UpdateAvailable = (version != "" && result.CurrentVersion != result.LatestVersion) || newerStableVersion(result.CurrentVersion, result.LatestVersion)
+	result.UpdateAvailable = (version != "" && result.CurrentVersion != result.LatestVersion) || newerReleaseForBuild(result.CurrentVersion, result.LatestVersion)
 	return result, nil
+}
+
+// Only local candidate identities are ordered before stable releases on the same
+// date (regardless of candidate revision). Older dates and semver never silently
+// downgrade a candidate; --version remains the explicit scheme/rollback opt-in.
+func newerReleaseForBuild(current, latest string) bool {
+	if validateBuildVersion(current) != nil || validateUpdateVersion(latest) != nil {
+		return false
+	}
+	if match := buildCandidate.FindStringSubmatch(current); match != nil {
+		stable := updateDate.FindStringSubmatch(latest)
+		return stable != nil && stable[1] >= match[1]
+	}
+	return newerStableVersion(current, latest)
 }
 
 // Unknown/development versions and different version schemes are not ordered.

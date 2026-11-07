@@ -1,0 +1,125 @@
+import Foundation
+
+struct LocalEndpoint: Equatable {
+    let url: URL
+    let origin: String
+    init(_ text: String) throws {
+        // Restrict lexical form too: URLComponents otherwise repairs whitespace/escapes.
+        guard text.range(of: #"^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?$"#, options: .regularExpression) != nil,
+              let c = URLComponents(string: text), let url = c.url,
+              c.port == nil || (1...65535).contains(c.port!) else { throw ClientError.endpoint }
+        self.url = url; origin = text
+    }
+}
+enum ClientError: Error { case endpoint, invalid, stale, unauthenticated, transport }
+func canonicalUInt(_ value: Any?) -> UInt64? {
+    guard let s = value as? String, s.range(of: #"^(0|[1-9][0-9]{0,19})$"#, options: .regularExpression) != nil else { return nil }
+    return UInt64(s)
+}
+func hex(_ value: Any?, _ count: Int) -> Bool {
+    guard let s = value as? String else { return false }
+    return s.utf8.count == count && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+}
+func exact(_ d: [String: Any], _ keys: [String]) -> Bool { Set(d.keys) == Set(keys) }
+func utcDate(_ value: Any?) -> Date? {
+    guard let s = value as? String, s.range(of: #"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$"#, options: .regularExpression) != nil else { return nil }
+    let f = ISO8601DateFormatter(); f.formatOptions = s.contains(".") ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+    return f.date(from: s)
+}
+func jsonBool(_ v: Any?) -> Bool? {
+    guard let n = v as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }; return n.boolValue
+}
+import CoreFoundation
+func schemaOne(_ value: Any?) -> Bool {
+    guard let n=value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return false }
+    return n == 1
+}
+struct TrafficRate {
+    let runtimeIdentity: String
+    let sampledAt: Date
+    let upload: UInt64, download: UInt64, duration: UInt64
+    let totalUpload: UInt64, totalDownload: UInt64
+    func fresh(_ now: Date = Date()) -> Bool { (0...15).contains(now.timeIntervalSince(sampledAt)) }
+    static func label(_ bytes: UInt64, _ duration: UInt64) -> String {
+        let rate = Double(bytes) / (Double(duration) / 1_000_000_000)
+        if rate >= 1_000_000_000 { return String(format: "%.1fGB/s", rate / 1_000_000_000) }
+        if rate >= 1_000_000 { return String(format: "%.1fMB/s", rate / 1_000_000) }
+        if rate >= 1_000 { return String(format: "%.1fKB/s", rate / 1_000) }
+        return String(format: "%.0fB/s", rate)
+    }
+    static func parse(_ data: [String: Any], now: Date = Date()) -> TrafficRate? {
+        guard exact(data, ["traffic_schema", "availability", "snapshot"]), schemaOne(data["traffic_schema"]),
+              data["availability"] as? String == "OBSERVED", let s = data["snapshot"] as? [String: Any],
+              exact(s, ["traffic_schema", "header", "source", "state", "sampled_at", "elapsed_ns", "upload_bytes", "download_bytes", "saturated", "rate", "history"]),
+              schemaOne(s["traffic_schema"]), s["source"] as? String == "SDK_ROUTED_PAYLOAD", s["state"] as? String == "RUNNING",
+              jsonBool(s["saturated"]) == false, let date = utcDate(s["sampled_at"]), (0...15).contains(now.timeIntervalSince(date)),
+              let elapsed = canonicalUInt(s["elapsed_ns"]), elapsed <= UInt64(Int64.max),
+              let up = canonicalUInt(s["upload_bytes"]), let down = canonicalUInt(s["download_bytes"]),
+              let h = s["header"] as? [String: Any],
+              exact(h, ["schema_version", "config_identity", "instance_id", "generation", "manifest_id", "runtime_sha256", "created_at", "previous_binding"]),
+              schemaOne(h["schema_version"]), hex(h["instance_id"],32), hex(h["generation"],32), hex(h["manifest_id"],64),
+              hex(h["config_identity"],64), hex(h["runtime_sha256"],64), utcDate(h["created_at"]) != nil else { return nil }
+        if !(h["previous_binding"] is NSNull) {
+            guard let p = h["previous_binding"] as? [String: Any], exact(p,["instance_id","generation","manifest_id"]), hex(p["instance_id"],32), hex(p["generation"],32), hex(p["manifest_id"],64) else { return nil }
+        }
+        struct Interval { let start: UInt64, end: UInt64, up: UInt64, down: UInt64 }
+        func interval(_ raw: Any?) -> Interval? {
+            guard let i = raw as? [String: Any], exact(i,["start_ns","end_ns","upload_bytes","download_bytes"]),
+                  let a = canonicalUInt(i["start_ns"]), let b = canonicalUInt(i["end_ns"]), a < b, b <= elapsed,
+                  let u = canonicalUInt(i["upload_bytes"]), u <= up, let d = canonicalUInt(i["download_bytes"]), d <= down else { return nil }
+            return Interval(start:a,end:b,up:u,down:d)
+        }
+        guard let r = interval(s["rate"]), r.end == elapsed, let history = s["history"] as? [Any], history.count <= 1440 else { return nil }
+        var end: UInt64 = 0, sumUp: UInt64 = 0, sumDown: UInt64 = 0
+        for raw in history {
+            guard let i = interval(raw), i.start >= end, i.end-i.start >= 60_000_000_000, elapsed-i.start <= 86_400_000_000_000 else { return nil }
+            let (u, uo) = sumUp.addingReportingOverflow(i.up), (d, `do`) = sumDown.addingReportingOverflow(i.down)
+            guard !uo, !`do`, u <= up, d <= down else { return nil }
+            if r.start >= i.start && r.end <= i.end && (r.up > i.up || r.down > i.down) { return nil }
+            sumUp=u; sumDown=d; end=i.end
+        }
+        return TrafficRate(runtimeIdentity:(h["instance_id"] as! String)+":"+(h["generation"] as! String),sampledAt:date,upload:r.up,download:r.down,duration:r.end-r.start,totalUpload:up,totalDownload:down)
+    }
+}
+struct ServiceStatus {
+    let loaded: Bool, running: Bool
+    static func parse(_ d: [String: Any]) -> ServiceStatus? {
+        guard d["availability"] as? String == "AVAILABLE", let l=jsonBool(d["loaded"]), let r=jsonBool(d["running"]), !r || l else { return nil }
+        return ServiceStatus(loaded:l,running:r)
+    }
+}
+struct Node {
+    let name: String, selectable: Bool, selected: Bool, skipVerify: Bool, needsSync: Bool
+    static func parse(_ value: Any) -> Node? {
+        guard let d=value as? [String: Any], let name=d["name"] as? String, !name.isEmpty, name.utf8.count < 4096,
+              let selectable=jsonBool(d["selectable"]), let selected=jsonBool(d["selected"]), let skip=jsonBool(d["skipVerify"]) else { return nil }
+        return Node(name:name,selectable:selectable,selected:selected,skipVerify:skip,needsSync:jsonBool(d["selectionNeedsSync"]) ?? false)
+    }
+}
+enum MutationVerdict: Equatable { case serviceSucceeded, savedStopped, applied, unchanged, rejected, unknown }
+func mutationVerdict(path: String, status: Int, body: [String: Any]) -> MutationVerdict {
+    if status == 202 || body["error"] as? String == "STARTUP_UNKNOWN" || body["apply_error"] as? String == "STARTUP_UNKNOWN" { return .unknown }
+    if let d=body["diagnostics"] as? [String: Any], d["outcome"] as? String == "UNKNOWN" { return .unknown }
+    if status != 200 { return (400...499).contains(status) ? .rejected : .unknown }
+    guard jsonBool(body["ok"]) == true else { return .unknown }
+    if path == "/nodes/selection" {
+        guard jsonBool(body["saved"]) == true else { return .unknown }
+        switch body["apply_status"] as? String {
+        case "SAVED_STOPPED": return .savedStopped
+        case "APPLIED": return jsonBool(body["applied"]) == true ? .applied : .unknown
+        case "NO_CHANGE": return jsonBool(body["changed"]) == false ? .unchanged : .unknown
+        default: return .unknown
+        }
+    }
+    guard let loaded=jsonBool(body["loaded"]), let running=jsonBool(body["running"]) else { return .unknown }
+    if path == "/service/stop", body["diagnostics"] != nil {
+        // PID absence cannot override a failed restoration/cleanup/receipt.
+        guard let d=body["diagnostics"] as? [String:Any],
+              schemaOne(d["schema"]), d["operation"] as? String == "STOP",
+              d["outcome"] as? String == "SUCCEEDED",
+              ["VERIFIED","NOT_ATTEMPTED"].contains(d["restoration"] as? String ?? ""),
+              ["VERIFIED","NOT_ATTEMPTED"].contains(d["cleanup"] as? String ?? ""),
+              ["WRITTEN","NOT_ATTEMPTED"].contains(d["receipt"] as? String ?? "") else { return .unknown }
+    }
+    return path == "/service/stop" ? (!loaded && !running ? .serviceSucceeded : .unknown) : (loaded && running ? .serviceSucceeded : .unknown)
+}

@@ -86,8 +86,32 @@ jobs:
           mkdir -p dist build
           python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o build/anytls-macos . | tee build/certified-build.log
           test "$(build/anytls-macos version)" = "$TAG"
+      - name: Build actual unified Apple Silicon app and five Swift fixture executables
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          core_before="$(shasum -a 256 build/anytls-macos)"
+          CORE="$PWD/build/anytls-macos" bash scripts/build-menubar.sh arm64 "$PWD/build/menubar"
+          test "$(shasum -a 256 build/anytls-macos)" = "$core_before"
+      - name: Run all five native Swift fixture suites (no production/WAN)
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          evidence="$(mktemp -d "$RUNNER_TEMP/aq.XXXXXX")"
+          echo "MENUBAR_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/package-menubar.py --run-tests build/menubar/test --evidence "$evidence/native"
+      - name: Preserve native evidence even on AppKit/GUI or assertion failure
+        if: always() && matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: menubar-release-native-arm64
+          path: ${{ env.MENUBAR_EVIDENCE }}
+          if-no-files-found: warn
       - name: Package binary, corresponding source and licenses
         run: python3 scripts/package-binary.py --arch "$GOARCH" --binary build/anytls-macos --out dist --receipt build/certified-build.log --tag "$TAG"
+      - name: Package arm64 unified app against exact corresponding source
+        if: matrix.arch == 'arm64'
+        run: python3 scripts/package-menubar.py --app build/menubar/AnyTLSMenuBar.app --out dist --tag "$TAG"
       - uses: actions/upload-artifact@v4
         with:
           name: binary-release-${{ matrix.arch }}
@@ -116,7 +140,7 @@ jobs:
         with:
           name: binary-release-amd64
           path: incoming/amd64
-      - name: Verify both manifests and merge exactly five archives
+      - name: Verify both manifests and merge exactly six archives
         run: |
           python3 - <<'PY'
           import hashlib, os, re, shutil
@@ -128,7 +152,7 @@ jobs:
           prefix = 'anytls-core-' + tag
           common = prefix + '-source.tar.gz'
           expected = {
-              'arm64': {common, prefix + '-darwin-arm64.tar.gz', prefix + '-corresponding-source.tar.gz'},
+              'arm64': {common, prefix + '-darwin-arm64.tar.gz', prefix + '-corresponding-source.tar.gz', prefix + '-menubar-darwin-arm64.zip'},
               'amd64': {common, prefix + '-darwin-amd64.tar.gz', prefix + '-darwin-amd64-corresponding-source.tar.gz'},
           }
           def sha256(path):
@@ -163,8 +187,8 @@ jobs:
                           raise SystemExit('conflicting asset: ' + name)
                   else:
                       merged[name] = path
-          if len(merged) != 5 or set(merged) != set.union(*expected.values()):
-              raise SystemExit('expected exactly five archives')
+          if len(merged) != 6 or set(merged) != set.union(*expected.values()):
+              raise SystemExit('expected exactly six archives')
           out = Path('dist')
           out.mkdir(exist_ok=False)
           for name, path in sorted(merged.items()):

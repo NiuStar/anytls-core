@@ -45,6 +45,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/install_operator_reconcile_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/bootstrap_reload_args_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/package_binary_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/package_menubar_test.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/update_binary_test.py
           bash -n install.sh
           bash -n install-control-helper.sh
@@ -52,3 +53,30 @@ jobs:
       - run: python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - run: mkdir -p dist
       - run: python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o dist/anytls-macos .
+      - name: Build actual unified Apple Silicon app and all five Swift fixtures
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(dist/anytls-macos version)" = "$(tr -d '\r\n' < VERSION)"
+          core_before="$(shasum -a 256 dist/anytls-macos)"
+          CORE="$PWD/dist/anytls-macos" bash scripts/build-menubar.sh arm64 "$PWD/build/menubar"
+          test "$(shasum -a 256 dist/anytls-macos)" = "$core_before"
+      - name: Run native Swift suites without production installation or WAN
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Short RunnerTemp-owned paths avoid Darwin's UNIX socket path limit.
+          evidence="$(mktemp -d "$RUNNER_TEMP/aq.XXXXXX")"
+          echo "MENUBAR_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/package-menubar.py --run-tests build/menubar/test --evidence "$evidence/native"
+      - name: Preserve native evidence even on AppKit/GUI or assertion failure
+        if: always() && matrix.os == 'macos-15'
+        uses: actions/upload-artifact@v4
+        with:
+          name: menubar-ci-native-arm64
+          path: ${{ env.MENUBAR_EVIDENCE }}
+          if-no-files-found: warn

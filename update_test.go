@@ -82,7 +82,8 @@ func TestUpdateLatestDoesNotRollbackAndExplicitVersionDoes(t *testing.T) {
 }
 
 func TestUpdateCheckSourceRelease(t *testing.T) {
-	fixture := updateFixture(currentVersion())
+	const releaseTag = "v0.0.0" // Stable minimum: no automatic rollback or cross-scheme update.
+	fixture := updateFixture(releaseTag)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/releases/latest" {
 			t.Error("wrong release endpoint")
@@ -97,7 +98,7 @@ func TestUpdateCheckSourceRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.UpdateAvailable || !result.SourceOnly || result.CurrentVersion != currentVersion() {
+	if result.UpdateAvailable || !result.SourceOnly || result.CurrentVersion != currentVersion() || result.LatestVersion != releaseTag || result.ReleaseURL != updateRepository+"/releases/tag/"+releaseTag {
 		t.Fatalf("wrong result: %+v", result)
 	}
 	data, _ := json.Marshal(result)

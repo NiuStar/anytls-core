@@ -75,6 +75,8 @@ func execute(args []string) error {
 			}
 			fmt.Println(currentVersion())
 			return nil
+		case "desktop":
+			return desktopCommand(args[1:])
 		case "helper":
 			return controlHelperCommand(args[1:])
 		case "helper-serve":

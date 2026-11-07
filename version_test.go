@@ -14,7 +14,7 @@ func TestCurrentVersionMatchesSource(t *testing.T) {
 	if currentVersion() != strings.TrimSpace(string(data)) {
 		t.Fatal("version must match embedded VERSION")
 	}
-	if err := validateUpdateVersion(currentVersion()); err != nil {
+	if err := validateBuildVersion(currentVersion()); err != nil {
 		t.Fatal(err)
 	}
 }
