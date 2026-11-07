@@ -4,12 +4,32 @@ import FoundationNetworking
 #endif
 
 final class QuitMockProtocol: URLProtocol {
-    static var handler: ((URLRequest, QuitMockProtocol) -> Void)?
-    static var calls: [URLRequest] = []
+    private static let handlerLock = NSLock()
+    private static var currentHandler: ((URLRequest, QuitMockProtocol) -> Void)?
+    static var handler: ((URLRequest, QuitMockProtocol) -> Void)? {
+        get { handlerLock.lock(); defer { handlerLock.unlock() }; return currentHandler }
+        set { handlerLock.lock(); defer { handlerLock.unlock() }; currentHandler=newValue }
+    }
+    // URLSession constructs protocols off-main. Capture this request's fixture
+    // handler once; a later fixture must never supply its response implementation.
+    private let ownedHandler: ((URLRequest, QuitMockProtocol) -> Void)?
+    private let loadingLock = NSLock()
+    private var cancelled = false
+    static var calls: [URLRequest] = [] // main-queue owned, like checks/model state
+    override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
+        ownedHandler=Self.handler
+        super.init(request:request,cachedResponse:cachedResponse,client:client)
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() { Self.calls.append(request); Self.handler?(request,self) }
-    override func stopLoading() {}
+    override func startLoading() {
+        DispatchQueue.main.async {
+            self.loadingLock.lock(); let cancelled=self.cancelled; self.loadingLock.unlock()
+            guard !cancelled else { return }
+            Self.calls.append(self.request); self.ownedHandler?(self.request,self)
+        }
+    }
+    override func stopLoading() { loadingLock.lock(); cancelled=true; loadingLock.unlock() }
     func reply(_ status: Int, _ body: [String:Any]) {
         client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:status,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
         client?.urlProtocol(self,didLoad:try! JSONSerialization.data(withJSONObject:body)); client?.urlProtocolDidFinishLoading(self)
@@ -120,7 +140,14 @@ final class QuitMockProtocol: URLProtocol {
             }
             let (q,ok)=run(m)
             check(!ok && q.state == .blocked && m.uncertain,"unknown stays blocked: \(kind)")
-            m.refresh(); wait { m.status != nil }
+            // A status response is not a refresh completion barrier: helper,
+            // nodes and traffic can still be queued when reset cancels the session.
+            // Require the complete, exact read-only inventory before fixture reuse.
+            let before=QuitMockProtocol.calls.count
+            let refreshPaths=["/api/v1/status","/api/v1/helper/status","/api/v1/nodes","/api/v1/traffic"].sorted()
+            m.refresh(); wait {
+                m.status != nil && QuitMockProtocol.calls.dropFirst(before).map { $0.url!.path }.sorted() == refreshPaths
+            }
             var again: Bool?; q.start { again=$0 }; wait { again != nil }
             check(again == false && posts() == 1 && m.uncertain,"read-only reconciliation never replays STOP: \(kind)")
             m.api.reset()
