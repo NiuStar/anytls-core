@@ -56,6 +56,13 @@ struct DesktopMetadata: Decodable {
 }
 
 final class DesktopRuntime {
+    #if arch(arm64)
+    static let runtimeArchitecture = "arm64"
+    #elseif arch(x86_64)
+    static let runtimeArchitecture = "amd64"
+    #else
+    #error("Unsupported desktop runtime architecture")
+    #endif
     typealias Runner = (String,[String],Double,@escaping (DesktopCommandResult)->Void)->Void
     let home: String, uid: Int, bundle: String
     let run: Runner
@@ -138,7 +145,7 @@ final class DesktopRuntime {
     private func verifyBundle()->Bool {
         guard let d=try? Data(contentsOf:URL(fileURLWithPath:bundle+"/Contents/Resources/runtime/manifest.json")), d.count<4096,
               let o=try? JSONSerialization.jsonObject(with:d) as? [String:Any], o["schema"] as? Int == 1,
-              o["binary"] as? String == "anytls-macos", o["arch"] as? String == "arm64",
+              o["binary"] as? String == "anytls-macos", o["arch"] as? String == Self.runtimeArchitecture,
               let sha=o["sha256"] as? String, sha.count==64, sha.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
               let version=o["version"] as? String, !version.isEmpty, digest(source)==sha else { return false }
         expectedSHA=sha; expectedVersion=version; return true

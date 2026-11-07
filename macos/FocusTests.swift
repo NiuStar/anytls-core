@@ -66,7 +66,7 @@ private final class FocusHTTP: URLProtocol {
         let resource=bundle.appendingPathComponent("Contents/Resources/runtime")
         try! FileManager.default.createDirectory(at:resource,withIntermediateDirectories:true)
         let sha=String(repeating:"a",count:64), home="/Users/owned fixture", uid=503, binary=home+"/.anytls/anytls-macos", config=home+"/.anytls/config.yaml"
-        try! JSONSerialization.data(withJSONObject:["schema":1,"binary":"anytls-macos","arch":"arm64","version":"fixture","sha256":sha]).write(to:resource.appendingPathComponent("manifest.json"))
+        try! JSONSerialization.data(withJSONObject:["schema":1,"binary":"anytls-macos","arch":DesktopRuntime.runtimeArchitecture,"version":"fixture","sha256":sha]).write(to:resource.appendingPathComponent("manifest.json"))
         var child: Process?
         let runner: DesktopRuntime.Runner={ _,args,_,done in
             var body: [String:Any]=[:]; var code: Int32=0

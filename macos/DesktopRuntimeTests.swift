@@ -48,7 +48,36 @@ private final class DesktopHTTP: URLProtocol {
         let app=root.appendingPathComponent("AnyTLSMenuBar.app"), resources=app.appendingPathComponent("Contents/Resources/runtime")
         try FileManager.default.createDirectory(at:resources,withIntermediateDirectories:true)
         let sha=String(repeating:"a",count:64), home="/Users/owned fixture", uid=503, binary=home+"/.anytls/anytls-macos", config=home+"/.anytls/config.yaml"
-        try JSONSerialization.data(withJSONObject:["schema":1,"binary":"anytls-macos","arch":"arm64","version":"fixture","sha256":sha]).write(to:resources.appendingPathComponent("manifest.json"))
+        try JSONSerialization.data(withJSONObject:["schema":1,"binary":"anytls-macos","arch":DesktopRuntime.runtimeArchitecture,"version":"fixture","sha256":sha]).write(to:resources.appendingPathComponent("manifest.json"))
+        #if arch(arm64)
+        check(DesktopRuntime.runtimeArchitecture=="arm64","compiled runtime architecture uses canonical target identity")
+        #elseif arch(x86_64)
+        check(DesktopRuntime.runtimeArchitecture=="amd64","compiled runtime architecture uses canonical target identity")
+        #endif
+        // Only this owned fixture manifest is overwritten, then restored before
+        // the existing lifecycle flows. No helper, authorization or child runs.
+        do {
+            let manifest=resources.appendingPathComponent("manifest.json")
+            let validManifest=try Data(contentsOf:manifest)
+            defer { try! validManifest.write(to:manifest) }
+            let foreignArchitecture=DesktopRuntime.runtimeArchitecture=="arm64" ? "amd64" : "arm64"
+            try JSONSerialization.data(withJSONObject:["schema":1,"binary":"anytls-macos","arch":foreignArchitecture,"version":"fixture","sha256":sha]).write(to:manifest)
+            var dispatches=0, authorizations=0, credentials=0, logins=0
+            var messages=[String]()
+            let rejectRunner: DesktopRuntime.Runner = { path,args,_,done in
+                dispatches += 1
+                if path=="/usr/bin/osascript" { authorizations += 1 }
+                if args.contains("credentials") { credentials += 1 }
+                done(DesktopCommandResult(code:1,data:Data(),timedOut:false))
+            }
+            let rejectLogin: (String,String,@escaping (Bool)->Void)->Void = { _,_,done in logins += 1; done(false) }
+            let rejectedSetup=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:rejectRunner,exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:root.appendingPathComponent("architecture-initialize").path,candidateSafe:{_ in true})
+            rejectedSetup.initialize(login:rejectLogin); messages.append(rejectedSetup.message)
+            let rejectedAttach=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:rejectRunner,exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:root.appendingPathComponent("architecture-attach").path,candidateSafe:{_ in true})
+            let idleMessage=rejectedAttach.message
+            rejectedAttach.attach(login:rejectLogin); messages.append(rejectedAttach.message)
+            check(dispatches==0 && authorizations==0 && credentials==0 && logins==0 && messages[0].contains("拒绝安装") && messages[1]==idleMessage && !rejectedSetup.busy && !rejectedAttach.busy && rejectedSetup.console==nil && rejectedAttach.console==nil && !rejectedSetup.intents.present && !rejectedAttach.intents.present,"foreign manifest initialize and attach refuse before commands authorization credentials or login")
+        }
         var calls=[(String,[String])](), state="missing", ready=false, auths=0
         func metadata(_ prepare: Bool=false)->Data { try! JSONSerialization.data(withJSONObject:["schema":1,"version":"fixture","binary":binary,"config":config,"config_identity":DesktopRuntime.sum(Data(config.utf8)),"binary_sha256":sha,"endpoint":"http://127.0.0.1:18089","listen":"0.0.0.0","port":18089,"uid":uid,"home":home,"helper_state":prepare ? "not_checked" : state]) }
         let runner: DesktopRuntime.Runner = { path,args,_,done in

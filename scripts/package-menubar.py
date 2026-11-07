@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the native arm64 unified app against the existing release source closure.
+"""Package the native arm64 or amd64 unified app against the existing release source closure.
 
 No download, installation, helper authorization or production runtime invocation.
 The optional test mode runs only the five build-menubar.sh fixture executables.
@@ -18,7 +18,7 @@ import tempfile
 import zipfile
 
 SUITES = {'AnyTLSMenuBarTests': 95, 'QuitTests': 236, 'ConnectivityTests': 49,
-          'FocusTests': 54, 'DesktopRuntimeTests': 68}
+          'FocusTests': 54, 'DesktopRuntimeTests': 70}
 APP_SOURCES = ('macos/Model.swift', 'macos/Connectivity.swift', 'macos/Client.swift',
                'macos/QuitCoordinator.swift', 'macos/DesktopMigration.swift',
                'macos/DesktopRuntime.swift', 'macos/main.swift', 'macos/Tests.swift',
@@ -38,6 +38,12 @@ def sha(path):
 
 def output(args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
+
+
+def validate_arch(arch):
+    if arch not in ('arm64', 'amd64'):
+        raise ValueError('unsupported architecture')
+    return {'arm64': 'arm64', 'amd64': 'x86_64'}[arch]
 
 
 def validate_tag(tag):
@@ -61,10 +67,11 @@ def read_sums(out, names):
     return rows
 
 
-def check_sources(root, out, tag):
+def check_sources(root, out, tag, arch='arm64'):
+    validate_arch(arch)
     prefix = 'anytls-core-' + tag
     source = out / (prefix + '-source.tar.gz')
-    ccs = out / (prefix + '-corresponding-source.tar.gz')
+    ccs = out / (prefix + ('-corresponding-source.tar.gz' if arch == 'arm64' else '-darwin-amd64-corresponding-source.tar.gz'))
     tracked = set(output(['git', 'ls-files', '-z'], cwd=root).split('\0')) - {''}
     if not set(APP_SOURCES) <= tracked:
         raise ValueError('app build/test/package sources must all be tracked')
@@ -85,9 +92,10 @@ def check_sources(root, out, tag):
     return ccs.name
 
 
-def verify_app(app, tag):
-    if output(['/usr/bin/uname', '-s']) != 'Darwin' or output(['/usr/bin/uname', '-m']) != 'arm64':
-        raise ValueError('native Apple Silicon macOS required')
+def verify_app(app, tag, arch='arm64'):
+    machine = validate_arch(arch)
+    if output(['/usr/bin/uname', '-s']) != 'Darwin' or output(['/usr/bin/uname', '-m']) != machine:
+        raise ValueError('native ' + machine + ' macOS required')
     if app.name != 'AnyTLSMenuBar.app' or app.is_symlink() or not app.is_dir():
         raise ValueError('expected regular AnyTLSMenuBar.app')
     for path in app.rglob('*'):
@@ -96,7 +104,7 @@ def verify_app(app, tag):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     expected = dict(CFBundleIdentifier='org.anytls.menubar.candidate',
                     CFBundleExecutable='AnyTLSMenuBar', CFBundlePackageType='APPL',
-                    CFBundleShortVersionString='0.4.0', CFBundleVersion='0.4.0.20261107.2',
+                    CFBundleShortVersionString='0.4.1', CFBundleVersion='0.4.1.20261107.1',
                     AnyTLSCoreVersion=tag, LSMinimumSystemVersion='13.0', LSUIElement=True)
     if any(info.get(key) != value for key, value in expected.items()):
         raise ValueError('unexpected app metadata')
@@ -105,12 +113,12 @@ def verify_app(app, tag):
     for path in (runtime, executable):
         if not path.is_file() or not path.stat().st_mode & stat.S_IXUSR:
             raise ValueError('missing executable payload')
-        if output(['/usr/bin/lipo', '-archs', str(path)]) != 'arm64':
-            raise ValueError('app payload must be arm64 only')
+        if output(['/usr/bin/lipo', '-archs', str(path)]) != machine:
+            raise ValueError('app payload must be ' + machine + ' only')
         subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(path)], check=True)
     subprocess.run(['/usr/bin/codesign', '--verify', '--strict', '--deep', str(app)], check=True)
     manifest = json.loads((app / 'Contents/Resources/runtime/manifest.json').read_bytes())
-    if manifest != dict(schema=1, binary='anytls-macos', arch='arm64', version=tag, sha256=sha(runtime)):
+    if manifest != dict(schema=1, binary='anytls-macos', arch=arch, version=tag, sha256=sha(runtime)):
         raise ValueError('runtime manifest mismatch')
     version = output([str(runtime), '-version']).removeprefix('anytls-macos ').removeprefix('AnyTLS ')
     if version != tag:
@@ -166,7 +174,8 @@ def run_tests(test_dir, evidence):
     return results
 
 
-def package(root, app, out, tag):
+def package(root, app, out, tag, arch='arm64'):
+    validate_arch(arch)
     validate_tag(tag)
     root, app, out = Path(root).resolve(), Path(app).absolute(), Path(out).resolve()
     if (root / 'VERSION').read_text().strip() != tag:
@@ -175,28 +184,30 @@ def package(root, app, out, tag):
         raise ValueError('tracked release source is dirty')
     commit = output(['git', 'rev-parse', 'HEAD'], cwd=root)
     prefix = 'anytls-core-' + tag
-    names = {prefix + suffix for suffix in ('-source.tar.gz', '-corresponding-source.tar.gz', '-darwin-arm64.tar.gz')}
+    platform = 'darwin-' + arch
+    ccs_suffix = '-corresponding-source.tar.gz' if arch == 'arm64' else '-darwin-amd64-corresponding-source.tar.gz'
+    names = {prefix + suffix for suffix in ('-source.tar.gz', ccs_suffix, '-' + platform + '.tar.gz')}
     if {p.name for p in out.iterdir()} != names | {'SHA256SUMS'}:
-        raise ValueError('expected exactly the three arm64 core archives and SHA256SUMS')
+        raise ValueError('expected exactly the three selected-architecture core archives and SHA256SUMS')
     sums = read_sums(out, names)
-    source = check_sources(root, out, tag)
-    manifest = verify_app(app, tag)
-    with tarfile.open(out / (prefix + '-darwin-arm64.tar.gz'), 'r:gz') as core:
-        core_info = json.load(core.extractfile(prefix + '-darwin-arm64/BUILD-INFO.json'))
-    if core_info.get('source_commit') != commit or core_info.get('platform') != 'darwin-arm64' or core_info.get('corresponding_source') != source:
+    source = check_sources(root, out, tag, arch)
+    manifest = verify_app(app, tag, arch)
+    with tarfile.open(out / (prefix + '-' + platform + '.tar.gz'), 'r:gz') as core:
+        core_info = json.load(core.extractfile(prefix + '-' + platform + '/BUILD-INFO.json'))
+    if core_info.get('source_commit') != commit or core_info.get('platform') != platform or core_info.get('corresponding_source') != source:
         raise ValueError('core archive identity mismatch')
     original_core_sha = core_info.get('binary_sha256', '')
     if not re.fullmatch(r'[0-9a-f]{64}', original_core_sha):
         raise ValueError('missing original core digest')
-    target = out / (prefix + '-menubar-darwin-arm64.zip')
+    target = out / (prefix + '-menubar-' + platform + '.zip')
     with tempfile.TemporaryDirectory(prefix='aqpkg-', dir=os.environ['TMPDIR']) as work:
         work = Path(work)
         archive = work / target.name
         subprocess.run(['/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(app), str(archive)], check=True)
         # Append delivery material without re-emitting signed bundle ZIP entries.
         with zipfile.ZipFile(archive, 'a', compression=zipfile.ZIP_DEFLATED) as delivery:
-            with tarfile.open(out / (prefix + '-darwin-arm64.tar.gz'), 'r:gz') as core:
-                base = prefix + '-darwin-arm64/'
+            with tarfile.open(out / (prefix + '-' + platform + '.tar.gz'), 'r:gz') as core:
+                base = prefix + '-' + platform + '/'
                 license_count = 0
                 for member in core.getmembers():
                     relative = member.name.removeprefix(base)
@@ -209,12 +220,12 @@ def package(root, app, out, tag):
                     raise ValueError('missing core license material')
             location = 'https://github.com/NiuStar/anytls-core/releases/download/' + tag + '/' + source
             delivery.writestr('SOURCE-LOCATION.txt', location + '\n')
-            delivery.writestr('README.txt', 'AnyTLS unified windowless menu app 0.4.0\nApple Silicon arm64 ONLY; macOS 13 or newer.\nAd-hoc signed; NOT Developer ID signed or notarized.\nNative administrator consent and production first-use/VPN end-to-end: NOT_RUN by packaging.\nNo credentials, Keychain data, configuration or helper installation is included.\nCorresponding source (full tracked Swift, tests, build tooling, Go dependencies and toolchain):\n' + location + '\n')
-            delivery.writestr('BUILD-INFO.json', json.dumps(dict(source_commit=commit, core_version=tag, app_version='0.4.0', app_build='0.4.0.20261107.2', architecture='arm64', original_core_sha256=original_core_sha, signed_runtime_sha256=manifest['sha256'], corresponding_source=source, signing='ad-hoc', notarization='NOT_RUN', production_end_to_end='NOT_RUN'), sort_keys=True, indent=2) + '\n')
+            delivery.writestr('README.txt', 'AnyTLS unified windowless menu app 0.4.1\n' + {'arm64': 'Apple Silicon arm64', 'amd64': 'Intel x86_64'}[arch] + ' ONLY; macOS 13 or newer.\nAd-hoc signed; NOT Developer ID signed or notarized.\nNative administrator consent and production first-use/VPN end-to-end: NOT_RUN by packaging.\nNo credentials, Keychain data, configuration or helper installation is included.\nCorresponding source (full tracked Swift, tests, build tooling, Go dependencies and toolchain):\n' + location + '\n')
+            delivery.writestr('BUILD-INFO.json', json.dumps(dict(source_commit=commit, core_version=tag, app_version='0.4.1', app_build='0.4.1.20261107.1', architecture=arch, original_core_sha256=original_core_sha, signed_runtime_sha256=manifest['sha256'], corresponding_source=source, signing='ad-hoc', notarization='NOT_RUN', production_end_to_end='NOT_RUN'), sort_keys=True, indent=2) + '\n')
         extracted = work / 'extracted'
         extracted.mkdir()
         subprocess.run(['/usr/bin/ditto', '-x', '-k', str(archive), str(extracted)], check=True)
-        if verify_app(extracted / app.name, tag) != manifest:
+        if verify_app(extracted / app.name, tag, arch) != manifest:
             raise ValueError('extracted runtime changed')
         before = {str(p.relative_to(app)): sha(p) for p in app.rglob('*') if p.is_file()}
         after = {str(p.relative_to(extracted / app.name)): sha(p) for p in (extracted / app.name).rglob('*') if p.is_file()}
@@ -232,6 +243,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('app', 'out', 'tag', 'run-tests', 'evidence'):
         parser.add_argument('--' + name)
+    parser.add_argument('--arch', choices=('arm64', 'amd64'), default='arm64')
     args = parser.parse_args()
     if args.run_tests:
         if not args.evidence or any((args.app, args.out, args.tag)):
@@ -240,7 +252,7 @@ def main():
     else:
         if not all((args.app, args.out, args.tag)) or args.evidence:
             parser.error('packaging requires --app, --out and --tag')
-        result = package(Path.cwd(), args.app, args.out, args.tag)
+        result = package(Path.cwd(), args.app, args.out, args.tag, arch=args.arch)
     print(json.dumps(result, sort_keys=True))
 
 
