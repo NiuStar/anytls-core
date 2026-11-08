@@ -143,7 +143,7 @@ class PackageTests(unittest.TestCase):
             path.chmod(0o755)
         self.info = dict(CFBundleIdentifier='org.anytls.menubar.candidate', CFBundleExecutable='AnyTLSMenuBar',
                          CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.3',
-                         CFBundleVersion='0.4.3.20261108.1', AnyTLSCoreVersion=TAG,
+                         CFBundleVersion='0.4.3.20261108.2', AnyTLSCoreVersion=TAG,
                          LSMinimumSystemVersion='13.0', LSUIElement=True)
         self.write_info()
         self.runtime = self.app / 'Contents/Resources/runtime/anytls-macos'
@@ -243,7 +243,7 @@ class PackageTests(unittest.TestCase):
             info = json.loads(archive.read('BUILD-INFO.json'))
             self.assertEqual(info['architecture'], 'amd64')
             self.assertEqual(info['app_version'], '0.4.3')
-            self.assertEqual(info['app_build'], '0.4.3.20261108.1')
+            self.assertEqual(info['app_build'], '0.4.3.20261108.2')
             self.assertEqual(info['corresponding_source'], self.prefix + '-darwin-amd64-corresponding-source.tar.gz')
             self.assertIn(b'Intel x86_64 ONLY', archive.read('README.txt'))
 
@@ -432,8 +432,8 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
         self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 95, 'QuitTests': 250,
                                     'ConnectivityTests': 49, 'FocusTests': 73,
-                                    'DesktopRuntimeTests': 148})
-        self.assertEqual(sum(p.SUITES.values()), 615)
+                                    'DesktopRuntimeTests': 150})
+        self.assertEqual(sum(p.SUITES.values()), 617)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())

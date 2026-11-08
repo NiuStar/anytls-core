@@ -1,8 +1,8 @@
 # AnyTLS macOS 菜单栏客户端 0.4.3
 
-原生 Swift / AppKit 统一 App 0.4.3（build 0.4.3.20261108.1），发行标签 `v2026-11-08-01`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
+原生 Swift / AppKit 统一 App 0.4.3（build 0.4.3.20261108.2），发行标签 `v2026-11-08-02`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
 
-从本标签 Release 按芯片下载 `anytls-core-v2026-11-08-01-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-08-01-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
+从本标签 Release 按芯片下载 `anytls-core-v2026-11-08-02-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-08-02-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
 
 组件生命周期使用独立私有根目录中的 0600 `lifecycle.lock` 内核排他 flock；校验物理父目录、所有者、普通文件与单链接，不跟随符号链接，不删除或偷取锁。竞争 App 在 prepare、授权、STOP、TERM 前拒绝。锁覆盖异步操作至本次完成；崩溃释放内核锁但不清除持久 UNKNOWN/ARMED/ACTIVATION_UNKNOWN。仅有锁文件的安全目录不代表授权记录；未知目录成员、读权限错误保持 HOLD。正常退出 drain 失败仅撤销该次 ready 证明；下次 Quit 必须新鲜 STOP。原生受控进程测试不代表真实 launchd KeepAlive、管理员授权或 VPN 路由验收；用户需另行在本机接受这些关卡。
 
@@ -28,7 +28,7 @@ open ./macos/build/AnyTLSMenuBar.app
 
 架构为 `arm64` 或 `amd64`，分别仅在对应原生 Mac 上构建和验包；拒绝跨架构／universal 核心，防止 App 与内嵌核心架构不一致。Intel 使用 `CORE=/absolute/path/to/qualified/amd64/anytls-macos bash scripts/build-menubar.sh amd64 ./macos/build`。必须提供显式本地 CORE，不下载。构建使用 Swift 6.1.2 的 Swift 5 语言模式、macOS 13 deployment target，无第三方依赖；先 ad-hoc 签核心、生成实际签后 SHA 清单，再签 App 并严格验证。**不是 Developer ID、公证或 Gatekeeper 放行证明**。
 
-构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-08-01-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-08-01-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
+构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-08-02-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-08-02-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
 
 ## 无窗口自动连接
 

@@ -36,7 +36,26 @@ private final class DesktopHTTP: URLProtocol {
     static var checks=[String]()
     static func check(_ value: @autoclosure ()->Bool,_ name: String) { guard value() else { print("FAIL "+name); exit(1) }; checks.append(name); print("PASS "+name) }
     static func pump(_ condition: ()->Bool) { let end=Date().addingTimeInterval(3); while !condition() && Date()<end { RunLoop.main.run(until:Date().addingTimeInterval(0.01)) } }
+    // A test-owned native child avoids /usr/bin/python3's SDK/toolchain startup.
+    // write(2) may be short or interrupted; prove both complete finite floods.
+    static func writeFlood(_ fd: Int32, _ byte: UInt8) {
+        let bytes=[UInt8](repeating:byte,count:200000)
+        bytes.withUnsafeBytes { raw in
+            var offset=0
+            while offset<raw.count {
+                let n=Darwin.write(fd,raw.baseAddress!.advanced(by:offset),raw.count-offset)
+                if n<0 && errno==EINTR { continue }
+                guard n>0 else { exit(73) }
+                offset += n
+            }
+        }
+    }
     static func main() throws {
+        if CommandLine.arguments.count==3 && CommandLine.arguments[1]=="--runner-flood" {
+            writeFlood(STDOUT_FILENO,120); writeFlood(STDERR_FILENO,121)
+            try Data("200000 200000".utf8).write(to:URL(fileURLWithPath:CommandLine.arguments[2]))
+            return
+        }
         if CommandLine.arguments.count>1 && CommandLine.arguments[1]=="webui" { Thread.sleep(forTimeInterval:30); return }
         if CommandLine.arguments.count>2 && CommandLine.arguments[1]=="--lease-holder" {
             let store=DesktopIntentStore(home:"",fixtureRoot:CommandLine.arguments[2])
@@ -164,8 +183,10 @@ private final class DesktopHTTP: URLProtocol {
         pump { result != nil }; check(result?.code==0 && result?.data==Data("PRIVATE_FIXTURE_SECRET".utf8),"private anonymous pipe transport remains memory only")
         result=nil; DesktopProcessRunner.run("/bin/sleep",["3"],0.05) { result=$0 }; pump { result != nil }
         check(result?.timedOut==true,"process deadline terminates owned test child asynchronously")
-        result=nil; DesktopProcessRunner.run("/usr/bin/python3",["-c","import os; os.write(1,b'x'*200000); os.write(2,b'y'*200000)"],3) { result=$0 }; pump { result != nil }
+        let floodReceipt=root.appendingPathComponent("runner-flood-complete")
+        result=nil; DesktopProcessRunner.run(CommandLine.arguments[0],["--runner-flood",floodReceipt.path],3) { result=$0 }; pump { result != nil }
         check(result?.code == -1 && result!.data.count<=65536 && result!.stderr.count<=65536 && result?.timedOut==false,"finite stdout stderr flood capped and fully drained")
+        let floodResult=result
         result=nil; DesktopProcessRunner.run("/usr/bin/python3",["-c","import os,time; p=os.fork(); time.sleep(2) if p==0 else None"],0.1) { result=$0 }; pump { result != nil }
         check(result?.timedOut==true,"descendant retained pipes bounded without blocked reader threads")
         let sample=DesktopAuthorizationIntent(operation:String(repeating:"b",count:64),stage:home+"/.anytls/.desktop-candidate-"+String(repeating:"b",count:64),sha:sha,state:"ARMED",resume:true,console:nil)
@@ -445,6 +466,8 @@ private final class DesktopHTTP: URLProtocol {
         check(!DesktopRuntime.consoleArguments(prefix+listen+port+["--managed-agent",adoptionLabel+"suffix"],binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv requires exact label")
         check(!DesktopRuntime.consoleArguments(prefix+listen+agent+agent,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv rejects equal duplicate flag replacing port")
         check(!DesktopRuntime.consoleArguments(prefix+listen+port+agent+agent,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv rejects extra duplicate flag")
+        check(floodResult?.data == Data(repeating:120,count:65536) && floodResult?.stderr == Data(repeating:121,count:65536),"native flood retains exact bounded bytes on both streams")
+        check((try? Data(contentsOf:floodReceipt)) == Data("200000 200000".utf8),"native flood completes both 200000 byte write loops before exit")
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"systemAuthorization":"NOT_RUN","productionChanges":false],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("desktop-checks.json"))
         print("DESKTOP_TESTS_OK checks=\(checks.count)")
     }
