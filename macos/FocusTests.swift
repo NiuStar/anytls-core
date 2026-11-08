@@ -33,6 +33,10 @@ extension NSAlert {
 private final class FocusHTTP: URLProtocol {
     static var loginStatus=200, serviceStatus=200, online=false, loginOffline=false
     static var logins=0, requests: [String]=[]
+    static let gate=NSLock()
+    static var holdStatus=false, held: (() -> Void)?
+    static var timeline=[String]()
+    static func event(_ text: String) { gate.lock(); timeline.append(text); gate.unlock() }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -46,17 +50,22 @@ private final class FocusHTTP: URLProtocol {
         else if path.hasSuffix("/status") { body=["availability":"AVAILABLE","loaded":true,"running":true,"available":true,"version":"fixture","listenHost":"0.0.0.0"] }
         else if path.hasSuffix("/nodes") { body=["nodes":[],"etag":"\""+String(repeating:"a",count:64)+"\""] }
         let data=probe ? Data() : try! JSONSerialization.data(withJSONObject:body)
-        DispatchQueue.global().asyncAfter(deadline:.now()+(login ? 0.12 : 0.01)) {
+        let deliver: () -> Void = {
+            Self.event("deliver " + path)
             self.client?.urlProtocol(self,didReceive:HTTPURLResponse(url:self.request.url!,statusCode:status,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
             if !data.isEmpty { self.client?.urlProtocol(self,didLoad:data) }
             self.client?.urlProtocolDidFinishLoading(self)
         }
+        Self.gate.lock()
+        if Self.holdStatus && path == "/api/v1/status" { Self.held=deliver; Self.timeline.append("held " + path); Self.gate.unlock(); return }
+        Self.gate.unlock()
+        DispatchQueue.global().asyncAfter(deadline:.now()+(login ? 0.12 : 0.01),execute:deliver)
     }
     override func stopLoading() {}
 }
 @main struct FocusTests {
     static var checks=[String](), delegates=[AppDelegate](), children=[Process]()
-    static func check(_ ok: @autoclosure ()->Bool,_ name: String) { guard ok() else { print("FAIL: "+name); exit(1) }; checks.append(name); print("PASS: "+name) }
+    static func check(_ ok: @autoclosure ()->Bool,_ name: String) { guard ok() else { print("FAIL: "+name); for child in children where child.isRunning { child.terminate(); child.waitUntilExit() }; exit(1) }; checks.append(name); print("PASS: "+name) }
     static func pump(_ duration: Double=0.12) { RunLoop.main.run(until:Date().addingTimeInterval(duration)) }
     static func wait(_ name: String,_ ready: ()->Bool) { let end=Date().addingTimeInterval(5); while !ready() && Date()<end { pump(0.02) }; check(ready(),name) }
     static func config()->URLSessionConfiguration { let c=URLSessionConfiguration.ephemeral; c.protocolClasses=[FocusHTTP.self]; return c }
@@ -177,15 +186,65 @@ private final class FocusHTTP: URLProtocol {
         check(installUI.item.button!.toolTip!.contains(installRuntime.message) && installUI.item.menu!.items.contains {$0.title==installRuntime.message},"installation failure retained in menu and tooltip")
         check(!installRuntime.message.contains("PRIVATE_SENTINEL") && installCommands == [["desktop","prepare"],["desktop","migration-inspect"]],"installation refusal reveals no raw output and sends zero STOP authorization or credentials")
         quiet(installUI,"asynchronous installation refusal")
-        // Use the real mutation owner's synchronous pending/unknown seams; no
-        // HTTP callback can run between beginQuit and the stale-row action.
+        // Prove a real read-owner collision separately from the pending contract.
+        // The APIClient completion barrier below owns no production state: each
+        // sentinel must be admitted and completed through the actual transport.
         func savedInstallRow()->NSMenuItem { saved.item.menu!.items.first {$0.action == #selector(AppDelegate.initializeDesktop)}! }
+        func settled(_ ready: ()->Bool) -> Bool {
+            let end=Date().addingTimeInterval(5)
+            while !ready() && Date()<end { pump(0.02) }
+            return ready()
+        }
+        func heldResponse()->(() -> Void)? {
+            FocusHTTP.gate.lock(); defer { FocusHTTP.gate.unlock() }; return FocusHTTP.held
+        }
+        func drainReads()->Bool {
+            let paths=["/status","/helper/status","/nodes","/traffic"]
+            var sent=Set<String>(), completed=Set<String>()
+            return settled {
+                for path in paths where !sent.contains(path) {
+                    if saved.model.api.request(path,completion:{ _ in completed.insert(path) }) { sent.insert(path) }
+                }
+                return completed.count == paths.count
+            }
+        }
+        let initiallyDrained=drainReads()
+        guard initiallyDrained else { check(false,"fixture prior owned reads drain"); return }
         let context=saved.model.quitContext!
-        saved.model.beginQuit(context:context) {_ in}
+        FocusHTTP.gate.lock(); FocusHTTP.holdStatus=true; FocusHTTP.held=nil; FocusHTTP.gate.unlock()
+        saved.model.refresh()
+        guard settled({ heldResponse() != nil }) else { check(false,"fixture refresh status held"); return }
+        var collisionOutcomes=[QuitOutcome]()
+        FocusHTTP.event("collision before pending=\(saved.model.pending) row=\(savedInstallRow().isEnabled)")
+        saved.model.beginQuit(context:context) { collisionOutcomes.append($0) }
+        let collisionBlocked=collisionOutcomes == [.blocked] && !saved.model.pending && !saved.model.uncertain && savedInstallRow().isEnabled
+        FocusHTTP.event("collision after pending=\(saved.model.pending) row=\(savedInstallRow().isEnabled) outcomes=\(collisionOutcomes)")
+        // External native mutation leaves the identical controlled refresh held,
+        // restoring the old fixture assumption without changing product code.
+        let restoreCollision=ProcessInfo.processInfo.environment["FOCUS_RESTORE_OWNER_COLLISION"] == "1"
+        var priorReadsDrained=false
+        if !restoreCollision {
+            FocusHTTP.gate.lock(); FocusHTTP.holdStatus=false; let release=FocusHTTP.held; FocusHTTP.held=nil; FocusHTTP.gate.unlock()
+            release?()
+            priorReadsDrained=drainReads()
+            guard priorReadsDrained else { check(false,"fixture all prior owned reads drain"); return }
+        }
+        FocusHTTP.gate.lock(); FocusHTTP.holdStatus=true; FocusHTTP.gate.unlock()
+        var quitOutcomes=[QuitOutcome]()
+        saved.model.beginQuit(context:context) { quitOutcomes.append($0) }
+        FocusHTTP.event("pending before assertion pending=\(saved.model.pending) row=\(savedInstallRow().isEnabled) outcomes=\(quitOutcomes)")
+        try JSONSerialization.data(withJSONObject:FocusHTTP.timeline,options:.prettyPrinted).write(to:root.appendingPathComponent("timeline.json"))
         check(saved.model.pending && !savedInstallRow().isEnabled,"pending operation disables installation menu")
         saved.initializeDesktop()
         check(saved.connectionMessage.contains("当前操作进行中") && PresentationProbe.counts == [0,0,0,0],"stale pending install action explains refusal without dispatch")
+        let quitResponseHeld=settled { heldResponse() != nil }
         saved.model.abandonQuit(context:context)
+        let requestsBeforeLate=FocusHTTP.requests.count
+        FocusHTTP.gate.lock(); FocusHTTP.holdStatus=false; FocusHTTP.gate.unlock()
+        let lateResponse=heldResponse(); lateResponse?()
+        let lateOwnerDrained=drainReads()
+        let lateFenced=quitOutcomes.isEmpty && saved.model.uncertain && !saved.model.pending
+        FocusHTTP.event("late response fenced=\(lateFenced) drained=\(lateOwnerDrained)")
         check(saved.model.uncertain && !savedInstallRow().isEnabled,"unknown result disables installation menu")
         saved.initializeDesktop()
         check(saved.connectionMessage.contains("当前操作结果未知") && saved.connectionMessage.contains("未开始安装") && PresentationProbe.counts == [0,0,0,0],"stale unknown install action explains refusal without retry")
@@ -193,6 +252,13 @@ private final class FocusHTTP: URLProtocol {
         for ui in delegates {ui.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification)); NSStatusBar.system.removeStatusItem(ui.item)}
         for child in children where child.isRunning {child.terminate(); child.waitUntilExit()}
         check(children.allSatisfy {!$0.isRunning},"all owned fixture children reaped")
+        check(initiallyDrained && priorReadsDrained,"all prior API read owners complete before pending scenario")
+        check(collisionBlocked,"outstanding status owner blocks quit without claiming pending")
+        check(quitResponseHeld,"pending quit owns an actual held API preflight response")
+        check(lateOwnerDrained && lateFenced,"abandoned quit fences the released late preflight completion")
+        check(!FocusHTTP.requests.dropFirst(requestsBeforeLate).contains {$0.contains("/service/")} && !FocusHTTP.requests.contains {$0.contains("/service/")},"controlled collision and late quit completion send zero STOP")
+        check(PresentationProbe.counts == [0,0,0,0] && installCommands == [["desktop","prepare"],["desktop","migration-inspect"]],"controlled quit never authorizes installs or activates UI")
+        try JSONSerialization.data(withJSONObject:FocusHTTP.timeline,options:.prettyPrinted).write(to:root.appendingPathComponent("timeline.json"))
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"presentationCounts":PresentationProbe.counts,"realNetworkRequests":0,"productionKeychainAccessed":false,"osPollingObserversDisabledInFixture":true],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("focus-checks.json"))
         print("FOCUS_TESTS_OK checks=\(checks.count)")
     }
