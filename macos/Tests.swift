@@ -4,17 +4,41 @@ import FoundationNetworking
 #endif
 
 final class MockProtocol: URLProtocol {
-    static var handler: ((URLRequest, MockProtocol) -> Void)?
-    static var calls: [URLRequest] = []
+    typealias Handler = (URLRequest, MockProtocol) -> Void
+    private static let handlerLock=NSLock()
+    private static var storedHandler: Handler?
+    static var handler: Handler? {
+        get { handlerLock.lock(); defer { handlerLock.unlock() }; return storedHandler }
+        set { handlerLock.lock(); storedHandler=newValue; handlerLock.unlock() }
+    }
+    private static var recordedCalls: [URLRequest] = []
+    static var calls: [URLRequest] {
+        dispatchPrecondition(condition:.onQueue(.main)); return recordedCalls
+    }
+    private let capturedHandler: Handler?
+    override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
+        capturedHandler=Self.handler
+        super.init(request:request,cachedResponse:cachedResponse,client:client)
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() { Self.calls.append(request); Self.handler?(request,self) }
+    override func startLoading() {
+        let handler=capturedHandler
+        DispatchQueue.main.async {
+            dispatchPrecondition(condition:.onQueue(.main))
+            Self.recordedCalls.append(self.request); handler?(self.request,self)
+        }
+    }
     override func stopLoading() {}
     func reply(_ status: Int, _ body: [String: Any], headers: [String:String] = [:]) {
+        dispatchPrecondition(condition:.onQueue(.main))
         client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:headers)!,cacheStoragePolicy:.notAllowed)
         client?.urlProtocol(self,didLoad:try! JSONSerialization.data(withJSONObject:body)); client?.urlProtocolDidFinishLoading(self)
     }
-    func fail() { client?.urlProtocol(self,didFailWithError:URLError(.networkConnectionLost)) }
+    func fail() {
+        dispatchPrecondition(condition:.onQueue(.main))
+        client?.urlProtocol(self,didFailWithError:URLError(.networkConnectionLost))
+    }
 }
 @main struct Tests {
     static var checks: [String] = []
@@ -25,6 +49,29 @@ final class MockProtocol: URLProtocol {
         let end=Date().addingTimeInterval(timeout)
         while !condition() && Date()<end { _=RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.01)) }
         check(condition(),"asynchronous completion")
+    }
+    // A visible status is not a completion barrier for its three sibling reads.
+    // Admit a sentinel only after each actual API owner releases, then require
+    // all four real completion callbacks before changing handler/phase/reset.
+    static var drainedRefreshes=0
+    static func pumpUntil(_ condition: () -> Bool) {
+        let end=Date().addingTimeInterval(15)
+        while !condition() && Date()<end { _=RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.01)) }
+        guard condition() else { fputs("FAIL: fixture completion barrier\n",stderr); exit(1) }
+    }
+    static func drainRefresh(_ api: APIClient) {
+        var admitted=Set<String>(), completed=Set<String>()
+        let paths=["/status","/helper/status","/nodes","/traffic"]
+        pumpUntil {
+            for path in paths where !admitted.contains(path) {
+                if api.request(path,completion:{ result in
+                    guard case .success=result else { fputs("FAIL: fixture sentinel response\n",stderr); exit(1) }
+                    completed.insert(path)
+                }) { admitted.insert(path) }
+            }
+            return completed == Set(paths)
+        }
+        drainedRefreshes += 1
     }
     static func fixture(now: Date) -> [String: Any] {
         let date=ISO8601DateFormatter().string(from:now)
@@ -118,6 +165,7 @@ final class MockProtocol: URLProtocol {
             }
         }
         model.refresh(); wait { model.canMutate && model.nodes.count == 1 }
+        drainRefresh(model.api)
         let before=MockProtocol.calls.count
         model.mutate(path:"/service/start",consent:false)
         wait { model.uncertain }
@@ -127,6 +175,7 @@ final class MockProtocol: URLProtocol {
         let mutations=MockProtocol.calls.dropFirst(before).filter { $0.httpMethod == "POST" }
         check(mutations.count == 1,"no automatic mutation retry")
         check(model.traffic == nil,"unavailable not zero")
+        drainRefresh(model.api)
         api.reset(); model.api.reset()
         // Shared production model + monitor integration; all HTTP and HTTPS intercepted.
         let probe=ConnectivityMonitor(configuration:{ let c=URLSessionConfiguration.ephemeral; c.protocolClasses=[MockProtocol.self]; return c })
@@ -144,23 +193,44 @@ final class MockProtocol: URLProtocol {
         }
         linked.refresh(); wait { linked.connectivity == .online }
         check(linked.status?.running == true,"fresh running status triggers actual monitor")
+        drainRefresh(linked.api)
         running=false; linked.refresh(); wait { linked.status?.running == false }
         check(linked.connectivity == .idle,"stopped status clears connectivity proof")
+        drainRefresh(linked.api)
         good=false; running=true; linked.refresh(); wait { linked.connectivity == .offline }
         check(linked.status?.running == true,"network failure does not pretend service stopped")
+        drainRefresh(linked.api)
         linked.environmentChanged(sleeping:true)
         check(linked.connectivity == .idle && linked.status == nil,"sleep invalidates connectivity and running observation")
         good=true; linked.environmentChanged(); wait { linked.connectivity == .online }
         check(linked.status?.running == true,"wake rechecks only after fresh running readback")
         wait { linked.canMutate }
+        drainRefresh(linked.api)
         let obsolete=probe.onChange
         linked.mutate(path:"/service/reload",consent:true); wait { linked.uncertain }
         obsolete?(.online)
         check(linked.uncertain && linked.connectivity == .idle,"late network success never unlocks unknown mutation")
         linked.refresh(); wait { linked.status != nil }
         check(linked.uncertain && linked.connectivity == .idle,"fresh running after unknown does not restart connectivity or unlock")
+        drainRefresh(linked.api)
         linked.clearObservations(); check(linked.connectivity == .idle,"session observations clear cancels probe")
         linked.stopPolling(); linked.api.reset()
+        let request=URLRequest(url:URL(string:"http://127.0.0.1:18089/capture-regression")!)
+        let beforeCapture=MockProtocol.calls.count
+        var heldCapture: MockProtocol?, wrongHandler=false, onMain=false
+        MockProtocol.handler={ _,p in onMain=Thread.isMainThread; heldCapture=p }
+        let instance=MockProtocol(request:request,cachedResponse:nil,client:nil)
+        MockProtocol.handler={ _,_ in wrongHandler=true }
+        let started=DispatchSemaphore(value:0)
+        DispatchQueue.global().async { instance.startLoading(); started.signal() }
+        guard started.wait(timeout:.now()+15) == .success else { fatalError("fixture start barrier") }
+        pumpUntil { heldCapture != nil || wrongHandler }
+        check(heldCapture === instance && !wrongHandler,"fixture handler captured at protocol initialization")
+        heldCapture?.reply(200,[:])
+        check(onMain && Thread.isMainThread && MockProtocol.calls.count == beforeCapture+1 && MockProtocol.calls.last?.url == request.url,"fixture handler calls and held delivery are main-owned")
+        check(drainedRefreshes == 7,"fixture prior four-path completions drained before phase changes")
+        MockProtocol.handler=nil
+
     }
     static func integration() {
         let input=FileHandle.standardInput.readDataToEndOfFile()

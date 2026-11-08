@@ -19,7 +19,7 @@ import tarfile
 import tempfile
 import zipfile
 
-SUITES = {'AnyTLSMenuBarTests': 95, 'QuitTests': 250, 'ConnectivityTests': 49,
+SUITES = {'AnyTLSMenuBarTests': 98, 'QuitTests': 250, 'ConnectivityTests': 49,
           'FocusTests': 90, 'DesktopRuntimeTests': 208}
 APP_SOURCES = ('macos/Model.swift', 'macos/Connectivity.swift', 'macos/Client.swift',
                'macos/QuitCoordinator.swift', 'macos/DesktopMigration.swift',

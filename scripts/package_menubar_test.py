@@ -48,7 +48,7 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual((root / 'evidence/AnyTLSMenuBarTests.stdout').read_bytes(), stdout.encode())
             self.assertEqual((root / 'evidence/AnyTLSMenuBarTests.stderr').read_bytes(), b'secret stderr /private/path')
             annotation = annotations.getvalue()
-            self.assertIn('::error::AnyTLSMenuBarTests reason=' + reason + ' expected=95 actual=' + (str(actual) if actual is not None else 'unknown'), annotation)
+            self.assertIn('::error::AnyTLSMenuBarTests reason=' + reason + ' expected=98 actual=' + (str(actual) if actual is not None else 'unknown'), annotation)
             self.assertNotIn('secret stderr', annotation)
             self.assertNotIn('/private/path', annotation)
             if label:
@@ -430,10 +430,10 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(p.run_tests(self.root / 'test', evidence), p.SUITES)
         self.assertEqual(annotations.getvalue(), '')
         self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
-        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 95, 'QuitTests': 250,
+        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 98, 'QuitTests': 250,
                                     'ConnectivityTests': 49, 'FocusTests': 90,
                                     'DesktopRuntimeTests': 208})
-        self.assertEqual(sum(p.SUITES.values()), 692)
+        self.assertEqual(sum(p.SUITES.values()), 695)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())
