@@ -96,10 +96,43 @@ struct Node {
         return Node(name:name,selectable:selectable,selected:selected,skipVerify:skip,needsSync:jsonBool(d["selectionNeedsSync"]) ?? false)
     }
 }
+// Only an invocation-local, action-bound failure ACK with a closed safe cleanup
+// can avoid UNKNOWN. A later trace/status read is never a replacement ACK.
+func knownMutationFailureReason(path: String, status: Int, body: [String: Any]) -> String? {
+    let operations=["/service/start":"START","/service/reload":"RELOAD","/service/stop":"STOP"]
+    let reasons=[
+        "HELPER_PREFLIGHT":"PREFLIGHT_REJECTED", "JOB":"JOB_STATE_UNAVAILABLE JOB_ALREADY_LOADED JOB_NOT_LOADED",
+        "SNAPSHOT":"SNAPSHOT_EXISTS SNAPSHOT_UNAVAILABLE SNAPSHOT_STAGE_FAILED SNAPSHOT_IDENTITY_FAILED",
+        "CONFIG":"CONFIG_COMPILE_FAILED", "PROXY":"SYSTEM_PROXY_ACTIVE PROXY_STATE_UNAVAILABLE",
+        "SERVER_ROUTE":"SERVER_ROUTE_UNAVAILABLE SERVER_ROUTE_NOT_PHYSICAL SERVER_ROUTE_CHANGED", "PUBLIC_ROUTE":"PUBLIC_ROUTE_UNAVAILABLE",
+        "DNS":"DNS_STATE_UNAVAILABLE DNS_EVIDENCE_EMPTY", "BASELINE":"BASELINE_INVALID BASELINE_WRITE_FAILED",
+        "PLIST":"PLIST_CREATE_FAILED PLIST_WRITE_FAILED PLIST_INVALID", "BOOTSTRAP":"LAUNCHD_BOOTSTRAP_FAILED",
+        "READINESS":"READINESS_JOB_UNAVAILABLE READINESS_ROUTE_UNAVAILABLE READINESS_CHANGED PROCESS_NOT_RUNNING TUN_NOT_READY PROCESS_AND_TUN_NOT_READY READINESS_UNKNOWN",
+        "HTTPS":"HTTPS_DNS_FAILED HTTPS_CONNECT_FAILED HTTPS_TIMEOUT HTTPS_TLS_HANDSHAKE_FAILED HTTPS_CERTIFICATE_FAILED HTTPS_HTTP_FAILED HTTPS_EMPTY_RESPONSE HTTPS_RECEIVE_FAILED HTTPS_RESPONSE_INVALID HTTPS_FAILED",
+        "STOP":"STOP_FAILED"
+    ]
+    guard status == 503, let operation=operations[path], exact(body,["error","diagnostics","startup_operation"]),
+          let code=body["error"] as? String,
+          ["HELPER_UNAVAILABLE","HELPER_CONFIG_MISMATCH","FORBIDDEN","INVALID_REQUEST","BUSY","PREFLIGHT_FAILED","STOP_FAILED","START_FAILED","STATE_FAILED","SERVICE_ACTION_FAILED"].contains(code),
+          let ref=body["startup_operation"] as? [String:Any], exact(ref,["timeline_schema","availability","operation_id"]),
+          schemaOne(ref["timeline_schema"]), ref["availability"] as? String == "AVAILABLE", hex(ref["operation_id"],32),
+          let d=body["diagnostics"] as? [String:Any],
+          exact(d,["schema","operation","outcome","stage","reason","rollback","restoration","cleanup","receipt","job","tun"]),
+          schemaOne(d["schema"]), d["operation"] as? String == operation, d["outcome"] as? String == "FAILED",
+          let stage=d["stage"] as? String, let reason=d["reason"] as? String,
+          reasons[stage]?.split(separator:" ").contains(Substring(reason)) == true,
+          ["VERIFIED","NOT_ATTEMPTED"].contains(d["rollback"] as? String ?? ""),
+          ["VERIFIED","NOT_ATTEMPTED"].contains(d["restoration"] as? String ?? ""),
+          d["cleanup"] as? String == "VERIFIED", d["receipt"] as? String == "WRITTEN",
+          d["job"] as? String == "UNLOADED", ["NOT_OBSERVED","NOT_TUN"].contains(d["tun"] as? String ?? "") else { return nil }
+    return reason
+}
+
 enum MutationVerdict: Equatable { case serviceSucceeded, savedStopped, applied, unchanged, rejected, unknown }
 func mutationVerdict(path: String, status: Int, body: [String: Any]) -> MutationVerdict {
     if status == 202 || body["error"] as? String == "STARTUP_UNKNOWN" || body["apply_error"] as? String == "STARTUP_UNKNOWN" { return .unknown }
     if let d=body["diagnostics"] as? [String: Any], d["outcome"] as? String == "UNKNOWN" { return .unknown }
+    if knownMutationFailureReason(path:path,status:status,body:body) != nil { return .rejected }
     if status != 200 { return (400...499).contains(status) ? .rejected : .unknown }
     guard jsonBool(body["ok"]) == true else { return .unknown }
     if path == "/nodes/selection" {

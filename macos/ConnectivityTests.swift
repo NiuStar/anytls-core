@@ -69,6 +69,12 @@ private final class ConnectivityFixture: URLProtocol {
         let end = Date().addingTimeInterval(seconds)
         while Date() < end { _ = RunLoop.main.run(mode: .default, before: min(end, Date().addingTimeInterval(0.01))) }
     }
+    private static func pumpUptime(_ seconds: TimeInterval) {
+        let end = ProcessInfo.processInfo.systemUptime + seconds
+        while ProcessInfo.processInfo.systemUptime < end {
+            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+    }
     static func wait(_ monitor: ConnectivityMonitor, timeout: TimeInterval = 1) {
         let end = Date().addingTimeInterval(timeout)
         while monitor.state == .checking && Date() < end { pump(0.01) }
@@ -166,10 +172,48 @@ private final class ConnectivityFixture: URLProtocol {
 
         let freshness = make([.empty, .empty]); freshness.check(); wait(freshness)
         expect(freshness.state == .online, "fresh proof available")
-        pump(45.1)
+        pumpUptime(45.1)
         expect(freshness.state == .idle, "online proof expires after forty-five seconds without new checks")
         expect(ConnectivityFixture.count == 2, "expiry never starts lifecycle or network retries")
         freshness.cancel()
+        // Advance the existing monotonic clock without pumping the expiry callback.
+        var clock: TimeInterval = 1000
+        ConnectivityFixture.prepare([.empty, .empty])
+        let boundary = ConnectivityMonitor(configuration: {
+            let c = URLSessionConfiguration.ephemeral; c.protocolClasses = [ConnectivityFixture.self]; return c
+        }, now: { clock })
+        var boundaryEvents: [ConnectivityState] = []
+        boundary.onChange = { boundaryEvents.append($0) }
+        boundary.check(); wait(boundary)
+        expect(boundary.state == .online, "monotonic boundary actual URLProtocol positive")
+        let delivered = boundaryEvents
+        clock = 1044.999
+        expect(boundary.state == .online, "online proof fresh at 44.999 seconds")
+        clock = 1045
+        expect(boundary.state == .idle, "online proof expired at exact 45 seconds before callback")
+        clock = 1045.001
+        expect(boundary.state == .idle, "online proof expired after 45 seconds before callback")
+        expect(boundaryEvents == delivered && ConnectivityFixture.count == 2, "freshness reads emit no callbacks or retries")
+        boundary.cancel()
+        expect(boundary.state == .idle, "cancel invalidates monotonic proof")
+        ConnectivityFixture.prepare([.hang, .hang])
+        boundary.check(force: true)
+        let admitted = Date().addingTimeInterval(1)
+        while ConnectivityFixture.count < 2 && Date() < admitted { pump(0.01) }
+        clock = 1046
+        expect(boundary.state == .checking && ConnectivityFixture.count == 2, "new generation cannot reuse old proof")
+        boundary.cancel()
+        ConnectivityFixture.prepare([.empty, .empty])
+        boundary.check(); wait(boundary)
+        let proofAdmitted = Date().addingTimeInterval(1)
+        while ConnectivityFixture.count < 2 && Date() < proofAdmitted { pump(0.01) }
+        let proofRequests = ConnectivityFixture.count
+        clock = 1090.999
+        expect(boundary.state == .online, "new generation gets its own 45-second proof")
+        clock = 1091
+        expect(boundary.state == .idle, "new generation proof expires at its own exact deadline")
+        expect(proofRequests == 2 && ConnectivityFixture.count == 2, "monotonic expiry does not auto-mutate or retry")
+        boundary.cancel()
         print("CONNECTIVITY_TESTS_PASS assertions=\(assertions) elapsed=\(ProcessInfo.processInfo.systemUptime - started)")
     }
 }

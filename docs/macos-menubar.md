@@ -1,12 +1,12 @@
-# AnyTLS macOS 菜单栏客户端 0.4.4
+# AnyTLS macOS 菜单栏客户端 0.4.5
 
-原生 Swift / AppKit 统一 App 0.4.4（build 0.4.4.20261108.1），发行标签 `v2026-11-08-03`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
+原生 Swift / AppKit 统一 App 0.4.5（build 0.4.5.20261108.1），发行标签 `v2026-11-08-04`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
 
-从本标签 Release 按芯片下载 `anytls-core-v2026-11-08-03-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-08-03-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
+从本标签 Release 按芯片下载 `anytls-core-v2026-11-08-04-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-08-04-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
 
 组件生命周期使用独立私有根目录中的 0600 `lifecycle.lock` 内核排他 flock；校验物理父目录、所有者、普通文件与单链接，不跟随符号链接，不删除或偷取锁。竞争 App 在 prepare、授权、STOP、TERM 前拒绝。锁覆盖异步操作至本次完成；崩溃释放内核锁但不清除持久 UNKNOWN/ARMED/ACTIVATION_UNKNOWN。仅有锁文件的安全目录不代表授权记录；未知目录成员、读权限错误保持 HOLD。正常退出 drain 失败仅撤销该次 ready 证明；下次 Quit 必须新鲜 STOP。原生受控进程测试不代表真实 launchd KeepAlive、管理员授权或 VPN 路由验收；用户需另行在本机接受这些关卡。
 
-**受控迁移与验收边界**：规范 `~/.anytls/anytls-macos` 的旧 0700/0755 组件通过包内 Go 的 migration-inspect → 用户确认 → migration-commit → 固定暂存助手授权 → migration-finish 更新。旧文件名 `~/.anytls/anytls`、双叶、非规范目录、未知事务、未知监听保持 HOLD。Go 独占一次 STOP 和规范文件发布，GUI 不再重复 API STOP。保留原配置、选择、应用密码及相对 CA/规则；原运行中的 VPN 在更新后保持停止，菜单提供「恢复 VPN…」。这是为消除异步更新完成后延迟弹窗而有意改变的恢复策略；恢复须由用户点击并立即确认 TLS 风险，绝不后台发送 true。本版 Swift 五套固定清单为 98／250／49／90／208，共 695 条；原生夹具覆盖显式恢复与失败关闭，不等于正式安装成功。稳定标签的最终 native／CI／公开附件核验以精确提交对应收据为准，不能继承前驱候选的通过结论。真实管理员首次安装、手动／托管控制台迁移、正式 VPN 退出后的路由／DNS 恢复及生产浏览器端到端均 NOT_RUN。
+**受控迁移与验收边界**：规范 `~/.anytls/anytls-macos` 的旧 0700/0755 组件通过包内 Go 的 migration-inspect → 用户确认 → migration-commit → 固定暂存助手授权 → migration-finish 更新。旧文件名 `~/.anytls/anytls`、双叶、非规范目录、未知事务、未知监听保持 HOLD。Go 独占一次 STOP 和规范文件发布，GUI 不再重复 API STOP。保留原配置、选择、应用密码及相对 CA/规则；原运行中的 VPN 在更新后保持停止，菜单提供「恢复 VPN…」。这是为消除异步更新完成后延迟弹窗而有意改变的恢复策略；恢复须由用户点击并立即确认 TLS 风险，绝不后台发送 true。本版 Swift 五套固定清单为 208／250／61／90／208，共 817 条（清单规模，不是本发行全套通过声明）；原生夹具覆盖显式恢复与失败关闭，不等于正式安装成功。稳定标签的最终 native／CI／公开附件核验以精确提交对应收据为准，不能继承前驱候选的通过结论。真实管理员首次安装、手动／托管控制台迁移、正式 VPN 退出后的路由／DNS 恢复及生产浏览器端到端均 NOT_RUN。
 
 ## 未完成更新的显式恢复
 
@@ -34,7 +34,7 @@ open ./macos/build/AnyTLSMenuBar.app
 
 架构为 `arm64` 或 `amd64`，分别仅在对应原生 Mac 上构建和验包；拒绝跨架构／universal 核心，防止 App 与内嵌核心架构不一致。Intel 使用 `CORE=/absolute/path/to/qualified/amd64/anytls-macos bash scripts/build-menubar.sh amd64 ./macos/build`。必须提供显式本地 CORE，不下载。构建使用 Swift 6.1.2 的 Swift 5 语言模式、macOS 13 deployment target，无第三方依赖；先 ad-hoc 签核心、生成实际签后 SHA 清单，再签 App 并严格验证。**不是 Developer ID、公证或 Gatekeeper 放行证明**。
 
-构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-08-03-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-08-03-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
+构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-08-04-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-08-04-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
 
 ## 无窗口自动连接
 
@@ -58,6 +58,14 @@ open ./macos/build/AnyTLSMenuBar.app
 - 启动 / 重新连接 / 切换节点均显式确认潜在短暂断网及已有“跳过证书验证”配置风险，然后才发送 confirm_insecure；不会修改其他节点 TLS 策略。停止也需确认且 confirm_insecure=false。
 - 同一时间一个修改。HTTP 200 本身不等于成功：分别校验 service loaded/running、SAVED_STOPPED、APPLIED、NO_CHANGE。202、断连、超时、无效回执、STARTUP_UNKNOWN、未证明应用等保持内存中的**结果未知锁**；绝不自动重试，也不因后续 plain running 状态就解锁。会话更新、旧 401 都不能覆盖新 session；过期时清 cookie/CSRF/观察值。
 - 未知操作保留 startup_operation id（若有），但不把辅助 timeline 当权威成功证明；当前最小实现不自动读 trace 解锁。打开完整控制台核实并完成恢复；未知期间正常退出被阻止，不应靠退出绕过锁，也不能切换端点。请勿盲目重发。
+
+## 已知拒绝、未知结果与新鲜性
+
+只有 typed HTTP 503 FAILED 的 strict ACK 完整且证明安全收尾时，才作为已知拒绝；系统代理冲突显示中文原因，系统代理仍由用户自行决定，软件不静默关闭。202、丢响应、无效或不完整 ACK 仍保持 UNKNOWN，不自动 STOP／START。既有内存 UNKNOWN 没有原始 ACK，不能通过安装新版恢复或解锁；当前生产未由源码候选修复。
+
+Connectivity 在 monotonic 读取边界过期，MenuModel 对已缓存的正向结果同步投影；timer 只是通知机制，不是新鲜性权威。产品 freshness 45 秒、请求 5 秒、失败间隔 15 秒、成功间隔 30 秒保持不变。自然过期夹具仅把 45.1 秒等待改为同源 uptime，不延长等待或断言时限。当前已证 clock mismatch 与历史未记录时钟的 Date 失败分开，后者根因仍 UNKNOWN；r3 P2 handler capture 修复与原 HOLD 均保留。
+
+双架构 affected 原生结果已通过；不是最终发行身份的完整 817 条／CI／公开发行通过声明，完整资格仍须另验，见[本版说明](releases/v2026-11-08-04.md)。
 
 ## 安全隔离验收
 

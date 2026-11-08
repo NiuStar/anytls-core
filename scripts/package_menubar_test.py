@@ -48,7 +48,7 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual((root / 'evidence/AnyTLSMenuBarTests.stdout').read_bytes(), stdout.encode())
             self.assertEqual((root / 'evidence/AnyTLSMenuBarTests.stderr').read_bytes(), b'secret stderr /private/path')
             annotation = annotations.getvalue()
-            self.assertIn('::error::AnyTLSMenuBarTests reason=' + reason + ' expected=98 actual=' + (str(actual) if actual is not None else 'unknown'), annotation)
+            self.assertIn('::error::AnyTLSMenuBarTests reason=' + reason + ' expected=' + str(p.SUITES['AnyTLSMenuBarTests']) + ' actual=' + (str(actual) if actual is not None else 'unknown'), annotation)
             self.assertNotIn('secret stderr', annotation)
             self.assertNotIn('/private/path', annotation)
             if label:
@@ -142,8 +142,8 @@ class PackageTests(unittest.TestCase):
             path.write_bytes(b'fixture executable, NOT a native binary')
             path.chmod(0o755)
         self.info = dict(CFBundleIdentifier='org.anytls.menubar.candidate', CFBundleExecutable='AnyTLSMenuBar',
-                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.4',
-                         CFBundleVersion='0.4.4.20261108.1', AnyTLSCoreVersion=TAG,
+                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.5',
+                         CFBundleVersion='0.4.5.20261108.1', AnyTLSCoreVersion=TAG,
                          LSMinimumSystemVersion='13.0', LSUIElement=True)
         self.write_info()
         self.runtime = self.app / 'Contents/Resources/runtime/anytls-macos'
@@ -242,8 +242,8 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.out / result['asset']) as archive:
             info = json.loads(archive.read('BUILD-INFO.json'))
             self.assertEqual(info['architecture'], 'amd64')
-            self.assertEqual(info['app_version'], '0.4.4')
-            self.assertEqual(info['app_build'], '0.4.4.20261108.1')
+            self.assertEqual(info['app_version'], '0.4.5')
+            self.assertEqual(info['app_build'], '0.4.5.20261108.1')
             self.assertEqual(info['corresponding_source'], self.prefix + '-darwin-amd64-corresponding-source.tar.gz')
             self.assertIn(b'Intel x86_64 ONLY', archive.read('README.txt'))
 
@@ -430,10 +430,10 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(p.run_tests(self.root / 'test', evidence), p.SUITES)
         self.assertEqual(annotations.getvalue(), '')
         self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
-        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 98, 'QuitTests': 250,
-                                    'ConnectivityTests': 49, 'FocusTests': 90,
+        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 208, 'QuitTests': 250,
+                                    'ConnectivityTests': 61, 'FocusTests': 90,
                                     'DesktopRuntimeTests': 208})
-        self.assertEqual(sum(p.SUITES.values()), 695)
+        self.assertEqual(sum(p.SUITES.values()), 817)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())

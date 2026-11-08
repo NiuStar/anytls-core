@@ -1,5 +1,13 @@
 # Changelog
 
+## v2026-11-08-04 — AnyTLS 0.4.5 build 20261108.1（发行候选）
+
+- 仅对 strict ACK 完整且安全收尾的 typed HTTP 503 FAILED 分类为已知拒绝；系统代理冲突显示中文原因，软件不静默关闭系统代理。202、丢响应和未知结果仍锁定，不自动 STOP／START。
+- 既有内存 UNKNOWN 缺少原始 ACK，安装新版不恢复或解锁旧操作；生产现状未由本发行流程修复。
+- 连通性在 monotonic 读取边界过期，并投影 MenuModel 缓存；timer 仅通知，不作新鲜性权威。仅将自然过期夹具 45.1 秒等待与生产 uptime 同源，45／5／15／30 秒产品参数不变。
+- 双架构 affected 原生证据单列；当前五套清单 208／250／61／90／208（817 条）不等于最终全套通过。原 r3 P2 handler capture 修复保留；旧 HOLD 和原 Date 失败 UNKNOWN 不改写，当前已证 clock mismatch 不反推历史根因。
+- 本候选完整 local、native、CI、公开附件资格须绑定最终源码另验；macOS 13+ 双架构分包，ad-hoc 签名、未公证，发布不安装或启停 VPN。见[本版说明](docs/releases/v2026-11-08-04.md)。
+
 ## v2026-11-08-03 — AnyTLS 0.4.4 build 20261108.1
 
 - 修复已停止且无快照基线分支的结构化 STOP 诊断；不把无需恢复说成已验证恢复。

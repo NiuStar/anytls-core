@@ -283,10 +283,41 @@ final class MockProtocol: URLProtocol {
         api.reset()
         if let evidence=args["evidence"] as? String { try? output().write(toFile:evidence+"/swift-checks.json",atomically:true,encoding:.utf8) }
     }
+    static func freshnessComposition() {
+        var clock: TimeInterval = 2000
+        let monitor=ConnectivityMonitor(configuration:{ let c=URLSessionConfiguration.ephemeral; c.protocolClasses=[MockProtocol.self]; return c },now:{ clock })
+        let model=MenuModel(api:mockClient(),connectivityMonitor:monitor)
+        authenticate(model.api)
+        MockProtocol.handler={ req,p in
+            if req.url!.scheme == "https" {
+                p.client?.urlProtocol(p,didReceive:HTTPURLResponse(url:req.url!,statusCode:204,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
+                p.client?.urlProtocolDidFinishLoading(p)
+            } else if req.url!.path == "/api/v1/status" { p.reply(200,["availability":"AVAILABLE","loaded":true,"running":true]) }
+            else if req.url!.path.contains("helper") { p.reply(200,["available":true]) }
+            else { p.reply(200,[:]) }
+        }
+        model.refresh(); wait { model.connectivity == .online }; drainRefresh(model.api)
+        check(model.status?.running == true && monitor.state == .online,"freshness composition real MenuModel URLProtocol positive")
+        var renders=0
+        model.onChange={ renders += 1; _ = model.connectivity }
+        let requests=MockProtocol.calls.count
+        clock=2044.999
+        check(model.connectivity == .online,"MenuModel cached online fresh at 44.999 seconds")
+        clock=2045
+        check(model.connectivity == .idle,"MenuModel renderer read hides cached online at exact 45 seconds")
+        clock=2045.001
+        check(model.connectivity == .idle,"MenuModel renderer read hides cached online after 45 seconds")
+        check(renders == 0,"MenuModel freshness getter cannot recursively render")
+        check(MockProtocol.calls.count == requests && !model.pending && !model.uncertain,"MenuModel freshness reads dispatch no requests or mutation")
+        model.clearObservations()
+        clock=2000
+        check(model.connectivity == .idle && monitor.state == .idle,"session cancellation cannot resurrect expired online proof")
+        model.stopPolling(); model.api.reset(); MockProtocol.handler=nil
+    }
     static func output() -> String { String(data:try! JSONSerialization.data(withJSONObject:["status":"PASS","checks":checks],options:[.prettyPrinted,.sortedKeys]),encoding:.utf8)! }
     static func main() {
         if CommandLine.arguments.contains("--integration") {
             integration(); print(String(data:try! JSONSerialization.data(withJSONObject:["ok":true,"checks":checks.count]),encoding:.utf8)!)
-        } else { unit(); print(output()) }
+        } else { unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); print(output()) }
     }
 }

@@ -36,12 +36,12 @@ app=pathlib.Path(sys.argv[1]); runtime=app/'Contents/Resources/runtime'
 # Go prints its version with the standard prefix; metadata uses currentVersion().
 v=sys.argv[2].strip().removeprefix('anytls-macos ').removeprefix('AnyTLS ')
 (runtime/'manifest.json').write_text(json.dumps(dict(schema=1,binary='anytls-macos',arch=sys.argv[3],version=v,sha256=hashlib.sha256((runtime/'anytls-macos').read_bytes()).hexdigest()),sort_keys=True)+'\n')
-p=dict(CFBundleIdentifier='org.anytls.menubar.candidate',CFBundleName='AnyTLSMenuBar',CFBundleDisplayName='AnyTLS 菜单栏',CFBundleExecutable='AnyTLSMenuBar',CFBundlePackageType='APPL',CFBundleShortVersionString='0.4.4',CFBundleVersion='0.4.4.20261108.1',AnyTLSCoreVersion=v,LSMinimumSystemVersion='13.0',LSUIElement=True,NSHighResolutionCapable=True,NSAppTransportSecurity={'NSAllowsLocalNetworking':True})
+p=dict(CFBundleIdentifier='org.anytls.menubar.candidate',CFBundleName='AnyTLSMenuBar',CFBundleDisplayName='AnyTLS 菜单栏',CFBundleExecutable='AnyTLSMenuBar',CFBundlePackageType='APPL',CFBundleShortVersionString='0.4.5',CFBundleVersion='0.4.5.20261108.1',AnyTLSCoreVersion=v,LSMinimumSystemVersion='13.0',LSUIElement=True,NSHighResolutionCapable=True,NSAppTransportSecurity={'NSAllowsLocalNetworking':True})
 with (app/'Contents/Info.plist').open('wb') as f: plistlib.dump(p,f)
 PY
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --strict --deep "$APP"
-xcrun swiftc -swift-version 5 -O -sdk "$SDK" -target "$MACHINE-apple-macosx13.0" "${SHARED[@]}" "$ROOT/macos/Tests.swift" -o "$OUT/test/AnyTLSMenuBarTests"
+xcrun swiftc -swift-version 5 -O -sdk "$SDK" -target "$MACHINE-apple-macosx13.0" "${SHARED[@]}" "$ROOT/macos/Tests.swift" "$ROOT/macos/KnownFailureTests.swift" -o "$OUT/test/AnyTLSMenuBarTests"
 xcrun swiftc -swift-version 5 -O -sdk "$SDK" -target "$MACHINE-apple-macosx13.0" "${SHARED[@]}" "$ROOT/macos/QuitTests.swift" -o "$OUT/test/QuitTests"
 xcrun swiftc -swift-version 5 -O -sdk "$SDK" -target "$MACHINE-apple-macosx13.0" "$ROOT/macos/Connectivity.swift" "$ROOT/macos/ConnectivityTests.swift" -o "$OUT/test/ConnectivityTests"
 for spec in 'FOCUS_TESTS FocusTests' 'DESKTOP_TESTS DesktopRuntimeTests'; do

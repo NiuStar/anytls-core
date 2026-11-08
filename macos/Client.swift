@@ -99,7 +99,15 @@ final class APIClient {
 final class MenuModel {
     let api: APIClient
     let connectivityMonitor: ConnectivityMonitor?
-    private(set) var connectivity: ConnectivityState = .idle
+    private var cachedConnectivity: ConnectivityState = .idle
+    private(set) var connectivity: ConnectivityState {
+        get {
+            // Render reads must validate the cached positive against its monitor.
+            guard cachedConnectivity == .online else { return cachedConnectivity }
+            return connectivityMonitor?.state == .online ? .online : .idle
+        }
+        set { cachedConnectivity = newValue }
+    }
     private var forceConnectivity=false
     private var sleeping=false
     private var trafficIdentity: String?
@@ -299,8 +307,10 @@ final class MenuModel {
             guard let self=self else { return }
             self.pending=false; self.observationGeneration += 1; self.clearObservations()
             var verdict: MutationVerdict = .unknown
+            var failureReason: String?
             if case .success(let r)=result {
                 verdict=mutationVerdict(path:path,status:r.status,body:r.body)
+                failureReason=knownMutationFailureReason(path:path,status:r.status,body:r.body)
                 if let ref=r.body["startup_operation"] as? [String: Any], ref["timeline_schema"] as? Int == 1, hex(ref["operation_id"],32) { self.operationID=ref["operation_id"] as? String }
             }
             self.uncertain = verdict == .unknown
@@ -309,7 +319,12 @@ final class MenuModel {
             case .savedStopped: self.message="启动节点已保存；VPN 未运行，下次启动生效"
             case .applied: self.message="启动节点已保存并应用；将重新读取状态"
             case .unchanged: self.message="选择未变化；没有重新连接"
-            case .rejected: self.message="请求被拒绝；请刷新或打开控制台检查"
+            case .rejected:
+                if failureReason == "SYSTEM_PROXY_ACTIVE" {
+                    self.message="启动失败：系统代理仍启用；请先手动关闭系统代理，再明确选择启动。未自动重试"
+                } else {
+                    self.message=failureReason == nil ? "请求被拒绝；请刷新或打开控制台检查" : "VPN 操作已失败；清理已核实。请打开控制台检查；未自动重试"
+                }
             case .unknown: self.message="操作结果未知；已锁定操作，不自动重试。打开控制台核实"
             }
             self.forceConnectivity = verdict == .applied || (verdict == .serviceSucceeded && path != "/service/stop")

@@ -8,7 +8,15 @@ enum ConnectivityState: Equatable { case idle, checking, online, offline }
 // Main-queue owned. This checks OS-routed HTTPS, not a particular node/exit.
 // Call check() while authenticated/running; cancel() on service/session changes.
 final class ConnectivityMonitor {
-    private(set) var state: ConnectivityState = .idle
+    private var storedState: ConnectivityState = .idle
+    private var validUntil: TimeInterval?
+    // A read must not publish stale proof, mutate state, or synchronously render.
+    // The timer still advances stored state and proactively notifies observers.
+    var state: ConnectivityState {
+        guard storedState == .online else { return storedState }
+        guard let until = validUntil, now() < until else { return .idle }
+        return .online
+    }
     var onChange: ((ConnectivityState) -> Void)?
     private static let endpoints = [
         URL(string: "https://www.gstatic.com/generate_204")!,
@@ -97,12 +105,14 @@ final class ConnectivityMonitor {
         generation &+= 1
         session?.invalidateAndCancel(); session = nil; delegate = nil
         remaining = 0
-        lastFinished = now()
+        let finished = now()
+        lastFinished = finished
+        validUntil = result == .online ? finished + 45 : nil
         retryInterval = result == .offline ? 15 : 30
         if result == .online {
             let owner = generation
             let work = DispatchWorkItem { [weak self] in
-                guard let self = self, self.generation == owner, self.state == .online else { return }
+                guard let self = self, self.generation == owner, self.storedState == .online else { return }
                 self.expiry = nil
                 self.setState(.idle) // Never retain a successful proof beyond 45 seconds.
             }
@@ -113,8 +123,9 @@ final class ConnectivityMonitor {
     }
 
     private func setState(_ value: ConnectivityState) {
-        guard state != value else { return }
-        state = value; onChange?(value)
+        if value != .online { validUntil = nil }
+        guard storedState != value else { return }
+        storedState = value; onChange?(value)
     }
 
     deinit { expiry?.cancel(); session?.invalidateAndCancel() }
