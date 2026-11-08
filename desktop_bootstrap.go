@@ -70,8 +70,9 @@ func desktopDispatch(args []string, out io.Writer) error {
 		}
 		return desktopError("desktop bootstrap refused; inspect safe JSON error")
 	}
-	migration := len(args) > 0 && (args[0] == "migration-inspect" || args[0] == "migration-commit" || args[0] == "migration-finish")
-	validMigration := migration && ((args[0] == "migration-inspect" && len(args) == 1) || (args[0] != "migration-inspect" && len(args) == 2 && desktopMigrationToken(args[1])))
+	migration := len(args) > 0 && (args[0] == "migration-inspect" || args[0] == "migration-commit" || args[0] == "migration-finish" || args[0] == "migration-recovery-inspect" || args[0] == "migration-recovery-commit" || args[0] == "migration-recovery-finalize")
+	inspectMigration := migration && (args[0] == "migration-inspect" || args[0] == "migration-recovery-inspect")
+	validMigration := migration && ((inspectMigration && len(args) == 1) || (!inspectMigration && len(args) == 2 && desktopMigrationToken(args[1])))
 	if !validMigration && (len(args) != 1 || (args[0] != "prepare" && args[0] != "inspect" && args[0] != "credentials")) {
 		return fail("INVALID_COMMAND")
 	}

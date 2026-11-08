@@ -5,6 +5,7 @@ import ObjectiveC.runtime
 // credential storage and OS polling/observers are isolated. No real VPN or WAN.
 private enum PresentationProbe {
     static var activations=0, fronts=0, sheets=0, modals=0
+    static var lastMessage=""
     static var response: NSApplication.ModalResponse = .alertSecondButtonReturn
     static var counts: [Int] { [activations,fronts,sheets,modals] }
     static func install(_ type: AnyClass, _ a: Selector, _ b: Selector) {
@@ -27,6 +28,7 @@ extension NSAlert {
         PresentationProbe.sheets += 1 // Record a regression without blocking on a modal.
     }
     @objc func focus_runModal() -> NSApplication.ModalResponse {
+        PresentationProbe.lastMessage=messageText
         PresentationProbe.modals += 1; return PresentationProbe.response
     }
 }
@@ -259,6 +261,66 @@ private final class FocusHTTP: URLProtocol {
         check(!FocusHTTP.requests.dropFirst(requestsBeforeLate).contains {$0.contains("/service/")} && !FocusHTTP.requests.contains {$0.contains("/service/")},"controlled collision and late quit completion send zero STOP")
         check(PresentationProbe.counts == [0,0,0,0] && installCommands == [["desktop","prepare"],["desktop","migration-inspect"]],"controlled quit never authorizes installs or activates UI")
         try JSONSerialization.data(withJSONObject:FocusHTTP.timeline,options:.prettyPrinted).write(to:root.appendingPathComponent("timeline.json"))
+        // Append recovery action composition after the complete Focus73 prefix.
+        let recoveryUI=launch(missing:true), fixture=recoveryUI.desktop!
+        var recoveryCommands=[[String]](), recoveryDone: ((DesktopCommandResult)->Void)?
+        let recovery=DesktopRuntime(bundle:fixture.bundle,home:fixture.home,uid:fixture.uid,run:{ _,args,_,done in
+            recoveryCommands.append(args)
+            if args==["desktop","migration-recovery-inspect"] { recoveryDone=done }
+            else { fatalError("Invalid preview must not dispatch STOP or authorization") }
+        },exists:{$0==fixture.binary},digest:{_ in String(repeating:"a",count:64)},fixtureStateRoot:root.appendingPathComponent("recovery-action").path,candidateSafe:{_ in true})
+        recoveryUI.desktop=recovery; recovery.onChange={ [weak recoveryUI] in recoveryUI?.render() }; recoveryUI.render()
+        let selector=NSSelectorFromString("recoverDesktop")
+        check(recoveryUI.responds(to:selector),"recovery production selector exists")
+        func recoveryRow()->NSMenuItem { recoveryUI.item.menu!.items.first {$0.action==selector}! }
+        check(recoveryRow().title=="恢复未完成的组件更新…" && recoveryRow().isEnabled,"explicit recovery menu is provisionally enabled without mutation")
+        PresentationProbe.response = .alertSecondButtonReturn
+        let cancelled=autoreleasepool { NSApp.sendAction(selector,to:recoveryUI,from:recoveryRow()) }
+        check(cancelled && PresentationProbe.counts == [1,0,0,1] && recoveryCommands.isEmpty && !recovery.intents.recoveryPresent && !recovery.intents.present,"native recovery Cancel has zero commands STOP authorization or durable intent")
+        PresentationProbe.activations=0; PresentationProbe.modals=0
+        PresentationProbe.response = .alertFirstButtonReturn
+        let continued=autoreleasepool { NSApp.sendAction(selector,to:recoveryUI,from:recoveryRow()) }
+        check(continued && recovery.busy && recoveryDone != nil && recoveryCommands==[["desktop","migration-recovery-inspect"]] && PresentationProbe.counts == [1,0,0,1],"native recovery Continue immediately consents before held read-only inspection")
+        PresentationProbe.activations=0; PresentationProbe.modals=0
+        recoveryUI.recoverDesktop()
+        check(recoveryCommands.count==1 && PresentationProbe.counts == [0,0,0,0] && !recoveryRow().isEnabled,"repeated busy recovery click cannot prompt or dispatch a second STOP")
+        recoveryDone?(DesktopCommandResult(code:1,data:Data("{\"error\":\"PRIVATE_SENTINEL\"}".utf8),timedOut:false))
+        check(!recovery.busy && recovery.message.contains("未停止 VPN") && !recovery.message.contains("PRIVATE_SENTINEL") && recoveryCommands.count==1,"delayed recovery inspection refusal is bounded nonsecret and mutation free")
+        quiet(recoveryUI,"delayed recovery refusal")
+        check(recoveryUI.item.button!.toolTip!.contains(recovery.message) && recoveryUI.item.menu!.items.contains {$0.title==recovery.message},"recovery failure persists in actual menu and tooltip")
+        let savedRecovery=saved.item.menu!.items.first {$0.action==selector}!
+        check(!savedRecovery.isEnabled,"model UNKNOWN disables recovery despite runtime setup eligibility")
+        saved.recoverDesktop()
+        check(PresentationProbe.counts == [0,0,0,0],"stale model UNKNOWN recovery action never prompts or mutates")
+        check(PresentationProbe.lastMessage.contains("独立事务") && PresentationProbe.lastMessage.contains("旧 UNKNOWN") && PresentationProbe.lastMessage.contains("中断") && PresentationProbe.lastMessage.contains("不会自动重试或启动"),"owned native recovery alert discloses independent STOP retained UNKNOWN interruption and no retry or start")
+        var uiSTOPs=0, uiDurable=false, uiCommitDone: ((DesktopCommandResult)->Void)?
+        let durableUIRoot=root.appendingPathComponent("recovery-action-durable").path
+        let oldSHA=String(repeating:"c",count:64), bundleSHA=String(repeating:"a",count:64), oldOp=String(repeating:"e",count:64), rawSHA=String(repeating:"f",count:64), plan=String(repeating:"d",count:64)
+        let preview:[String:Any]=["schema":1,"phase":"RECOVERY_INSPECTED","plan":plan,"binary":fixture.binary,"config":fixture.config,"config_identity":DesktopRuntime.sum(Data(fixture.config.utf8)),"binary_sha256":bundleSHA,"old_binary_sha256":oldSHA,"helper_sha256":oldSHA,"helper_version":"old","uid":fixture.uid,"home":fixture.home,"was_running":false,"recovery_of":oldOp,"recovery_plan_sha256":rawSHA]
+        let uiRuntime=DesktopRuntime(bundle:fixture.bundle,home:fixture.home,uid:fixture.uid,run:{ _,args,_,done in
+            if args==["desktop","migration-recovery-inspect"] { done(DesktopCommandResult(code:0,data:try! JSONSerialization.data(withJSONObject:preview),timedOut:false)) }
+            else if args==["desktop","migration-recovery-commit",plan] {
+                uiSTOPs += 1
+                let store=DesktopIntentStore(home:fixture.home,fixtureRoot:durableUIRoot)
+                uiDurable=(try? store.loadRecovery())?.state=="RECOVERY_ARMED" && !store.present
+                uiCommitDone=done
+            }
+            else if args.first=="print" { done(DesktopCommandResult(code:113,data:Data(),timedOut:false)) }
+            else if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)) }
+            else { done(DesktopCommandResult(code:1,data:Data(),timedOut:false)) }
+        },exists:{$0==fixture.binary},digest:{$0==fixture.binary ? oldSHA : bundleSHA},portFree:{true},fixtureStateRoot:durableUIRoot)
+        recoveryUI.desktop=uiRuntime; uiRuntime.onChange={ [weak recoveryUI] in recoveryUI?.render() }; recoveryUI.render()
+        PresentationProbe.response = .alertFirstButtonReturn
+        _=autoreleasepool { NSApp.sendAction(selector,to:recoveryUI,from:recoveryRow()) }
+        check(uiSTOPs==1 && uiDurable && uiCommitDone != nil && PresentationProbe.counts == [1,0,0,1],"actual production recovery selector persists durable pre-STOP intent before commit")
+        PresentationProbe.activations=0; PresentationProbe.modals=0
+        recoveryUI.recoverDesktop()
+        check(uiSTOPs==1 && PresentationProbe.counts == [0,0,0,0],"actual production repeated recovery selector cannot send duplicate STOP")
+        uiCommitDone?(DesktopCommandResult(code:1,data:Data(),timedOut:true))
+        recoveryUI.recoverDesktop()
+        check(uiSTOPs==1 && !uiRuntime.intents.present && (try? uiRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","actual production timeout keeps recovery UNKNOWN and zero authorization")
+        quiet(recoveryUI,"delayed recovery STOP timeout")
+        recoveryUI.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification)); NSStatusBar.system.removeStatusItem(recoveryUI.item)
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"presentationCounts":PresentationProbe.counts,"realNetworkRequests":0,"productionKeychainAccessed":false,"osPollingObserversDisabledInFixture":true],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("focus-checks.json"))
         print("FOCUS_TESTS_OK checks=\(checks.count)")
     }

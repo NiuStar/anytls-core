@@ -471,6 +471,212 @@ private final class DesktopHTTP: URLProtocol {
         check(!DesktopRuntime.consoleArguments(prefix+listen+port+agent+agent,binary:adoptionBinary,managed:true,label:adoptionLabel),"managed argv rejects extra duplicate flag")
         check(floodResult.map { validNativeFloodCapture($0.data,120) && validNativeFloodCapture($0.stderr,121) } ?? false,"native flood retains bounded expected bytes on both streams")
         check((try? Data(contentsOf:floodReceipt)) == Data("200000 200000".utf8),"native flood completes both 200000 byte write loops before exit")
+        // Recovery assertions append after the frozen Desktop150 prefix.
+        var recoveryCalls=[[String]](), recoveryAuths=0, durableBeforeSTOP=false
+        let recoveryState=root.appendingPathComponent("recovery-happy").path
+        let oldOperation=String(repeating:"e",count:64), oldRawSHA=String(repeating:"f",count:64)
+        func recoveryBody(_ phase: String)->Data {
+            var body=try! JSONSerialization.jsonObject(with:migration(phase=="RECOVERY_INSPECTED" ? "INSPECTED" : phase)) as! [String:Any]
+            body["phase"]=phase; body["recovery_of"]=oldOperation; body["recovery_plan_sha256"]=oldRawSHA
+            return try! JSONSerialization.data(withJSONObject:body)
+        }
+        let recoveryRunner: DesktopRuntime.Runner={ path,args,_,done in
+            recoveryCalls.append(args)
+            if args==["desktop","migration-recovery-inspect"] { done(DesktopCommandResult(code:0,data:recoveryBody("RECOVERY_INSPECTED"),timedOut:false)); return }
+            if args.contains("migration-recovery-commit") {
+                let store=DesktopIntentStore(home:home,fixtureRoot:recoveryState)
+                durableBeforeSTOP=(try? store.loadRecovery())?.state=="RECOVERY_ARMED" && !store.present && recoveryAuths==0
+                done(DesktopCommandResult(code:0,data:recoveryBody("AWAITING_HELPER"),timedOut:false)); return
+            }
+            if path=="/usr/bin/osascript" { recoveryAuths += 1; done(DesktopCommandResult(code:1,data:Data(),timedOut:true)); return }
+            if args==["desktop","migration-inspect"] { done(DesktopCommandResult(code:1,data:try! JSONSerialization.data(withJSONObject:["migration":try! JSONSerialization.jsonObject(with:recoveryBody("AWAITING_HELPER"))]),timedOut:false)); return }
+            if args.first=="print" { done(DesktopCommandResult(code:113,data:Data(),timedOut:false)); return }
+            if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)); return }
+            done(DesktopCommandResult(code:1,data:Data(),timedOut:false))
+        }
+        let recoveryRuntime=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:recoveryRunner,exists:{$0==binary},digest:{$0==binary ? old : sha},portFree:{true},fixtureStateRoot:recoveryState,candidateSafe:{_ in true})
+        recoveryRuntime.recover { _,_,_ in fatalError("Recovery auth timeout must not login") }
+        check(durableBeforeSTOP && recoveryAuths==1 && recoveryCalls.filter{$0.contains("migration-recovery-commit")}.count==1,"recovery intent durable before one new STOP and no helper authorization before awaiting")
+        check((try? recoveryRuntime.intents.loadRecovery())?.operation==op && (try? recoveryRuntime.intents.load())?.resume==false && recoveryRuntime.blocksQuit && !recoveryRuntime.recoveryAllowed,"recovery exact new operation binds separate intent and never authorizes resume")
+        let recoveryBaseline=recoveryCalls.count
+        recoveryRuntime.recover(login:login)
+        check(recoveryCalls.count==recoveryBaseline,"second recovery click after authorization uncertainty cannot repeat commit")
+        let restartedRecovery=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:recoveryRunner,exists:{$0==binary},digest:{$0==binary ? old : sha},portFree:{true},fixtureStateRoot:recoveryState,candidateSafe:{_ in true})
+        restartedRecovery.initialize(login:login)
+        check(Array(recoveryCalls.dropFirst(recoveryBaseline))==[["desktop","migration-inspect"]] && recoveryAuths==1,"recovery restart only inspects without STOP authorization finish or START replay")
+        let recoveryAttrs=try FileManager.default.attributesOfItem(atPath:recoveryState+"/recovery.json")
+        let recoveryRootAttrs=try FileManager.default.attributesOfItem(atPath:recoveryState)
+        check(recoveryAttrs[.posixPermissions] as? Int==0o600 && recoveryRootAttrs[.posixPermissions] as? Int==0o700,"recovery intent uses private0600 owned0700 root")
+        let previewResult=DesktopCommandResult(code:0,data:recoveryBody("RECOVERY_INSPECTED"),timedOut:false)
+        check(sha != old && DesktopRecoveryPreview.parse(previewResult)?.valid(home:home,uid:uid,sha:sha)==true && DesktopMigration.parse(previewResult)?.valid(home:home,uid:uid,sha:sha)==false,"separate recovery preview accepts different new bundle and never weakens normal migration validator")
+        let validPreview=try JSONSerialization.jsonObject(with:previewResult.data) as! [String:Any]
+        let badPreviews:[(String,Any)]=[("schema",2),("phase","INSPECTED"),("plan",String(repeating:"A",count:64)),("binary",binary+".alias"),("config_identity",old),("binary_sha256",old),("helper_sha256","bad"),("helper_version",""),("uid",0),("home",home+"x"),("recovery_of",String(repeating:"a",count:32)),("recovery_plan_sha256","bad"),("unknown",true)]
+        for (index,pair) in badPreviews.enumerated() {
+            var object=validPreview; object[pair.0]=pair.1
+            var commands=[[String]]()
+            let refused=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in commands.append(args); done(DesktopCommandResult(code:0,data:try! JSONSerialization.data(withJSONObject:object),timedOut:false)) },exists:{$0==binary},digest:{$0==binary ? old : sha},fixtureStateRoot:root.appendingPathComponent("recovery-bad-\(index)").path)
+            refused.recover(login:login)
+            check(commands==[["desktop","migration-recovery-inspect"]] && !refused.intents.recoveryPresent && !refused.intents.present && !refused.busy,"recovery bad preview refuses before intent STOP authorization: "+pair.0)
+        }
+        for (name,data) in [("duplicate",Data((String(data:previewResult.data,encoding:.utf8)!.dropLast()+",\"schema\":1}").utf8)),("case alias",Data((String(data:previewResult.data,encoding:.utf8)!.dropLast()+",\"Schema\":1}").utf8)),("timeout",previewResult.data),("oversize",Data(repeating:32,count:16385))] {
+            check(DesktopRecoveryPreview.parse(DesktopCommandResult(code:0,data:data,timedOut:name=="timeout"))==nil,"strict recovery preview rejects "+name)
+        }
+        var lostCommit: ((DesktopCommandResult)->Void)?, lostCalls=[[String]]()
+        let lostRoot=root.appendingPathComponent("recovery-lost").path
+        let lostRunner: DesktopRuntime.Runner={ _,args,_,done in
+            lostCalls.append(args)
+            if args.contains("migration-recovery-commit") { lostCommit=done; return }
+            if args==["desktop","migration-recovery-inspect"] { done(previewResult); return }
+            if args.first=="print" { done(DesktopCommandResult(code:113,data:Data(),timedOut:false)); return }
+            if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)); return }
+            done(DesktopCommandResult(code:1,data:Data(),timedOut:false))
+        }
+        let lostRuntime=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:lostRunner,exists:{$0==binary},digest:{$0==binary ? old : sha},portFree:{true},fixtureStateRoot:lostRoot)
+        lostRuntime.recover(login:login)
+        check(lostCommit != nil && (try? lostRuntime.intents.loadRecovery())?.state=="RECOVERY_ARMED" && !lostRuntime.intents.present,"held STOP keeps genuine pre-STOP recovery intent not forged authorization")
+        let competingRecovery=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:lostRunner,exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:lostRoot)
+        let beforeCompete=lostCalls.count; competingRecovery.recover(login:login)
+        check(lostCalls.count==beforeCompete && !competingRecovery.recoveryAllowed,"durable recovery intent refuses another runtime before any dispatch")
+        lostCommit?(DesktopCommandResult(code:1,data:Data(),timedOut:true))
+        check((try? lostRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN" && !lostRuntime.recoveryAllowed && lostRuntime.blocksQuit && !lostRuntime.intents.present,"lost recovery STOP response persists sticky UNKNOWN without helper authorization")
+        let afterLost=lostCalls.count; lostRuntime.recover(login:login); lostRuntime.initialize(login:login)
+        check(Array(lostCalls.dropFirst(afterLost))==[["desktop","migration-inspect"]],"unknown recovery repeated click and initialize never repeat STOP")
+        lostCommit?(DesktopCommandResult(code:0,data:recoveryBody("AWAITING_HELPER"),timedOut:false))
+        check(!lostRuntime.intents.present && (try? lostRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","late successful recovery callback after timeout cannot authorize or clear UNKNOWN")
+        // The exact same lifecycle lease used by recovery is held in a separate
+        // native process; no fixture Boolean stands in for kernel exclusion.
+        let processRoot=root.appendingPathComponent("recovery-process-lease").path
+        let recoveryHolder=Process(), recoveryPipe=Pipe(); recoveryHolder.executableURL=URL(fileURLWithPath:CommandLine.arguments[0]); recoveryHolder.arguments=["--lease-holder",processRoot]; recoveryHolder.standardOutput=recoveryPipe; try recoveryHolder.run()
+        let processHeld=recoveryPipe.fileHandleForReading.availableData
+        var processDispatches=0
+        let processBlocked=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{_,_,_,_ in processDispatches += 1},exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:processRoot)
+        processBlocked.recover(login:login)
+        check(String(data:processHeld,encoding:.utf8)?.contains("LEASE_HELD")==true && processDispatches==0 && !processBlocked.busy,"actual separate native process lifecycle lease blocks recovery inspection and STOP")
+        recoveryHolder.terminate(); recoveryHolder.waitUntilExit()
+        check(!processBlocked.intents.recoveryPresent && !processBlocked.intents.present,"lease process exit never fabricates recovery or authorization")
+        // Exercise completion through actual owned console child + both durable
+        // stores. The backend transport remains an offline fixture only.
+        var completedPublished=false, completedCalls=[[String]](), completedChild: Process?, completedAuths=0, completedResumes=0
+        let completeRoot=root.appendingPathComponent("recovery-complete").path
+        let completeRunner: DesktopRuntime.Runner={ path,args,_,done in
+            completedCalls.append(args)
+            if args==["desktop","migration-recovery-inspect"] { done(previewResult); return }
+            if args.contains("migration-recovery-commit") { done(DesktopCommandResult(code:0,data:recoveryBody("AWAITING_HELPER"),timedOut:false)); return }
+            if path=="/usr/bin/osascript" { completedAuths += 1; done(DesktopCommandResult(code:0,data:Data(),timedOut:false)); return }
+            if args==["desktop","migration-inspect"] { done(DesktopCommandResult(code:1,data:try! JSONSerialization.data(withJSONObject:["migration":try! JSONSerialization.jsonObject(with:recoveryBody(completedPublished ? "COMMITTED" : "AWAITING_HELPER"))]),timedOut:false)); return }
+            if args==["desktop","migration-finish",op] { completedPublished=true; done(DesktopCommandResult(code:0,data:recoveryBody("COMMITTED"),timedOut:false)); return }
+            if args==["desktop","migration-recovery-finalize",op] { done(DesktopCommandResult(code:0,data:recoveryBody("COMMITTED"),timedOut:false)); return }
+            if args==["desktop","inspect"] { done(DesktopCommandResult(code:0,data:metadata(),timedOut:false)); return }
+            if args==["desktop","credentials"] { done(DesktopCommandResult(code:0,data:try! JSONSerialization.data(withJSONObject:["schema":1,"endpoint":"http://127.0.0.1:18089","password":"PRIVATE_ONLY"]),timedOut:false)); return }
+            if args.first=="print" { done(DesktopCommandResult(code:113,data:Data(),timedOut:false)); return }
+            if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)); return }
+            if args.contains("-a"), let p=completedChild { done(DesktopCommandResult(code:0,data:Data("p\(p.processIdentifier)\nu\(uid)\nn*:18089\n".utf8),timedOut:false)); return }
+            done(DesktopCommandResult(code:1,data:Data(),timedOut:false))
+        }
+        let completedRuntime=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:completeRunner,exists:{$0==binary},digest:{$0==binary && !completedPublished ? old : sha},portFree:{true},fixtureStateRoot:completeRoot,candidateSafe:{_ in true})
+        completedRuntime.launchConsole={ let p=Process(); p.executableURL=URL(fileURLWithPath:"/bin/sleep"); p.arguments=["30"]; completedChild=p; return p }
+        completedRuntime.onMigrationResume={ completedResumes += 1 }
+        let recoveryStartsBefore=DesktopHTTP.starts
+        completedRuntime.recover { _,_,done in done(true) }
+        check(completedPublished && completedAuths==1 && (try? completedRuntime.intents.loadRecovery())?.state=="DONE" && (try? completedRuntime.intents.load())?.state=="DONE" && !completedRuntime.blocksQuit,"recovery full finish and owned-console login mark both stores DONE")
+        check(completedResumes==0 && DesktopHTTP.starts==recoveryStartsBefore && completedCalls.filter{$0.contains("migration-recovery-commit")}.count==1,"recovery completion never offers historical resume or automatically starts VPN")
+        var completedDrain: Bool?; completedRuntime.drainOwnedConsole {completedDrain=$0}; pump {completedDrain != nil}
+        check(completedDrain==true && completedChild?.isRunning==false,"recovery happy path owned console child reaped")
+        // Explicit terminal-only finalization from retained COMMITTED metadata.
+        var finalRecovery=try completedRuntime.intents.loadRecovery()!; finalRecovery.state="AWAITING_HELPER"; try completedRuntime.intents.saveRecovery(finalRecovery)
+        var finalAuth=try completedRuntime.intents.load()!; finalAuth.state="READY"; try completedRuntime.intents.save(finalAuth)
+        let finalBaseline=completedCalls.count
+        completedRuntime.completeRecovery { _,_,done in done(true) }
+        let finalCommands=Array(completedCalls.dropFirst(finalBaseline))
+        check(finalCommands.contains(["desktop","migration-recovery-finalize",op]) && !finalCommands.contains{$0.contains("migration-finish") || $0.contains("migration-recovery-commit") || $0.first=="-e"} && (try? completedRuntime.intents.loadRecovery())?.state=="DONE","explicit COMMITTED finalization dispatches only terminal write before console handoff no STOP authorization publication")
+        completedDrain=nil; completedRuntime.drainOwnedConsole {completedDrain=$0}; pump {completedDrain != nil}
+        check(completedDrain==true && completedResumes==0,"finalization also never starts VPN and reaps only owned child")
+        // Provenance and exact new-op refusals after an otherwise valid STOP.
+        for key in ["recovery_of","recovery_plan_sha256","operation","binary_sha256","helper_sha256","helper_version"] {
+            var body=try JSONSerialization.jsonObject(with:recoveryBody("AWAITING_HELPER")) as! [String:Any]
+            body[key]=key=="operation" ? oldOperation : key=="helper_version" ? "foreign" : String(repeating:"9",count:64)
+            var authorized=0
+            let refusalRoot=root.appendingPathComponent("recovery-return-"+key).path
+            let refusal=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ path,args,_,done in
+                if path=="/usr/bin/osascript" { authorized += 1 }
+                if args==["desktop","migration-recovery-inspect"] { done(previewResult) }
+                else if args.contains("migration-recovery-commit") { done(DesktopCommandResult(code:0,data:try! JSONSerialization.data(withJSONObject:body),timedOut:false)) }
+                else if args.first=="print" { done(DesktopCommandResult(code:113,data:Data(),timedOut:false)) }
+                else if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)) }
+                else { done(DesktopCommandResult(code:1,data:Data(),timedOut:false)) }
+            },exists:{$0==binary},digest:{$0==binary ? old : sha},portFree:{true},fixtureStateRoot:refusalRoot,candidateSafe:{_ in true})
+            refusal.recover(login:login)
+            check(authorized==0 && !refusal.intents.present && (try? refusal.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","recovery awaiting provenance refusal never authorizes: "+key)
+        }
+        // Console absence must be proven both by lsof and managed job policy.
+        for blockedPolicy in ["listener","managed-job","port-busy"] {
+            var commands=[[String]]()
+            let policyRefusal=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in
+                commands.append(args)
+                if args==["desktop","migration-recovery-inspect"] { done(previewResult) }
+                else if args.first=="print" { done(DesktopCommandResult(code:blockedPolicy=="managed-job" ? 0 : 113,data:Data(),timedOut:false)) }
+                else if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)) }
+                else { done(DesktopCommandResult(code:blockedPolicy=="listener" ? 0 : 1,data:blockedPolicy=="listener" ? Data("p123\nu503\n".utf8) : Data(),timedOut:false)) }
+            },exists:{$0==binary},digest:{$0==binary ? old : sha},portFree:{blockedPolicy != "port-busy"},fixtureStateRoot:root.appendingPathComponent("recovery-policy-"+blockedPolicy).path)
+            policyRefusal.recover(login:login)
+            check(!commands.contains{$0.contains("migration-recovery-commit") || $0.first=="-e"} && !policyRefusal.intents.recoveryPresent,"recovery console policy refuses before durable intent and STOP: "+blockedPolicy)
+        }
+        let armingRoot=root.appendingPathComponent("recovery-armed-restart").path
+        let arming=DesktopIntentStore(home:home,fixtureRoot:armingRoot)
+        try arming.saveRecovery(DesktopRecoveryIntent(state:"RECOVERY_ARMED",plan:String(repeating:"d",count:64),recoveryOf:oldOperation,recoveryPlanSHA:oldRawSHA,sha:sha,console:nil,operation:nil))
+        var armCommands=[[String]]()
+        let armRestart=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in armCommands.append(args); done(DesktopCommandResult(code:1,data:Data(),timedOut:false)) },exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:armingRoot)
+        armRestart.initialize(login:login); armRestart.recover(login:login)
+        check((try? arming.loadRecovery())?.state=="RECOVERY_UNKNOWN" && armCommands==[["desktop","migration-inspect"]] && !arming.present,"restart of pre-STOP ARMED is sticky UNKNOWN with no replay or forged helper intent")
+        let invalidState=root.appendingPathComponent("recovery-invalid-store").path
+        let invalidStore=DesktopIntentStore(home:home,fixtureRoot:invalidState)
+        try invalidStore.saveRecovery(DesktopRecoveryIntent(state:"RECOVERY_UNKNOWN",plan:String(repeating:"d",count:64),recoveryOf:oldOperation,recoveryPlanSHA:oldRawSHA,sha:sha,console:nil,operation:nil))
+        let invalidPath=invalidState+"/recovery.json"
+        let invalidSaved=try Data(contentsOf:URL(fileURLWithPath:invalidPath))
+        try FileManager.default.setAttributes([.posixPermissions:0o644],ofItemAtPath:invalidPath)
+        check((try? invalidStore.loadRecovery())==nil && invalidStore.recoveryPresent,"unsafe recovery JSON mode is HOLD not absent")
+        try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:invalidPath)
+        let recoveryAlias=root.appendingPathComponent("recovery-hardlink").path
+        check(link(invalidPath,recoveryAlias)==0 && (try? invalidStore.loadRecovery())==nil,"hardlinked recovery JSON refuses authority")
+        unlink(recoveryAlias); unlink(invalidPath)
+        check(symlink("authorization.json",invalidPath)==0 && (try? invalidStore.loadRecovery())==nil && invalidStore.recoveryPresent,"symlink recovery JSON is sticky HOLD")
+        unlink(invalidPath)
+        let fifoMade=mkfifo(invalidPath,0o600)==0
+        check(fifoMade && (try? invalidStore.loadRecovery())==nil,"FIFO recovery JSON refuses boundedly without blocking read")
+        unlink(invalidPath); try invalidSaved.write(to:URL(fileURLWithPath:invalidPath)); chmod(invalidPath,0o600)
+        let guardRoot=root.appendingPathComponent("recovery-model-guard").path
+        var guardCommands=[[String]](), guardDone: ((DesktopCommandResult)->Void)?
+        let guardedRuntime=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in
+            guardCommands.append(args)
+            if args==["desktop","migration-recovery-inspect"] { guardDone=done }
+            else { fatalError("Model guard must refuse before console admission") }
+        },exists:{$0==binary},digest:{$0==binary ? old : sha},fixtureStateRoot:guardRoot)
+        guardedRuntime.recover(login:login); guardedRuntime.recoveryActionAllowed={false}
+        // The async admission fence is checked before dispatching console work.
+        guardDone?(previewResult)
+        check(guardCommands==[["desktop","migration-recovery-inspect"]] && !guardedRuntime.intents.recoveryPresent,"model policy changing after consent refuses before STOP")
+        for (name,raw) in [("duplicate","{\"state\":\"RECOVERY_UNKNOWN\",\"state\":\"DONE\"}"),("escaped duplicate","{\"state\":1,\"st\\u0061te\":2}"),("case alias","{\"state\":1,\"State\":2}")] {
+            check(!DesktopIntentStore.uniqueJSONKeys(Data(raw.utf8)),"durable recovery parser rejects "+name)
+        }
+        check(DesktopIntentStore.uniqueJSONKeys(Data("{\"console\":{\"argv\":[\"a:b\",\"{x}\"],\"pid\":1},\"state\":\"DONE\"}".utf8)),"durable recovery key scanner preserves nested console and quoted punctuation")
+        var setupFailureCommands=[[String]]()
+        let setupFailure=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in
+            setupFailureCommands.append(args)
+            if args==["desktop","prepare"] { done(DesktopCommandResult(code:1,data:Data(),timedOut:true)) }
+            else { done(DesktopCommandResult(code:1,data:Data(),timedOut:false)) }
+        },exists:{$0==binary},digest:{$0==binary ? old : sha},fixtureStateRoot:root.appendingPathComponent("recovery-old-setup-unknown").path)
+        setupFailure.initialize(login:login)
+        check(setupFailure.blocksQuit && setupFailure.recoveryAllowed,"old setup uncertainty permits only explicit recovery without active durable authority")
+        let activeRoot=root.appendingPathComponent("recovery-active-auth").path
+        let activeStore=DesktopIntentStore(home:home,fixtureRoot:activeRoot); try activeStore.save(sample)
+        var activeDispatches=0
+        let activeRuntime=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{_,_,_,_ in activeDispatches += 1},exists:{$0==binary},digest:{_ in sha},fixtureStateRoot:activeRoot)
+        activeRuntime.recover(login:login)
+        check(!activeRuntime.recoveryAllowed && activeDispatches==0,"existing helper authorization ARMED refuses explicit recovery before inspection")
+        let refreshBefore=lostCalls.count; lostRuntime.refreshRecovery()
+        check(Array(lostCalls.dropFirst(refreshBefore))==[["desktop","migration-inspect"]] && (try? lostRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","explicit refresh is read-only inspection and preserves recovery UNKNOWN")
+        let forbidden=DesktopCommandResult(code:0,data:Data("{\"schema\":1,\"schema\":1}".utf8),timedOut:false)
+        check(DesktopMigration.parse(forbidden)==nil,"recovery continuation rejects duplicate metadata keys before Foundation folding")
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"systemAuthorization":"NOT_RUN","productionChanges":false],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("desktop-checks.json"))
         print("DESKTOP_TESTS_OK checks=\(checks.count)")
     }

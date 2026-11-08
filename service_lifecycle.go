@@ -831,6 +831,7 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 			r.Stopped = "VERIFIED"
 			r.Snapshot = "ABSENT"
 			if r.diagnostic != nil {
+				r.diagnostic.Restoration = "NOT_ATTEMPTED"
 				r.diagnostic.Cleanup = "VERIFIED"
 				r.diagnostic.Job = "UNLOADED"
 			}

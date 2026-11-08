@@ -134,6 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("AnyTLS · \(state)",enabled:false)
         if model.api.authenticated { add(model.message,enabled:false) }
         add("安装／更新组件…",#selector(initializeDesktop),enabled:desktop?.busy == false && !terminationPending && !model.pending && !model.uncertain)
+        add("恢复未完成的组件更新…",#selector(recoverDesktop),enabled:desktop?.recoveryAllowed == true && !terminationPending && !model.pending && !model.uncertain)
+        if desktop?.recoveryCompletionAllowed == true { add("继续已确认停止的组件更新…",#selector(completeDesktopRecovery),enabled:!terminationPending && !model.pending && !model.uncertain) }
         if model.pending || model.uncertain { add(model.message+"；暂不能安装／更新组件，请先在完整控制台核实",enabled:false) }
         if let desktop=desktop { add(desktop.message,enabled:false); if desktop.authorizationRetryAllowed { add("重试已取消的授权…",#selector(retryDesktopAuthorization)) } }
         if !quitCoordinator.message.isEmpty { add(quitCoordinator.message,enabled:false) }
@@ -185,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if confirm("切换启动节点为「\(safeName(name))」？"), epoch == model.api.generation, etag == model.etag { model.mutate(path:"/nodes/selection",name:name,consent:true) }
     }
     @objc func refresh() {
+        if !terminationPending && !model.pending && !model.uncertain { desktop?.refreshRecovery() }
         if model.api.authenticated { model.refresh() } else { connectRuntime(userInitiated:true) }
     }
     @objc private func openConsole() { NSWorkspace.shared.open(model.api.endpoint.url) }
@@ -237,6 +240,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard confirm("安装／更新 AnyTLS 组件？更新将停止 VPN，保留配置；更新完成后须从菜单恢复 VPN。",risk:false) else { return }
         desktop?.consentMigration={ wasRunning in wasRunning }
         desktop?.initialize(login:runtimeLogin)
+    }
+    @objc func recoverDesktop() {
+        guard !terminationPending, !model.pending, !model.uncertain, desktop?.recoveryAllowed==true else { return }
+        guard confirm("上次更新结果未知。本次将新建独立事务并再次请求停止 VPN，可能中断网络，再通过系统授权更新组件；旧 UNKNOWN 将原样保留，不会把上次操作标为成功，也不会自动重试或启动 VPN。继续？",risk:false) else { return }
+        guard !terminationPending, !model.pending, !model.uncertain else { return }
+        desktop?.recoveryActionAllowed={ [weak self, weak runtime=desktop] in
+            guard let self=self, let runtime=runtime else { return false }
+            return self.desktop === runtime && !self.terminationPending && !self.model.pending && !self.model.uncertain
+        }
+        desktop?.recover(login:runtimeLogin)
+    }
+    @objc func completeDesktopRecovery() {
+        guard !terminationPending, !model.pending, !model.uncertain, desktop?.recoveryCompletionAllowed==true else { return }
+        guard confirm("检查并继续已确认停止的组件更新？仅完成已授权的更新，不会再次停止、重新授权或启动 VPN。",risk:false) else { return }
+        guard !terminationPending, !model.pending, !model.uncertain else { return }
+        desktop?.recoveryActionAllowed={ [weak self, weak runtime=desktop] in
+            guard let self=self, let runtime=runtime else { return false }
+            return self.desktop === runtime && !self.terminationPending && !self.model.pending && !self.model.uncertain
+        }
+        desktop?.completeRecovery(login:runtimeLogin)
     }
     @objc func retryDesktopAuthorization() { guard !terminationPending, !model.pending, !model.uncertain else { return }; desktop?.retryAuthorization(login:runtimeLogin) }
     private func runtimeLogin(_ origin: String, _ secret: String, _ completion: @escaping (Bool)->Void) {

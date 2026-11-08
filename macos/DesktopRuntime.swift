@@ -76,11 +76,13 @@ final class DesktopRuntime {
     private var expectedSHA="", expectedVersion=""
     private var authAttempted=false
     private var setupUncertain=false
+    private var recoveryGeneration=UUID()
     let intents: DesktopIntentStore
     private var adopted: DesktopConsolePin?
     var consentMigration: ((Bool)->Bool?)?
+    var recoveryActionAllowed: ()->Bool = { true }
     var onMigrationResume: (()->Void)?
-    var blocksQuit: Bool { busy || setupUncertain || ((try? intents.load()).map { $0.state != "DONE" } ?? intents.present) }
+    var blocksQuit: Bool { busy || setupUncertain || recoveryBlocksQuit || ((try? intents.load()).map { $0.state != "DONE" } ?? intents.present) }
     private var activationArmed=false
     private var lifecycleLease: Int32?
     deinit { endLifecycle() }
@@ -90,6 +92,7 @@ final class DesktopRuntime {
         catch { status("另一 App 正在处理组件，或私有状态不安全；未执行任何变更"); return false }
     }
     private func endLifecycle() {
+        recoveryGeneration=UUID()
         if let fd=lifecycleLease { lifecycleLease=nil; DesktopIntentStore.releaseLease(fd) }
     }
     func reserveQuitLifecycle()->Bool { beginLifecycle() }
@@ -105,6 +108,9 @@ final class DesktopRuntime {
         guard activationArmed, running, !pending, !uncertain, var intent=try? intents.load() else { return }
         intent.state="DONE"; do { try intents.save(intent); activationArmed=false; endLifecycle(); status("组件已更新；VPN 已确认恢复") } catch { status("VPN 恢复记录无法同步；保持锁定") }
     }
+    private var recoveryBlocksQuit: Bool { intents.recoveryPresent && (try? intents.loadRecovery())?.state != "DONE" }
+    var recoveryAllowed: Bool { !busy && !intents.recoveryPresent && (!intents.present || (try? intents.load())?.state=="DONE") }
+    var recoveryCompletionAllowed: Bool { !busy && (try? intents.loadRecovery())?.state=="AWAITING_HELPER" }
     var authorizationRetryAllowed: Bool { !busy && (try? intents.load())?.state == "DENIED" }
     var onChange: (()->Void)?
     // Fixture injection returns a real privately owned child, never a fake Process.
@@ -163,6 +169,7 @@ final class DesktopRuntime {
     func initialize(login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
         guard !busy, beginLifecycle() else { return }; busy=true
         guard verifyBundle() else { fail("内嵌核心清单或 SHA 校验失败；拒绝安装"); return }
+        if intents.recoveryPresent && (try? intents.loadRecovery())?.state != "DONE" { inspectRecoveryIntent(); return }
         if intents.present && (try? intents.load())?.state != "DONE" { reconcileMigration(login:login); return }
         if setupUncertain { inspect(allowAuthorization:false,login:login); return }
         if !exists(binary) {
@@ -253,9 +260,87 @@ final class DesktopRuntime {
             }
         }
     }
+    // Explicit consent is owned by the immediate AppDelegate action. The lease
+    // covers reinspection, durable pre-STOP intent, authorization and handoff.
+    func recover(login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
+        guard recoveryAllowed, beginLifecycle() else { return }
+        busy=true
+        guard verifyBundle() else { fail("内嵌核心 SHA 无法验证；未开始恢复"); return }
+        let generation=recoveryGeneration, sha=expectedSHA
+        status("正在只读检查旧 UNKNOWN；不会重试旧事务…")
+        run(source,["desktop","migration-recovery-inspect"],12) { result in
+            guard self.busy, self.recoveryGeneration==generation else { return }
+            guard self.recoveryActionAllowed(), let preview=DesktopRecoveryPreview.parse(result), preview.valid(home:self.home,uid:self.uid,sha:sha), self.digest(self.binary)==preview.old_binary_sha256 else { self.fail("恢复预览或来源身份无法验证；未停止 VPN"); return }
+            self.locateConsole(sha:preview.old_binary_sha256) { safe,pin in
+                guard self.busy, self.recoveryGeneration==generation else { return }
+                guard self.recoveryActionAllowed(), safe, pin?.stillMatches() != false, self.verifyBundle(), self.expectedSHA==sha, self.digest(self.binary)==preview.old_binary_sha256, self.recoveryAllowedWhileLeased else { self.fail("恢复控制台策略或候选身份已改变；未停止 VPN"); return }
+                var intent=DesktopRecoveryIntent(state:"RECOVERY_ARMED",plan:preview.plan,recoveryOf:preview.recovery_of,recoveryPlanSHA:preview.recovery_plan_sha256,sha:sha,console:pin,operation:nil)
+                do { try self.intents.saveRecovery(intent) } catch { self.fail("恢复意图无法持久保存；未停止 VPN"); return }
+                self.setupUncertain=true
+                guard self.recoveryActionAllowed(), pin?.stillMatches() != false, self.verifyBundle(), self.expectedSHA==sha, self.digest(self.binary)==preview.old_binary_sha256 else { self.fail("恢复意图保存后身份或策略改变；未停止 VPN，保持锁定"); return }
+                var responseConsumed=false
+                self.run(self.source,["desktop","migration-recovery-commit",preview.plan],45) { result in
+                    guard self.busy, self.recoveryGeneration==generation, !responseConsumed else { return }
+                    responseConsumed=true
+                    guard result.code==0, let pending=DesktopMigration.parse(result), pending.valid(home:self.home,uid:self.uid,sha:sha), pending.phase=="AWAITING_HELPER", pending.plan==preview.plan, pending.recovery_of==preview.recovery_of, pending.recovery_plan_sha256==preview.recovery_plan_sha256, pending.old_binary_sha256==preview.old_binary_sha256, pending.helper_sha256==preview.helper_sha256, pending.helper_version==preview.helper_version, pending.was_running==preview.was_running, let op=pending.operation, op != preview.recovery_of, let stage=pending.stage else {
+                        intent.state="RECOVERY_UNKNOWN"; try? self.intents.saveRecovery(intent)
+                        self.fail("新恢复 STOP 结果未知；保留旧 UNKNOWN，不会重复停止或授权"); return
+                    }
+                    intent.state="AWAITING_HELPER"; intent.operation=op
+                    do { try self.intents.saveRecovery(intent) } catch { self.fail("新 STOP 已返回，恢复记录同步未知；不会授权或重试"); return }
+                    guard self.armAuthorization(operation:op,stage:stage,resume:false,pin:pin) else { return }
+                    self.authorizePending(login:login)
+                }
+            }
+        }
+    }
+    private var recoveryAllowedWhileLeased: Bool { !intents.recoveryPresent && (!intents.present || (try? intents.load())?.state=="DONE") }
+    // Relaunch/refresh is strictly observational. Even a ready helper does not
+    // automatically replay finish/publication, authorization, STOP or START.
+    private func inspectRecoveryIntent() {
+        guard var intent=try? intents.loadRecovery(), intent.sha==expectedSHA else { fail("恢复记录不安全或版本不同；保持 HOLD"); return }
+        if intent.state=="RECOVERY_ARMED" {
+            intent.state="RECOVERY_UNKNOWN"
+            do { try intents.saveRecovery(intent) } catch { fail("恢复记录同步未知；保持锁定"); return }
+        }
+        let generation=recoveryGeneration
+        run(source,["desktop","migration-inspect"],12) { _ in
+            guard self.busy, self.recoveryGeneration==generation else { return }
+            self.fail(intent.state=="AWAITING_HELPER" ? "恢复待核实；可明确继续已确认 STOP 的组件更新，不会重放授权或 STOP" : "恢复结果未知；仅检查，不会自动重试停止、授权或启动 VPN")
+        }
+    }
+    func refreshRecovery() {
+        guard !busy, recoveryBlocksQuit, beginLifecycle() else { return }
+        busy=true
+        guard verifyBundle() else { fail("恢复版本无法验证；保持 HOLD"); return }
+        inspectRecoveryIntent()
+    }
+    func completeRecovery(login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
+        guard recoveryCompletionAllowed, verifyBundle(), beginLifecycle() else { return }
+        busy=true
+        guard let recovery=try? intents.loadRecovery(), recovery.sha==expectedSHA, let intent=try? intents.load(), intent.operation==recovery.operation, !intent.resume else { fail("恢复与授权记录不匹配；保持 HOLD"); return }
+        let generation=recoveryGeneration
+        run(source,["desktop","migration-inspect"],12) { result in
+            guard self.busy, self.recoveryGeneration==generation else { return }
+            guard self.recoveryActionAllowed(), let m=DesktopMigration.parse(result), m.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), self.recoveryMetadataMatches(m) else { self.fail("恢复组件身份无法验证；保持 HOLD"); return }
+            if m.phase != "COMMITTED" { self.reconcileMigration(login:login); return }
+            // Explicit finalization writes only the backend-validated missing
+            // terminal receipt; it cannot STOP, authorize or publish again.
+            self.run(self.source,["desktop","migration-recovery-finalize",intent.operation],20) { result in
+                guard self.busy, self.recoveryGeneration==generation else { return }
+                guard result.code==0, let final=DesktopMigration.parse(result), final.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), final.phase=="COMMITTED", self.recoveryMetadataMatches(final), self.digest(self.binary)==self.expectedSHA else { self.fail("恢复终态回执无法验证；未重放停止、授权或发布"); return }
+                var ready=intent; ready.state="READY"
+                do { try self.intents.save(ready) } catch { self.fail("终态已确认但应用记录无法同步；保持 HOLD"); return }
+                self.restartMigratedConsole(ready,login:login)
+            }
+        }
+    }
     private func authorizePending(login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
+        guard !intents.recoveryPresent || recoveryActionAllowed() else { fail("恢复授权前模型状态改变；保持 HOLD"); return }
         guard let intent=try? intents.load(), intent.sha==expectedSHA, intent.stage==(intent.operation==String(repeating:"0",count:64) ? binary : home+"/.anytls/.desktop-candidate-"+intent.operation), candidateSafe(intent.stage), digest(intent.stage)==expectedSHA else { fail("授权记录或候选 SHA 不匹配"); return }
+        let generation=recoveryGeneration
         run("/usr/bin/osascript",["-e",Self.authorizationScript(binary:intent.stage,uid:uid,home:home)],120) { result in
+            guard self.busy, self.recoveryGeneration==generation else { return }
             self.recordAuthorization(result); self.reconcileMigration(login:login)
         }
     }
@@ -270,7 +355,7 @@ final class DesktopRuntime {
             }; return
         }
         run(source,["desktop","migration-inspect"],12) { result in
-            guard let m=DesktopMigration.parse(result), m.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), m.phase=="AWAITING_HELPER", m.operation==intent.operation, m.stage==intent.stage else { self.fail("待授权迁移身份不匹配"); return }
+            guard let m=DesktopMigration.parse(result), m.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), m.phase=="AWAITING_HELPER", m.operation==intent.operation, m.stage==intent.stage, self.recoveryMetadataMatches(m) else { self.fail("待授权迁移身份不匹配"); return }
             intent.state="ARMED"; do { try self.intents.save(intent) } catch { self.fail("授权记录无法同步"); return }; self.authorizePending(login:login)
         }
     }
@@ -278,18 +363,29 @@ final class DesktopRuntime {
         guard let intent=try? intents.load(), intent.sha==expectedSHA else { fail("授权记录不可读或版本不匹配；保持 HOLD"); return }
         if intent.state=="ACTIVATION_UNKNOWN" { fail("组件已安装，但 VPN 恢复结果未知；须人工核实，不会自动重试启动"); return }
         if intent.operation==String(repeating:"0",count:64) || intent.state=="DONE" { inspect(allowAuthorization:false,login:login); return }
+        let generation=recoveryGeneration
         run(source,["desktop","migration-inspect"],12) { result in
+            guard self.busy, self.recoveryGeneration==generation else { return }
             let metadata=DesktopMigration.parse(result)
             let awaiting=metadata.map { $0.valid(home:self.home,uid:self.uid,sha:self.expectedSHA) && $0.operation==intent.operation && $0.stage==intent.stage && $0.phase=="AWAITING_HELPER" } ?? false
+            guard metadata.map(self.recoveryMetadataMatches) ?? !self.intents.recoveryPresent else { self.fail("恢复来源或新事务身份不匹配；保持 HOLD"); return }
             guard awaiting || (["READY","DRAINING"].contains(intent.state) && self.digest(self.binary)==self.expectedSHA) else { self.fail("迁移需要人工核实；不会重放 STOP 或授权"); return }
+            guard !self.recoveryBlocksQuit || self.recoveryActionAllowed() else { self.fail("恢复发布前模型状态改变；保持 HOLD"); return }
             // Go finish checks new protected-helper readiness before any publication.
             self.run(self.source,["desktop","migration-finish",intent.operation],20) { result in
-                guard result.code==0, let m=DesktopMigration.parse(result), m.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), m.phase=="COMMITTED", m.operation==intent.operation, self.digest(self.binary)==self.expectedSHA else { self.fail(intent.state=="DENIED" ? "系统授权已取消；可单独点击「重试已取消的授权…」" : "助手安装结果未就绪；保持未知锁定，只检查，不重新授权"); return }
+                guard self.busy, self.recoveryGeneration==generation else { return }
+                guard result.code==0, let m=DesktopMigration.parse(result), m.valid(home:self.home,uid:self.uid,sha:self.expectedSHA), m.phase=="COMMITTED", m.operation==intent.operation, self.digest(self.binary)==self.expectedSHA, self.recoveryMetadataMatches(m) else { self.fail(intent.state=="DENIED" ? "系统授权已取消；可单独点击「重试已取消的授权…」" : "助手安装结果未就绪；保持未知锁定，只检查，不重新授权"); return }
                 var ready=intent; if ready.state != "DRAINING" { ready.state="READY" }
                 do { try self.intents.save(ready) } catch { self.fail("迁移已发布但应用记录无法同步；保持 HOLD"); return }
                 self.restartMigratedConsole(ready,login:login)
             }
         }
+    }
+    private func recoveryMetadataMatches(_ m: DesktopMigration)->Bool {
+        guard intents.recoveryPresent else { return m.recovery_of==nil && m.recovery_plan_sha256==nil }
+        guard let recovery=try? intents.loadRecovery() else { return false }
+        if recovery.state=="DONE" && recovery.operation != m.operation { return m.recovery_of==nil && m.recovery_plan_sha256==nil }
+        return recovery.plan==m.plan && recovery.operation==m.operation && recovery.recoveryOf==m.recovery_of && recovery.recoveryPlanSHA==m.recovery_plan_sha256 && recovery.sha==m.binary_sha256
     }
     private func restartMigratedConsole(_ intent: DesktopAuthorizationIntent, login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
         func continueSetup() {
@@ -297,8 +393,12 @@ final class DesktopRuntime {
             self.inspect(allowAuthorization:false) { origin,secret,finished in
                 login(origin,secret) { ok in
                     guard ok else { finished(false); return }
-                    var done=intent; done.state="DONE"; done.resume=false
-                    do { try self.intents.save(done); self.setupUncertain=false } catch { finished(false); return }
+                    var done=intent; done.state="DONE"; done.resume=false; done.console=nil
+                    do {
+                        try self.intents.save(done)
+                        if var recovery=try self.intents.loadRecovery(), recovery.operation==done.operation { recovery.state="DONE"; try self.intents.saveRecovery(recovery) }
+                        self.setupUncertain=false
+                    } catch { finished(false); return }
                     finished(true)
                     if intent.resume { self.onMigrationResume?() }
                 }

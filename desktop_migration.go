@@ -3,33 +3,39 @@ package main
 // Narrow, explicit canonical-install upgrade. Never installs a helper, starts
 // VPN, restarts a console, removes unknown leaves, or replays an uncertain STOP.
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
+
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 )
 
 type desktopMigrationMetadata struct {
-	Schema          int    `json:"schema"`
-	Phase           string `json:"phase"`
-	Plan            string `json:"plan"`
-	Operation       string `json:"operation,omitempty"`
-	Binary          string `json:"binary"`
-	Config          string `json:"config"`
-	ConfigIdentity  string `json:"config_identity"`
-	BinarySHA256    string `json:"binary_sha256"`
-	OldBinarySHA256 string `json:"old_binary_sha256"`
-	HelperSHA256    string `json:"helper_sha256"`
-	HelperVersion   string `json:"helper_version"`
-	Stage           string `json:"stage,omitempty"`
-	UID             int    `json:"uid"`
-	Home            string `json:"home"`
-	WasRunning      bool   `json:"was_running"`
+	Schema             int    `json:"schema"`
+	Phase              string `json:"phase"`
+	Plan               string `json:"plan"`
+	Operation          string `json:"operation,omitempty"`
+	Binary             string `json:"binary"`
+	Config             string `json:"config"`
+	ConfigIdentity     string `json:"config_identity"`
+	BinarySHA256       string `json:"binary_sha256"`
+	OldBinarySHA256    string `json:"old_binary_sha256"`
+	HelperSHA256       string `json:"helper_sha256"`
+	HelperVersion      string `json:"helper_version"`
+	Stage              string `json:"stage,omitempty"`
+	UID                int    `json:"uid"`
+	Home               string `json:"home"`
+	WasRunning         bool   `json:"was_running"`
+	RecoveryOf         string `json:"recovery_of,omitempty"`
+	RecoveryPlanSHA256 string `json:"recovery_plan_sha256,omitempty"`
 }
 
 // Private fingerprints include credential bytes only in an aggregate digest.
@@ -44,17 +50,24 @@ type desktopMigrationPin struct {
 	RootMode   uint32
 }
 type desktopMigrationRecord struct {
-	Metadata     desktopMigrationMetadata
-	Pin          desktopMigrationPin
-	WasLoaded    bool
-	Action       string
-	BackupSHA256 string
+	EvidenceSchema     int
+	Metadata           desktopMigrationMetadata
+	Pin                desktopMigrationPin
+	WasLoaded          bool
+	Action             string
+	BackupSHA256       string
+	StopOperation      string                    `json:",omitempty"`
+	StopResponseSHA256 string                    `json:",omitempty"`
+	StopReadSHA256     string                    `json:",omitempty"`
+	StopDisposition    string                    `json:",omitempty"`
+	Recovery           *desktopMigrationRecovery `json:",omitempty"`
 }
 type desktopMigration struct {
 	home, source string
 	uid          int
 	status       func(context.Context) (controlHelperResponse, error)
-	stop         func(context.Context) (controlHelperResponse, error)
+	stop         func(context.Context, string) (st.MutationResponse, error)
+	stopRead     func(context.Context, *string) (st.ReadResponse, error)
 	journal      func(string, []byte, os.FileMode) error // fixture fault seam; production uses the fixed atomic writer
 }
 
@@ -134,6 +147,7 @@ func (m desktopMigration) capture() (desktopMigrationRecord, error) {
 	}
 	st := s.Sys().(*syscall.Stat_t)
 	a := anchor.Sys().(*syscall.Stat_t)
+	r.EvidenceSchema = 2
 	r.Pin = desktopMigrationPin{desktopSum(aggregate), uint64(st.Dev), uint64(st.Ino), uint32(s.Mode()), uint64(a.Dev), uint64(a.Ino), uint32(anchor.Mode())}
 	r.Metadata = desktopMigrationMetadata{Schema: 1, Phase: "INSPECTED", Binary: target, Config: filepath.Join(root, "config.yaml"), BinarySHA256: desktopSum(image), OldBinarySHA256: desktopSum(old), UID: m.uid, Home: m.home}
 	r.Metadata.ConfigIdentity = desktopSum([]byte(r.Metadata.Config))
@@ -185,53 +199,54 @@ func migrationSync(path string) error {
 	return errors.Join(f.Sync(), f.Close())
 }
 func (m desktopMigration) pending(except string) error {
-	root := filepath.Join(m.home, ".anytls")
-	entries, e := os.ReadDir(root)
-	if e != nil {
-		return desktopError("MIGRATION_HOLD")
-	}
-	for _, entry := range entries {
-		n := entry.Name()
-		if strings.HasPrefix(n, ".core-reload-") {
-			if err := m.reloadTerminal(n); err != nil {
-				return err
-			}
-			continue
-		}
-		if !strings.HasPrefix(n, ".desktop-migration-") {
-			continue
-		}
-		op := strings.TrimPrefix(n, ".desktop-migration-")
-		if op == except {
-			continue
-		}
-		if !desktopMigrationToken(op) {
-			return desktopError("HOLD_PENDING")
-		}
-		r, e := m.record(op)
-		if e != nil {
-			return desktopError("HOLD_PENDING")
-		}
-		if r.Metadata.Phase != "COMMITTED" {
-			if r.Metadata.Phase == "STOP_SENT" || r.Metadata.Phase == "UNKNOWN" || r.Metadata.Phase == "PUBLISHING" {
-				return desktopError("MIGRATION_UNKNOWN")
-			}
-			return desktopError("HOLD_PENDING")
-		}
-	}
-	return nil
+	return m.recoveryPending(except)
 }
 func (m desktopMigration) inspect() (desktopMigrationMetadata, error) {
 	var p desktopMigrationMetadata
 	if _, e := desktopBase(m.home, m.uid, false); e != nil {
 		return p, e
 	}
+	// Inspect committed recovery even after backend terminal admission succeeds:
+	// the App may have lost its own DONE persistence. Exactly one candidate may
+	// be exposed, and publication/readiness plus every unrelated record must
+	// still validate. Never return invalid COMMITTED metadata via fallback.
+	if records, err := m.recoveryRecords(); err == nil {
+		var committed *desktopMigrationRecord
+		for _, r := range records {
+			if r.Recovery != nil && r.Metadata.Phase == "COMMITTED" {
+				if committed != nil {
+					return p, migrationRecoveryHold
+				}
+				copy := r
+				committed = &copy
+			}
+		}
+		if committed != nil {
+			if err = m.recoveryPublished(*committed, records); err != nil {
+				return p, err
+			}
+			// Preserve dispatcher semantics: HOLD produces nested metadata and
+			// nonzero status; admitted terminal recovery produces flat code0.
+			return committed.Metadata, m.pending("")
+		}
+	}
 	if e := m.pending(""); e != nil {
+		// Prefer the exact active recovery only after its durable proof and all
+		// other pending records validate; old UNKNOWN remains visible on disk.
+		if records, err := m.recoveryRecords(); err == nil {
+			for op, r := range records {
+				if r.Recovery != nil && r.Metadata.Phase == "AWAITING_HELPER" && m.pending(op) == nil {
+					return r.Metadata, e
+				}
+			}
+		}
 		// Read-only recovery metadata. No authority to repair/replay a phase.
-		entries, _ := os.ReadDir(filepath.Join(m.home, ".anytls"))
-		for _, entry := range entries {
-			op := strings.TrimPrefix(entry.Name(), ".desktop-migration-")
-			if r, readErr := m.record(op); readErr == nil && r.Metadata.Phase != "COMMITTED" {
+		records, readErr := m.recoveryRecords()
+		if readErr != nil {
+			return p, e
+		}
+		for _, r := range records {
+			if r.Metadata.Phase != "COMMITTED" {
 				return r.Metadata, e
 			}
 		}
@@ -283,24 +298,78 @@ func (m desktopMigration) record(op string) (desktopMigrationRecord, error) {
 	if _, e := desktopFile(path, m.uid, 0600); e != nil {
 		return r, desktopError("HOLD_PENDING")
 	}
-	b, e := controlInstallCapture(path)
-	if e != nil || json.Unmarshal(b, &r) != nil {
+	b, _, e := reloadCapture(path, m.uid)
+	tree, strictErr := reloadJSON(b)
+	if e != nil || strictErr != nil || json.Unmarshal(b, &r) != nil {
+		return r, desktopError("HOLD_PENDING")
+	}
+	// Exact closed keys at every depth, not encoding/json's case aliases.
+	normalized, _ := json.Marshal(r)
+	canonical, canonicalErr := reloadJSON(normalized)
+	if r.EvidenceSchema == 0 {
+		delete(canonical, "EvidenceSchema")
+		if _, exists := tree["EvidenceSchema"]; exists {
+			return r, desktopError("HOLD_PENDING")
+		}
+		if r.StopOperation != "" || r.StopResponseSHA256 != "" || r.StopReadSHA256 != "" || r.StopDisposition != "" || r.Recovery != nil {
+			return r, desktopError("HOLD_PENDING")
+		}
+		entries, err := migrationMembers(dir, 3)
+		if err != nil || len(entries) < 2 || len(entries) > 3 {
+			return r, desktopError("HOLD_PENDING")
+		}
+		for _, v := range entries {
+			if v.Name() != "plan.json" && v.Name() != ".sent" && v.Name() != "old-binary" {
+				return r, desktopError("HOLD_PENDING")
+			}
+		}
+		sent, _, err := reloadCapture(filepath.Join(dir, ".sent"), m.uid)
+		if err != nil || string(sent) != "STOP\n" {
+			return r, desktopError("HOLD_PENDING")
+		}
+		needsBackup := r.Metadata.Phase == "AWAITING_HELPER" || r.Metadata.Phase == "PUBLISHING" || r.Metadata.Phase == "COMMITTED"
+		if needsBackup && (len(entries) != 3 || r.BackupSHA256 != r.Metadata.OldBinarySHA256) {
+			return r, desktopError("HOLD_PENDING")
+		}
+	} else if r.EvidenceSchema != 2 || !reloadID.MatchString(r.StopOperation) {
+		return r, desktopError("HOLD_PENDING")
+	} else {
+		marker, _, err := reloadCapture(filepath.Join(dir, "evidence-schema"), m.uid)
+		if err != nil || string(marker) != "2\n" {
+			return r, desktopError("HOLD_PENDING")
+		}
+	}
+	if canonicalErr != nil || !reflect.DeepEqual(tree, canonical) {
 		return r, desktopError("HOLD_PENDING")
 	}
 	p := r.Metadata
+	if p.Phase != "UNKNOWN" && p.Phase != "STOP_SENT" && p.Phase != "STOP_VERIFIED" && p.Phase != "AWAITING_HELPER" && p.Phase != "PUBLISHING" && p.Phase != "COMMITTED" {
+		return r, desktopError("HOLD_PENDING")
+	}
 	root := filepath.Dir(dir)
 	if r.Action != "STOP" || p.Schema != 1 || p.Operation != op || p.Home != m.home || p.UID != m.uid || p.Binary != filepath.Join(root, "anytls-macos") || p.Config != filepath.Join(root, "config.yaml") || p.ConfigIdentity != desktopSum([]byte(p.Config)) || p.Stage != filepath.Join(root, ".desktop-candidate-"+op) || !desktopMigrationToken(p.Plan) || !desktopMigrationToken(p.BinarySHA256) || !desktopMigrationToken(p.OldBinarySHA256) {
+		return r, desktopError("HOLD_PENDING")
+	}
+	if r.StopOperation != "" && (!reloadID.MatchString(r.StopOperation) || ((p.Phase == "AWAITING_HELPER" || p.Phase == "COMMITTED") && m.stopEvidence(r) != nil)) {
 		return r, desktopError("HOLD_PENDING")
 	}
 	return r, nil
 }
 func (m desktopMigration) save(r desktopMigrationRecord) error {
 	b, _ := json.Marshal(r)
+	if r.EvidenceSchema == 0 {
+		b = bytes.Replace(b, []byte(`"EvidenceSchema":0,`), nil, 1)
+	}
 	write := m.journal
 	if write == nil {
 		write = controlInstallAtomic
 	}
-	if e := write(filepath.Join(m.opPath(r.Metadata.Operation), "plan.json"), b, 0600); e != nil {
+	path := filepath.Join(m.opPath(r.Metadata.Operation), "plan.json")
+	if e := write(path, b, 0600); e != nil {
+		return desktopError("JOURNAL_UNCERTAIN")
+	}
+	actual, _, e := reloadCapture(path, m.uid)
+	if e != nil || !bytes.Equal(actual, b) {
 		return desktopError("JOURNAL_UNCERTAIN")
 	}
 	return nil
@@ -313,6 +382,11 @@ func migrationAck(r controlHelperResponse) bool {
 	return d.Schema == 1 && d.Operation == "STOP" && d.Outcome == "SUCCEEDED" && (d.Restoration == "VERIFIED" || d.Restoration == "NOT_ATTEMPTED") && (d.Cleanup == "VERIFIED" || d.Cleanup == "NOT_ATTEMPTED") && (d.Receipt == "WRITTEN" || d.Receipt == "NOT_ATTEMPTED")
 }
 func (m desktopMigration) unchanged(r desktopMigrationRecord) error {
+	if r.Recovery != nil {
+		if e := m.recoveryLink(r); e != nil {
+			return e
+		}
+	}
 	now, e := m.capture()
 	if e != nil || now.Pin != r.Pin || now.Metadata.OldBinarySHA256 != r.Metadata.OldBinarySHA256 || now.Metadata.BinarySHA256 != r.Metadata.BinarySHA256 {
 		return desktopError("PLAN_CHANGED")
@@ -320,6 +394,9 @@ func (m desktopMigration) unchanged(r desktopMigrationRecord) error {
 	return nil
 }
 func (m desktopMigration) commit(plan string) (desktopMigrationMetadata, error) {
+	return m.commitMigration(plan, false)
+}
+func (m desktopMigration) commitMigration(plan string, recovery bool) (desktopMigrationMetadata, error) {
 	var empty desktopMigrationMetadata
 	if !desktopMigrationToken(plan) {
 		return empty, desktopError("INVALID_COMMAND")
@@ -329,15 +406,25 @@ func (m desktopMigration) commit(plan string) (desktopMigrationMetadata, error) 
 		return empty, e
 	}
 	defer lock.Close()
-	if e = m.pending(""); e != nil {
-		return empty, e
+	var r desktopMigrationRecord
+	if recovery {
+		r, e = m.recoveryPreview()
+	} else {
+		e = m.pending("")
+		if e == nil {
+			r, e = m.preflight()
+		}
 	}
-	r, e := m.preflight()
 	if e != nil {
 		return empty, e
 	}
 	if r.Metadata.Plan != plan {
 		return empty, desktopError("PLAN_CHANGED")
+	}
+	if recovery {
+		if e = m.recoveryAuthorizationSafe(); e != nil {
+			return empty, e
+		}
 	}
 	op, e := webRandom(32)
 	if e != nil {
@@ -382,6 +469,17 @@ func (m desktopMigration) commit(plan string) (desktopMigrationMetadata, error) 
 	// sticky UNKNOWN after a crash; plain stopped status never repairs it.
 	r.Metadata.Phase = "STOP_SENT"
 	r.Action = "STOP"
+	r.StopOperation, e = st.NewID()
+	if e != nil {
+		return empty, desktopError("OP_CREATE_FAILED")
+	}
+	schemaAnchor, err := desktopDir(dir, m.uid, true)
+	if err != nil {
+		return empty, err
+	}
+	if e = desktopPublish(dir, "evidence-schema", []byte("2\n"), 0600, schemaAnchor); e != nil {
+		return empty, e
+	}
 	if e = m.save(r); e != nil {
 		return empty, e
 	}
@@ -395,15 +493,36 @@ func (m desktopMigration) commit(plan string) (desktopMigrationMetadata, error) 
 	if e = desktopPublish(dir, ".sent", []byte("STOP\n"), 0600, privateIntent); e != nil {
 		return empty, desktopError("JOURNAL_UNCERTAIN")
 	}
+	if r.Recovery != nil {
+		if e = m.recoveryBeforeStop(r); e != nil {
+			return empty, e
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	ack, stopErr := m.stop(ctx)
+	ack, stopErr := m.stop(ctx, r.StopOperation)
+	var read st.ReadResponse
+	if stopErr == nil {
+		stopErr = m.retainStop(&r, "stop-response.json", ack)
+		if stopErr == nil {
+			read, stopErr = m.stopRead(ctx, &r.StopOperation)
+		}
+		if stopErr == nil {
+			stopErr = m.retainStop(&r, "stop-read.json", read)
+		}
+		if stopErr == nil {
+			stopErr = m.save(r)
+		}
+	}
 	cancel()
-	if stopErr == nil && migrationBound(ack, r.Metadata, r.Metadata.HelperSHA256) && migrationAck(ack) {
+	if stopErr == nil && migrationStopProof(r, ack, read) {
+		if r.Recovery != nil {
+			r.StopDisposition = migrationRecoveryDisposition(ack)
+		}
 		h, e = m.helper()
 	} else {
 		e = desktopError("MIGRATION_UNKNOWN")
 	}
-	if e != nil || !migrationBound(h, r.Metadata, r.Metadata.HelperSHA256) || !migrationStopped(h) {
+	if e != nil || !migrationBound(h, r.Metadata, r.Metadata.HelperSHA256) || h.HelperVersion != r.Metadata.HelperVersion || !migrationStopped(h) {
 		r.Metadata.Phase = "UNKNOWN"
 		_ = m.save(r)
 		return empty, desktopError("MIGRATION_UNKNOWN")
@@ -413,6 +532,9 @@ func (m desktopMigration) commit(plan string) (desktopMigrationMetadata, error) 
 		return empty, e
 	}
 	if e = m.unchanged(r); e != nil {
+		return empty, e
+	}
+	if e = m.stopEvidence(r); e != nil {
 		return empty, e
 	}
 	old, e := controlInstallCapture(r.Metadata.Binary)
@@ -516,13 +638,18 @@ func (m desktopMigration) finish(op string) (desktopMigrationMetadata, error) {
 		return empty, e
 	}
 	h, e = m.helper()
-	if e != nil || !migrationBound(h, r.Metadata, r.Metadata.BinarySHA256) || !migrationStopped(h) {
+	if e != nil || !migrationBound(h, r.Metadata, r.Metadata.BinarySHA256) || !migrationStopped(h) || h.HelperVersion != currentVersion() {
 		return empty, desktopError("NEW_HELPER_NOT_READY")
 	}
 	if e = m.unchanged(r); e != nil {
 		return empty, e
 	}
 	r.Metadata.Phase = "PUBLISHING"
+	if r.StopOperation != "" {
+		if e = m.stopEvidence(r); e != nil {
+			return empty, e
+		}
+	}
 	if e = m.save(r); e != nil {
 		return empty, e
 	}
@@ -539,11 +666,16 @@ func (m desktopMigration) finish(op string) (desktopMigrationMetadata, error) {
 	if e = m.save(r); e != nil {
 		return empty, desktopError("MIGRATION_UNKNOWN")
 	}
+	if r.Recovery != nil {
+		if e = m.writeRecoveryTerminal(r); e != nil {
+			return empty, e
+		}
+	}
 	return r.Metadata, nil
 }
 func desktopMigrationRun(args []string, home, source string, uid int) (desktopMigrationMetadata, error) {
-	m := desktopMigration{home: home, source: source, uid: uid, status: controlInstallStatus, stop: func(ctx context.Context) (controlHelperResponse, error) {
-		return controlHelperRequest(ctx, "stop", false)
+	m := desktopMigration{home: home, source: source, uid: uid, status: controlInstallStatus, stopRead: startupRead, stop: func(ctx context.Context, op string) (st.MutationResponse, error) {
+		return startupControl(ctx, "stop", false, op)
 	}}
 	if _, err := m.sourceImage(); err != nil {
 		return desktopMigrationMetadata{}, err
@@ -551,6 +683,12 @@ func desktopMigrationRun(args []string, home, source string, uid int) (desktopMi
 	switch args[0] {
 	case "migration-inspect":
 		return m.inspect()
+	case "migration-recovery-inspect":
+		return m.recoveryInspect()
+	case "migration-recovery-commit":
+		return m.commitMigration(args[1], true)
+	case "migration-recovery-finalize":
+		return m.recoveryFinalize(args[1])
 	case "migration-commit":
 		return m.commit(args[1])
 	case "migration-finish":

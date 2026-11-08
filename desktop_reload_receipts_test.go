@@ -562,7 +562,23 @@ func TestDesktopReloadJournalSymlinkAndOwner(t *testing.T) {
 			case "uid":
 				m.uid++
 			case "setuid":
-				os.Chmod(filepath.Join(dir, "claim.json"), os.ModeSetuid|0600)
+				p := filepath.Join(dir, "claim.json")
+				before, e := os.Lstat(p)
+				if e != nil || before.Mode() != 0600 {
+					t.Fatal("setuid fixture must exist as a regular 0600 file", e)
+				}
+				if e = m.pending(""); e != nil {
+					t.Fatal("setuid fixture positive baseline", e)
+				}
+				if e = os.Chmod(p, os.ModeSetuid|0600); e != nil {
+					t.Fatal("setuid fixture chmod", e)
+				}
+				// A sandbox can silently strip set-ID bits despite chmod success.
+				// Require the actual unsafe file before testing the reader's guard.
+				after, e := os.Lstat(p)
+				if e != nil || !os.SameFile(before, after) || after.Mode() != os.ModeSetuid|0600 {
+					t.Fatal("setuid fixture mode not retained", after, e)
+				}
 			case "many-files":
 				for n := 0; n < 65; n++ {
 					os.WriteFile(filepath.Join(dir, strconv.Itoa(n)), nil, 0600)

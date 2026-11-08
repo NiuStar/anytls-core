@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,11 +32,14 @@ func migrationFixture(t *testing.T) (desktopMigration, *controlHelperResponse, *
 	calls := new(int)
 	m := desktopMigration{home: home, source: source, uid: os.Getuid()}
 	m.status = func(context.Context) (controlHelperResponse, error) { return *r, nil }
-	m.stop = func(context.Context) (controlHelperResponse, error) {
+	m.stop = func(_ context.Context, op string) (st.MutationResponse, error) {
 		*calls++
 		r.Loaded = false
 		r.Running = false
-		return *r, nil
+		return migrationFixtureAck(*r, op), nil
+	}
+	m.stopRead = func(_ context.Context, op *string) (st.ReadResponse, error) {
+		return migrationFixtureRead(migrationFixtureAck(*r, *op)), nil
 	}
 	return m, r, calls
 }
@@ -62,7 +66,7 @@ func TestDesktopMigrationTransaction(t *testing.T) {
 				t.Fatal("secret exported")
 			}
 			originalStop := m.stop
-			m.stop = func(ctx context.Context) (controlHelperResponse, error) {
+			m.stop = func(ctx context.Context, op string) (st.MutationResponse, error) {
 				entries, _ := filepath.Glob(filepath.Join(root, ".desktop-migration-*", "plan.json"))
 				if len(entries) != 1 {
 					t.Fatal("intent not durable before STOP")
@@ -75,7 +79,7 @@ func TestDesktopMigrationTransaction(t *testing.T) {
 				if string(old) != "old image" {
 					t.Fatal("published before STOP")
 				}
-				return originalStop(ctx)
+				return originalStop(ctx, op)
 			}
 			p, e = m.commit(p.Plan)
 			if e != nil {
@@ -134,10 +138,10 @@ func TestDesktopMigrationStopUncertaintyNoReplay(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			m.stop = func(context.Context) (controlHelperResponse, error) {
+			m.stop = func(_ context.Context, op string) (st.MutationResponse, error) {
 				*calls++
 				if kind == "timeout" {
-					return controlHelperResponse{}, context.DeadlineExceeded
+					return st.MutationResponse{}, context.DeadlineExceeded
 				}
 				v := *r
 				v.Loaded = false
@@ -149,7 +153,7 @@ func TestDesktopMigrationStopUncertaintyNoReplay(t *testing.T) {
 				if kind == "identity" {
 					v.ConfigIdentity = strings.Repeat("a", 64)
 				}
-				return v, nil
+				return migrationFixtureAck(v, op), nil
 			}
 			_, e = m.commit(p.Plan)
 			if e == nil {
