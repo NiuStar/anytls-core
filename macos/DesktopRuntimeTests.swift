@@ -23,7 +23,7 @@ private final class DesktopHTTP: URLProtocol {
         case "/api/v1/service/start": Self.starts += 1; if Self.unknownStart { client?.urlProtocol(self,didFailWithError:URLError(.timedOut)); return }; Self.running=true; body=["ok":true,"running":true,"loaded":true]
         case "/api/v1/status": body=["loaded":Self.running,"running":Self.running,"availability":"AVAILABLE","version":"fixture","listenHost":"0.0.0.0"]
         case "/api/v1/helper/status": body=["available":true]
-        case "/api/v1/nodes": body=["nodes":[],"etag":"fixture"]
+        case "/api/v1/nodes": body=["nodes":[],"etag":"\""+String(repeating:"a",count:64)+"\""]
         case "/api/v1/traffic": body=[:]
         case "/api/v1/service/stop": Self.posts += 1; if Self.deny { status=403; body=["error":"REJECTED"] } else { Self.running=false; body=["ok":true,"running":false,"loaded":false] }
         default: fatalError("Unexpected fixture route")
@@ -675,6 +675,28 @@ private final class DesktopHTTP: URLProtocol {
         check(!activeRuntime.recoveryAllowed && activeDispatches==0,"existing helper authorization ARMED refuses explicit recovery before inspection")
         let refreshBefore=lostCalls.count; lostRuntime.refreshRecovery()
         check(Array(lostCalls.dropFirst(refreshBefore))==[["desktop","migration-inspect"]] && (try? lostRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","explicit refresh is read-only inspection and preserves recovery UNKNOWN")
+        // A prior DONE recovery is disjoint from today's ordinary pending
+        // authorization, and missing Go metadata must not invent identity drift.
+        for pendingWire in [false,true] {
+            let stateRoot=root.appendingPathComponent(pendingWire ? "ordinary-after-done" : "ordinary-after-done-no-metadata").path
+            let stateStore=DesktopIntentStore(home:home,fixtureRoot:stateRoot)
+            var pendingIntent=sample; pendingIntent.state="UNKNOWN"; pendingIntent.resume=false; try stateStore.save(pendingIntent)
+            try stateStore.saveRecovery(DesktopRecoveryIntent(state:"DONE",plan:String(repeating:"d",count:64),recoveryOf:oldOperation,recoveryPlanSHA:oldRawSHA,sha:old,console:nil,operation:String(repeating:"7",count:64)))
+            let beforeAuth=try Data(contentsOf:URL(fileURLWithPath:stateRoot+"/authorization.json"))
+            let beforeRecovery=try Data(contentsOf:URL(fileURLWithPath:stateRoot+"/recovery.json"))
+            var commands=[[String]]()
+            let runtime=DesktopRuntime(bundle:app.path,home:home,uid:uid,run:{ _,args,_,done in
+                commands.append(args)
+                if args==["desktop","migration-inspect"], pendingWire {
+                    var body=try! JSONSerialization.jsonObject(with:recoveryBody("AWAITING_HELPER")) as! [String:Any]
+                    body.removeValue(forKey:"recovery_of"); body.removeValue(forKey:"recovery_plan_sha256")
+                    done(DesktopCommandResult(code:1,data:try! JSONSerialization.data(withJSONObject:["schema":1,"error":"HOLD_PENDING","migration":body]),timedOut:false))
+                } else { done(DesktopCommandResult(code:1,data:Data("{\"schema\":1,\"error\":\"RECOVERY_HOLD\"}".utf8),timedOut:false)) }
+            },exists:{$0==binary},digest:{$0==binary ? old : sha},fixtureStateRoot:stateRoot)
+            runtime.initialize(login:login)
+            check(commands == (pendingWire ? [["desktop","migration-inspect"],["desktop","migration-finish",op]] : [["desktop","migration-inspect"]]),"ordinary pending with old DONE inspects exact continuation without STOP authorization or START replay: \(pendingWire)")
+            check(runtime.blocksQuit && !runtime.message.contains("恢复来源或新事务身份不匹配") && (try? Data(contentsOf:URL(fileURLWithPath:stateRoot+"/authorization.json")))==beforeAuth && (try? Data(contentsOf:URL(fileURLWithPath:stateRoot+"/recovery.json")))==beforeRecovery,"ordinary pending and disjoint DONE remain unchanged without false recovery identity diagnosis: \(pendingWire)")
+        }
         let forbidden=DesktopCommandResult(code:0,data:Data("{\"schema\":1,\"schema\":1}".utf8),timedOut:false)
         check(DesktopMigration.parse(forbidden)==nil,"recovery continuation rejects duplicate metadata keys before Foundation folding")
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"systemAuthorization":"NOT_RUN","productionChanges":false],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("desktop-checks.json"))

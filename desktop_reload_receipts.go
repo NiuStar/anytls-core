@@ -422,7 +422,7 @@ func reloadReconciled(files map[string][]byte, app, op string) bool {
 // Fail closed on filesystem-resolving sentinels, including aliases not covered
 // by Unicode simple folding. Lstat also sees dangling symlinks; errors hold.
 func reloadSentinelsAbsent(dir string) bool {
-	for _, n := range []string{"pending.json", "operator-reconciled.json"} {
+	for _, n := range []string{"pending.json"} {
 		if _, e := os.Lstat(filepath.Join(dir, n)); !os.IsNotExist(e) {
 			return false
 		}
@@ -468,7 +468,7 @@ func (m desktopMigration) reloadTerminal(name string) error {
 	total := 0
 	for _, entry := range entries {
 		n := entry.Name()
-		if n == "pending.json" || n == "operator-reconciled.json" {
+		if n == "pending.json" {
 			return reloadInvalid
 		}
 		// Reserved names cannot become ancillary authority through case aliases,
@@ -488,7 +488,11 @@ func (m desktopMigration) reloadTerminal(name string) error {
 		}
 		files[n], stamps[n] = raw, st
 	}
-	if _, ok := files["accepted.json"]; ok {
+	if _, ok := files["operator-reconciled.json"]; ok {
+		if files["accepted.json"] != nil || files["reconciled.json"] != nil || !reloadOperator(files, app, op) {
+			return reloadInvalid
+		}
+	} else if _, ok := files["accepted.json"]; ok {
 		if files["reconciled.json"] != nil || !reloadAccepted(files, app, op) {
 			return reloadInvalid
 		}

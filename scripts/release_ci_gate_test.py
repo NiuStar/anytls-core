@@ -16,7 +16,10 @@ TAG = "v2026-11-05-01"
 WORKFLOW = {"id": 42, "name": "CI", "path": gate.WORKFLOW_PATH, "state": "active"}
 RUN = {"id": 71, "workflow_id": 42, "name": "CI", "path": gate.WORKFLOW_PATH,
        "head_sha": SHA, "head_branch": TAG, "event": "push", "run_attempt": 1,
-       "status": "completed", "conclusion": "success"}
+       "status": "completed", "conclusion": "success",
+       # Synthetic API metadata, not a recorded GitHub response.
+       "repository": {"full_name": "owner/repo"},
+       "head_repository": {"full_name": "owner/repo"}}
 JOBS = [{"id": i, "name": name, "run_id": 71, "head_sha": SHA,
          "status": "completed", "conclusion": "success"}
         for i, name in enumerate(sorted(gate.EXPECTED_JOBS), 101)]
@@ -154,6 +157,77 @@ class GateTests(unittest.TestCase):
                 self.http.run[key] = value
                 self.blocked("identity mismatch")
 
+    def test_foreign_run_repositories_block(self):
+        for key in ("repository", "head_repository"):
+            with self.subTest(key=key):
+                self.http.run = copy.deepcopy(RUN)
+                self.http.run[key] = {"full_name": "foreign/repository"}
+                self.blocked("CI run repository identity mismatch")
+                self.assertFalse(self.clock.sleeps)
+                self.assertFalse(any("/jobs" in r.full_url for r, _ in self.http.requests))
+
+    def test_missing_or_malformed_run_repositories_block(self):
+        missing = object()
+        for key in ("repository", "head_repository"):
+            for value in (missing, None, [], "owner/repo", True, 1, {},
+                          {"full_name": None}, {"full_name": []}, {"full_name": {}},
+                          {"full_name": True}, {"full_name": 1}, {"full_name": ""},
+                          {"full_name": "Owner/repo"}, {"full_name": "owner/Repo"},
+                          {"full_name": "owner/repo "}):
+                with self.subTest(key=key, value=value):
+                    self.http.run = copy.deepcopy(RUN)
+                    if value is missing:
+                        self.http.run.pop(key)
+                    else:
+                        self.http.run[key] = value
+                    self.blocked("^CI run repository identity mismatch$")
+                    self.assertFalse(self.clock.sleeps)
+                    self.assertFalse(any("/jobs" in r.full_url for r, _ in self.http.requests))
+
+    def test_original_attempt_required_in_all_initial_run_states(self):
+        missing = object()
+        for status, conclusion in (("completed", "success"), ("queued", None),
+                                   ("in_progress", None)):
+            for value in (missing, None, True, False, 0, -1, "1", 1.0, 2, 3):
+                with self.subTest(status=status, attempt=value):
+                    self.http.run = copy.deepcopy(RUN)
+                    self.http.run.update(status=status, conclusion=conclusion)
+                    if value is missing:
+                        self.http.run.pop("run_attempt")
+                    else:
+                        self.http.run["run_attempt"] = value
+                    self.blocked("numeric identity|original attempt 1")
+                    self.assertFalse(self.clock.sleeps)
+                    self.assertFalse(any("/jobs" in r.full_url for r, _ in self.http.requests))
+
+    def test_run_identity_drift_after_pending_retry_or_pagination_blocks(self):
+        for seam in ("pending", "retry", "pagination"):
+            for key in ("repository", "head_repository", "run_attempt"):
+                with self.subTest(seam=seam, key=key):
+                    self.clock, self.http, self.logs = FakeClock(), HTTP(), []
+                    self.http.run.update(status="in_progress", conclusion=None)
+                    job_pages = []
+                    def handle(path, query):
+                        if path.endswith("/jobs"):
+                            job_pages.append(int(query["page"][0]))
+                            if seam == "retry":
+                                raise urllib.error.URLError("synthetic offline retry")
+                            if seam == "pagination":
+                                batch = JOBS[:2] if job_pages[-1] == 1 else JOBS[2:]
+                                return io.BytesIO(json.dumps({"total_count": 3, "jobs": batch}).encode())
+                    self.http.handler = handle
+                    def advance(seconds):
+                        FakeClock.sleep(self.clock, seconds)
+                        self.http.run.update(status="completed", conclusion="success")
+                        self.http.run[key] = 2 if key == "run_attempt" else {"full_name": "foreign/repository"}
+                    self.clock.sleep = advance
+                    self.blocked("attempt changed|repository identity mismatch")
+                    self.assertEqual(self.http.polls, 2)
+                    self.assertEqual(self.clock.sleeps, [2])
+                    self.assertEqual(job_pages, [1, 2] if seam == "pagination" else [1])
+                    if seam == "retry":
+                        self.assertTrue(any("retrying within fixed deadline" in line for line in self.logs))
+
     def test_workflow_identity_fields_are_all_required(self):
         for key, value in (("name", "Other"), ("path", "ci.yml"), ("state", "disabled_manually"), ("id", True)):
             with self.subTest(key=key):
@@ -231,6 +305,16 @@ class GateTests(unittest.TestCase):
         for status, conclusion in (("unknown", None), ("queued", "success")):
             self.http.jobs[0].update(status=status, conclusion=conclusion)
             self.blocked("malformed state")
+
+    def test_first_observed_attempt_two_blocks(self):
+        self.http.run["run_attempt"] = 2
+        # Serve valid attempt-two jobs, reproducing preflight's actual wait() gap.
+        self.http.handler = lambda p, q: io.BytesIO(json.dumps({
+            "total_count": len(self.http.jobs), "jobs": self.http.jobs,
+        }).encode()) if p == "actions/runs/71/attempts/2/jobs" else None
+        self.blocked("CI run must use original attempt 1")
+        self.assertFalse(self.clock.sleeps)
+        self.assertFalse(any("/jobs" in r.full_url for r, _ in self.http.requests))
 
     def test_run_attempt_change_does_not_replay_acceptance(self):
         self.http.jobs[0].update(status="queued", conclusion=None)

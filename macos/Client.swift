@@ -19,6 +19,12 @@ final class APIClient {
     private let redirect = NoRedirect()
     private let configuration: () -> URLSessionConfiguration
     private var owners: [String: UUID] = [:]
+    private var tasks: [String: URLSessionDataTask] = [:]
+    func cancelProbe() {
+        for key in owners.keys.filter({ $0 == "/nodes/probe" || $0.hasPrefix("/nodes/probe#") }) {
+            owners.removeValue(forKey:key); tasks.removeValue(forKey:key)?.cancel()
+        }
+    }
     init(endpoint: LocalEndpoint, configuration: @escaping () -> URLSessionConfiguration = { .ephemeral }) {
         self.endpoint=endpoint; self.configuration=configuration; newSession()
     }
@@ -34,7 +40,7 @@ final class APIClient {
     var authenticated: Bool { !csrf.isEmpty && (expires.map { $0 > Date() } ?? false) }
     func reset(endpoint: LocalEndpoint? = nil) {
         dispatchPrecondition(condition:.onQueue(.main))
-        generation += 1; csrf=""; expires=nil; owners.removeAll()
+        generation += 1; csrf=""; expires=nil; owners.removeAll(); tasks.removeAll()
         session.configuration.httpCookieStorage?.removeCookies(since:.distantPast)
         session.invalidateAndCancel()
         if let endpoint=endpoint { self.endpoint=endpoint }
@@ -56,12 +62,13 @@ final class APIClient {
     }
     @discardableResult
     func request(_ path: String, method: String = "GET", body: [String: Any]? = nil, etag: String? = nil,
-                 allowUnauthenticated: Bool = false, completion: @escaping (Result<APIReply, Error>) -> Void) -> Bool {
+                 requestIdentity: String? = nil, allowUnauthenticated: Bool = false, completion: @escaping (Result<APIReply, Error>) -> Void) -> Bool {
         dispatchPrecondition(condition:.onQueue(.main))
-        guard owners[path] == nil else { return false }
+        let key = path == "/nodes/probe" ? path+"#"+(requestIdentity ?? "single") : path
+        guard owners[key] == nil else { return false }
         guard allowUnauthenticated || authenticated else { completion(.failure(ClientError.unauthenticated)); return false }
         let owner=UUID(), epoch=generation
-        owners[path]=owner
+        owners[key]=owner
         var request=URLRequest(url:URL(string:endpoint.origin+"/api/v1"+path)!)
         request.httpMethod=method; request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(endpoint.origin,forHTTPHeaderField:"Origin")
@@ -71,11 +78,11 @@ final class APIClient {
         if method != "GET" { request.setValue(csrf,forHTTPHeaderField:"X-CSRF-Token") }
         if let etag=etag { request.setValue(etag,forHTTPHeaderField:"If-Match") }
         if let body=body { request.httpBody=try? JSONSerialization.data(withJSONObject:body); request.setValue("application/json",forHTTPHeaderField:"Content-Type") }
-        if method != "GET" && path != "/login" { request.timeoutInterval=185 }
+        if method != "GET" && path != "/login" { request.timeoutInterval = path == "/nodes/probe" ? 11 : 185 }
         let task=session.dataTask(with:request) { [weak self] data,response,error in
             DispatchQueue.main.async {
-                guard let self=self, self.generation == epoch, self.owners[path] == owner else { return }
-                self.owners.removeValue(forKey:path)
+                guard let self=self, self.generation == epoch, self.owners[key] == owner else { return }
+                self.owners.removeValue(forKey:key); self.tasks.removeValue(forKey:key)
                 guard error == nil, let response=response as? HTTPURLResponse, let data=data, data.count <= 2*1024*1024,
                       let json=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any] else { completion(.failure(ClientError.transport)); return }
                 if response.statusCode == 401 && path != "/login" {
@@ -85,11 +92,11 @@ final class APIClient {
                 completion(.success(APIReply(status:response.statusCode,body:json)))
             }
         }
-        task.resume()
-        let deadline: TimeInterval = method == "GET" || path == "/login" ? 7 : 188
+        tasks[key]=task; task.resume()
+        let deadline: TimeInterval = path == "/nodes/probe" ? 12 : (method == "GET" || path == "/login" ? 7 : 188)
         DispatchQueue.main.asyncAfter(deadline:.now()+deadline) { [weak self, weak task] in
-            guard let self=self, self.generation == epoch, self.owners[path] == owner else { return }
-            self.owners.removeValue(forKey:path); task?.cancel()
+            guard let self=self, self.generation == epoch, self.owners[key] == owner else { return }
+            self.owners.removeValue(forKey:key); self.tasks.removeValue(forKey:key); task?.cancel()
             completion(.failure(ClientError.transport))
         }
         return true
@@ -115,6 +122,74 @@ final class MenuModel {
     private(set) var status: ServiceStatus?
     private(set) var nodes: [Node] = []
     private(set) var etag = ""
+    private struct RetainedLatency {
+        let label: String
+        let checkedAt: Date?
+        let completedAt: Date
+        let etag: String
+    }
+    // One completed batch per endpoint; ordinary cancellation does not evict it.
+    private var latencySamples: [String:[String:RetainedLatency]] = [:]
+
+    private var activeProbeNames = Set<String>()
+    private(set) var probeCompleted = 0
+    private(set) var probeTotal = 0
+    static let probeConcurrency = 6
+    private var latencyGeneration = -1
+    private var probeOwner: UUID?
+    private(set) var probing = false
+    private var probeQueue: [String] = []
+    var canProbe: Bool {
+        !initializingConnection && api.authenticated && !sleeping && !pending && !uncertain && quitOwner == nil && !etag.isEmpty && !nodes.isEmpty &&
+        (nodesAt.map { Date().timeIntervalSince($0)<=15 } ?? false)
+    }
+    func latencyLabel(_ name: String) -> String {
+        if probing && latencyGeneration == api.generation && activeProbeNames.contains(name) { return "测试中…" }
+        if let retained=latencySamples[api.endpoint.origin]?[name] {
+            return retained.label+(!etag.isEmpty && retained.etag != etag ? " · 旧配置/上次" : " · 上次")
+        }
+        return "—"
+    }
+    func latencyTooltip(_ name: String) -> String? {
+        guard let retained=latencySamples[api.endpoint.origin]?[name] else { return nil }
+        let time=ISO8601DateFormatter().string(from:retained.checkedAt ?? retained.completedAt)
+        return "上次 TCP 测试："+time+(retained.checkedAt == nil ? "；请求结束，未取得有效测量样本。" : "；非实时结果。")+(etag.isEmpty || retained.etag == etag ? "" : "配置已改变；保留旧配置数值，重新测试后替换。")
+    }
+    private func cancelProbes() {
+        probeOwner=nil; probing=false; probeQueue=[]; activeProbeNames=[]; latencyGeneration = -1; api.cancelProbe()
+    }
+    func probeNodes() {
+        guard canProbe, !probing else { return }
+        cancelProbes()
+        latencySamples[api.endpoint.origin]=[:]
+        latencyGeneration=api.generation; probeOwner=UUID(); probing=true
+        var seen=Set<String>()
+        probeQueue=nodes.map { $0.name }.filter { seen.insert($0).inserted }
+        probeTotal=probeQueue.count; probeCompleted=0
+        probeNext()
+    }
+    private func probeNext() {
+        guard let owner=probeOwner, canProbe, latencyGeneration == api.generation else { cancelProbes(); onChange?(); return }
+        while !probeQueue.isEmpty && activeProbeNames.count < Self.probeConcurrency {
+            let name=probeQueue.removeFirst(), tag=etag, epoch=api.generation, origin=api.endpoint.origin
+            activeProbeNames.insert(name)
+            let sent=api.request("/nodes/probe",method:"POST",body:["name":name,"mode":"tcp_direct","confirm_insecure":false],etag:tag,requestIdentity:owner.uuidString+":"+name) { [weak self] result in
+                guard let self=self, self.probeOwner == owner, self.api.generation == epoch, self.etag == tag, self.canProbe else { return }
+                if case .success(let r)=result, r.status == 412 { self.cancelProbes(); self.onChange?(); self.refresh(); return }
+                let sample: NodeLatency?
+                if case .success(let r)=result, r.status == 200, let parsed=NodeLatency.parse(r.body,name:name,etag:tag) { sample=parsed } else { sample=nil }
+                self.latencySamples[origin,default:[:]][name]=RetainedLatency(label:sample?.label ?? "不可用",checkedAt:sample?.checkedAt,completedAt:Date(),etag:tag)
+                self.activeProbeNames.remove(name); self.probeCompleted += 1
+                self.probeNext()
+            }
+            if !sent, probeOwner == owner {
+                latencySamples[origin,default:[:]][name]=RetainedLatency(label:"不可用",checkedAt:nil,completedAt:Date(),etag:tag)
+                cancelProbes(); onChange?(); return
+            }
+        }
+        if probeQueue.isEmpty && activeProbeNames.isEmpty { probing=false; probeOwner=nil }
+        onChange?()
+    }
     private(set) var traffic: TrafficRate?
     private(set) var helperAvailable = false
     private(set) var pending = false
@@ -133,10 +208,10 @@ final class MenuModel {
     // login and all menu mutations stay excluded for the entire quit operation.
     func beginQuit(context: QuitAuthContext, completion: @escaping (QuitOutcome) -> Void) {
         dispatchPrecondition(condition:.onQueue(.main))
-        guard quitContext == context, !pending, !uncertain, quitOwner == nil else {
+        guard !initializingConnection, quitContext == context, !pending, !uncertain, quitOwner == nil else {
             completion(uncertain ? .unknown : .blocked); return
         }
-        let owner=UUID(); quitOwner=owner; pending=true; cancelConnectivity()
+        let owner=UUID(); quitOwner=owner; pending=true; cancelConnectivity(); cancelProbes()
         message="正在核实并停止 VPN…"; onChange?()
         func finish(_ outcome: QuitOutcome) {
             guard self.quitOwner == owner else { return }
@@ -185,6 +260,7 @@ final class MenuModel {
     }
     private var statusAt: Date?
     private var nodesAt: Date?
+    private var statusGeneration = -1, helperGeneration = -1, nodesGeneration = -1
     private var timer: Timer?
     private var tickCount = 0
     private var observationGeneration = 0
@@ -198,7 +274,34 @@ final class MenuModel {
             self.onChange?()
         }
     }
-    var canMutate: Bool { api.authenticated && !pending && !uncertain && quitOwner == nil && status != nil && helperAvailable }
+    private var connectionInitializationOwner: UUID?
+    private var discardClientUnknown=false
+    var initializingConnection: Bool { connectionInitializationOwner != nil }
+    var connectionObservationsReady: Bool {
+        api.authenticated && status != nil && helperAvailable && !etag.isEmpty &&
+        statusGeneration == api.generation && helperGeneration == api.generation && nodesGeneration == api.generation &&
+        (statusAt.map { Date().timeIntervalSince($0)<=15 } ?? false) &&
+        (nodesAt.map { Date().timeIntervalSince($0)<=15 } ?? false)
+    }
+    @discardableResult
+    func beginConnectionInitialization(userConfirmedDiscardUnknown: Bool = false) -> UUID? {
+        guard !initializingConnection, !pending, quitOwner == nil, !uncertain || userConfirmedDiscardUnknown else { return nil }
+        let owner=UUID(); connectionInitializationOwner=owner
+        discardClientUnknown=uncertain && userConfirmedDiscardUnknown
+        stopPolling(); observationGeneration += 1; api.reset(); clearObservations()
+        message="正在初始化连接；不重复上次操作…"; onChange?(); return owner
+    }
+    func finishConnectionInitialization(owner: UUID, verified: Bool) {
+        guard connectionInitializationOwner == owner else { return }
+        let ready=verified && connectionObservationsReady
+        connectionInitializationOwner=nil
+        if ready && discardClientUnknown { uncertain=false; operationID=nil }
+        discardClientUnknown=false
+        if !ready { api.reset(); observationGeneration += 1; clearObservations() }
+        message=ready ? "连接初始化完成；上次操作结果不追认为成功" : "连接初始化失败；可显式重试，先前未知结果保持锁定"
+        onChange?()
+    }
+    var canMutate: Bool { !initializingConnection && api.authenticated && !pending && !uncertain && quitOwner == nil && status != nil && helperAvailable }
     private func cancelConnectivity() {
         connectivityMonitor?.onChange=nil; connectivityMonitor?.cancel(); connectivity = .idle
     }
@@ -219,10 +322,10 @@ final class MenuModel {
         if !sleeping && api.authenticated { refresh() }
         onChange?()
     }
-    func clearObservations() { cancelConnectivity(); status=nil; statusAt=nil; nodes=[]; nodesAt=nil; etag=""; traffic=nil; trafficIdentity=nil; helperAvailable=false }
+    func clearObservations() { cancelProbes(); cancelConnectivity(); status=nil; statusAt=nil; nodes=[]; nodesAt=nil; etag=""; traffic=nil; trafficIdentity=nil; helperAvailable=false }
     func login(endpoint: LocalEndpoint, password: String, completion: @escaping (Bool) -> Void) {
         // Never discard an unresolved command simply by changing session/endpoint.
-        if pending || quitOwner != nil || (uncertain && endpoint != api.endpoint) { completion(false); return }
+        if initializingConnection || pending || quitOwner != nil || (uncertain && endpoint != api.endpoint) { completion(false); return }
         api.reset(endpoint:endpoint); clearObservations(); message="正在连接…"; onChange?()
         api.login(password:password) { [weak self] ok in
             guard let self=self else { return }
@@ -235,12 +338,13 @@ final class MenuModel {
         timer=Timer(timeInterval:0.25,repeats:true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer!,forMode:.common)
     }
-    func stopPolling() { timer?.invalidate(); timer=nil; cancelConnectivity() }
+    func stopPolling() { timer?.invalidate(); timer=nil; cancelConnectivity(); cancelProbes() }
     func tick() {
         api.expireIfNeeded()
         if let t=traffic, !t.fresh() { traffic=nil }
         if let at=statusAt, Date().timeIntervalSince(at)>15 { status=nil; helperAvailable=false; cancelConnectivity() }
-        if let at=nodesAt, Date().timeIntervalSince(at)>15 { nodes=[]; etag="" }
+        if let at=nodesAt, Date().timeIntervalSince(at)>15 { cancelProbes(); nodes=[]; nodesAt=nil; etag="" }
+        if latencyGeneration != api.generation && latencyGeneration != -1 { cancelProbes() }
         guard api.authenticated && !sleeping else { traffic=nil; cancelConnectivity(); onChange?(); return }
         readTraffic(); tickCount += 1
         if tickCount % 20 == 0 { refresh() }
@@ -252,7 +356,7 @@ final class MenuModel {
         let epoch=api.generation, observation=observationGeneration
         api.request("/status") { [weak self] result in
             guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
-            if case .success(let r)=result, r.status == 200 { self.status=ServiceStatus.parse(r.body); self.statusAt=Date() }
+            if case .success(let r)=result, r.status == 200 { self.status=ServiceStatus.parse(r.body); self.statusAt=Date(); self.statusGeneration=epoch }
             else { self.status=nil; self.statusAt=nil }
             if self.status?.running == true && !self.pending && !self.uncertain {
                 self.checkConnectivity(force:self.forceConnectivity); self.forceConnectivity=false
@@ -261,17 +365,20 @@ final class MenuModel {
         }
         api.request("/helper/status") { [weak self] result in
             guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
-            if case .success(let r)=result { self.helperAvailable = r.status == 200 && jsonBool(r.body["available"]) == true }
+            if case .success(let r)=result { self.helperAvailable = r.status == 200 && jsonBool(r.body["available"]) == true; self.helperGeneration=epoch }
             else { self.helperAvailable=false }; self.onChange?()
         }
         api.request("/nodes") { [weak self] result in
             guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
-            self.nodes=[]; self.etag=""
+            var nextNodes: [Node] = [], nextTag=""
             if case .success(let r)=result, r.status == 200, let list=r.body["nodes"] as? [Any],
                let etag=r.body["etag"] as? String, etag.range(of:#"^\"[a-f0-9]{64}\"$"#,options:.regularExpression) != nil {
                 let parsed=list.compactMap(Node.parse)
-                if parsed.count == list.count { self.nodes=parsed; self.etag=etag; self.nodesAt=Date() }
+                if parsed.count == list.count && Set(parsed.map { $0.name }).count == parsed.count { nextNodes=parsed; nextTag=etag }
             }
+            if nextTag != self.etag || nextNodes.map({ $0.name }) != self.nodes.map({ $0.name }) { self.cancelProbes() }
+            self.nodes=nextNodes; self.etag=nextTag; self.nodesAt=nextTag.isEmpty ? nil : Date()
+            self.nodesGeneration=epoch
             self.onChange?()
         }
         readTraffic()
@@ -283,7 +390,7 @@ final class MenuModel {
             if case .success(let r)=result, r.status == 200 { self.traffic=TrafficRate.parse(r.body) } else { self.traffic=nil }
             if let identity=self.traffic?.runtimeIdentity {
                 if let old=self.trafficIdentity, old != identity {
-                    self.cancelConnectivity(); self.status=nil; self.statusAt=nil; self.forceConnectivity=true
+                    self.cancelProbes(); self.cancelConnectivity(); self.status=nil; self.statusAt=nil; self.forceConnectivity=true
                     self.trafficIdentity=identity; self.refresh(); return
                 }
                 self.trafficIdentity=identity
@@ -298,7 +405,7 @@ final class MenuModel {
         if path == "/service/start" && (status?.running != false || status?.loaded != false) { return }
         if path == "/service/reload" && status?.running != true { return }
         if path == "/service/stop" && status?.loaded != true && status?.running != true { return }
-        cancelConnectivity()
+        cancelConnectivity(); cancelProbes()
         operationID=nil; observationGeneration += 1; status=nil; traffic=nil
         pending=true; pendingPath=path; pendingName=name; message="正在执行；不会自动重试…"; onChange?()
         var body: [String: Any] = ["confirm_insecure":consent]

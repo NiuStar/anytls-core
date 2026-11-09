@@ -47,6 +47,7 @@ class Gate:
             raise GateError("GITHUB_TOKEN is required")
         if not all(math.isfinite(v) and v > 0 for v in (seconds, interval)):
             raise GateError("deadline and poll interval must be finite and positive")
+        self.repository = repository
         self.base = "https://api.github.com/repos/" + repository + "/"
         self.sha, self.tag, self.token = sha, tag, token
         self.clock, self.sleep, self.log = clock, sleep, log
@@ -162,6 +163,10 @@ class Gate:
                 raise GateError("previously observed CI run disappeared")
             return False
         run = runs[0]
+        for key in ("repository", "head_repository"):
+            repository = run.get(key)
+            if not isinstance(repository, dict) or repository.get("full_name") != self.repository:
+                raise GateError("CI run repository identity mismatch")
         if any(run.get(key) != expected for key, expected in {
             "workflow_id": workflow_id, "path": WORKFLOW_PATH, "name": WORKFLOW_NAME,
             "head_sha": self.sha, "head_branch": self.tag, "event": "push",
@@ -170,6 +175,8 @@ class Gate:
         identity = (positive_id(run.get("id")), positive_id(run.get("run_attempt")))
         if self.run_identity is not None and identity != self.run_identity:
             raise GateError("CI run or attempt changed during gate")
+        if identity[1] != 1:
+            raise GateError("CI run must use original attempt 1")
         self.run_identity = identity
         run_done = self.terminal(run, "CI run")
         run_id, attempt = identity

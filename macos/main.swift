@@ -33,13 +33,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     init(model: MenuModel = MenuModel(api:APIClient(endpoint:try! LocalEndpoint("http://127.0.0.1:18089")))) {
         self.model=model; super.init()
     }
-    private(set) var connectionMessage="正在连接本机组件…"
+    private(set) var connectionMessage="正在初始化连接…"
     private var attaching=false
+    private var connectionOwner: UUID?
     private var nextAttach=Date.distantPast
     private var expiryAttempted=false
     var now: ()->Date = Date.init
     private(set) var pendingMigrationResume=false
     private var menu: NSMenu!
+    private var trackingMenus=Set<ObjectIdentifier>()
+    private var probeRefreshTimer: Timer?
+    private var probeItem: NSMenuItem?
+    private var probeButton: NSButton?
+    private var latencyRows=[String:(NSMenuItem,String)]()
     private let smoke=CommandLine.arguments.contains("--ui-smoke")
     private var pathMonitor: NWPathMonitor?
     private var observers: [NSObjectProtocol]=[]
@@ -59,7 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self=self else { return }
             if self.desktop?.busy == false && self.attaching {
                 self.attaching=false
-                if !self.model.api.authenticated { self.connectionMessage="组件待初始化或连接失败，请安装／更新组件，或稍后刷新状态" }
+                if let owner=self.connectionOwner {
+                    self.connectionOwner=nil; self.model.finishConnectionInitialization(owner:owner,verified:false)
+                }
+                if !self.model.api.authenticated { self.connectionMessage="连接初始化失败；组件待初始化，可重新初始化连接或安装／更新组件" }
             }
             self.render()
         }
@@ -124,16 +133,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !quitCoordinator.message.isEmpty { item.button?.toolTip?.append("\n"+quitCoordinator.message) }
         if let rate=rate { item.button?.toolTip?.append("\n本实例累计上传 \(rate.totalUpload) bytes，下载 \(rate.totalDownload) bytes") }
         // Never rebuild an open menu under the pointer. Refresh its contents on open.
-        if !menuIsOpen { rebuildMenu(state:state) }
+        if !menuIsOpen { rebuildMenu(state:state) } else { updateProbeRows() }
     }
     private var menuIsOpen=false
-    func menuWillOpen(_ menu: NSMenu) { render(); menuIsOpen=true }
-    func menuDidClose(_ menu: NSMenu) { menuIsOpen=false; render() }
+    func menuWillOpen(_ opening: NSMenu) {
+        if trackingMenus.isEmpty && opening === menu { render() }
+        trackingMenus.insert(ObjectIdentifier(opening)); menuIsOpen=true
+        if probeRefreshTimer == nil {
+            let timer=Timer(timeInterval:0.1,repeats:true) { [weak self] _ in self?.updateProbeRows() }
+            probeRefreshTimer=timer
+            RunLoop.main.add(timer,forMode:.common); RunLoop.main.add(timer,forMode:.eventTracking)
+        }
+        updateProbeRows()
+    }
+    func menuDidClose(_ closing: NSMenu) {
+        trackingMenus.remove(ObjectIdentifier(closing)); menuIsOpen = !trackingMenus.isEmpty
+        if !menuIsOpen { probeRefreshTimer?.invalidate(); probeRefreshTimer=nil; render() }
+    }
+    private func updateProbeRows() {
+        guard let probe=probeItem else { return }
+        let title=model.probing ? "直连 TCP 延迟测试（\(model.probeCompleted)/\(model.probeTotal)）" : "直连 TCP 延迟测试（全部节点）"
+        probe.title=title; probeButton?.title=title
+        let snapshot=probe.representedObject as? [String:Any]
+        let fresh=snapshot?["etag"] as? String == model.etag && snapshot?["generation"] as? Int == model.api.generation
+        probe.isEnabled=fresh && model.canProbe && !model.probing && desktop?.blocksQuit != true && !terminationPending
+        probeButton?.isEnabled=probe.isEnabled
+        for (name,(row,title)) in latencyRows {
+            row.title=title+"\t"+model.latencyLabel(name)
+            let paragraph=NSMutableParagraphStyle(); paragraph.tabStops=[NSTextTab(textAlignment:.right,location:520,options:[:])]
+            row.attributedTitle=NSAttributedString(string:row.title,attributes:[.paragraphStyle:paragraph])
+            row.toolTip=model.latencyTooltip(name)
+            if !fresh { row.isEnabled=false }
+        }
+    }
+    @objc private func probeButtonClicked(_ sender: NSButton) { if let probe=probeItem { probeNodes(probe) } }
     private func rebuildMenu(state: String) {
         menu.removeAllItems()
+        latencyRows=[:]; probeItem=nil; probeButton=nil
         add("AnyTLS · \(state)",enabled:false)
         if model.api.authenticated { add(model.message,enabled:false) }
         add("安装／更新组件…",#selector(initializeDesktop),enabled:desktop?.busy == false && !terminationPending && !model.pending && !model.uncertain)
+        add("重新初始化连接…",#selector(reinitializeConnection),enabled:desktop?.blocksQuit == false && !terminationPending && !model.pending && !attaching && !model.initializingConnection)
         add("恢复未完成的组件更新…",#selector(recoverDesktop),enabled:desktop?.recoveryAllowed == true && !terminationPending && !model.pending && !model.uncertain)
         if desktop?.recoveryCompletionAllowed == true { add("继续已确认停止的组件更新…",#selector(completeDesktopRecovery),enabled:!terminationPending && !model.pending && !model.uncertain) }
         if model.pending || model.uncertain { add(model.message+"；暂不能安装／更新组件，请先在完整控制台核实",enabled:false) }
@@ -147,13 +187,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("启动 VPN",#selector(start),enabled:can && status?.running == false && status?.loaded == false)
         add("停止 VPN",#selector(stop),enabled:can && (status?.running == true || status?.loaded == true))
         add("重新连接…",#selector(reload),enabled:can && status?.running == true)
-        let nodeMenu=NSMenu(); nodeMenu.autoenablesItems=false
+        let nodeMenu=NSMenu(); nodeMenu.autoenablesItems=false; nodeMenu.delegate=self
+        let probe=NSMenuItem(title:model.probing ? "TCP 延迟测试中…" : "TCP 延迟测试（全部节点）",action:#selector(probeNodes),keyEquivalent:"")
+        probe.target=self; probe.isEnabled=model.canProbe && !model.probing && desktop?.blocksQuit != true && !terminationPending
+        probe.representedObject=["etag":model.etag,"generation":model.api.generation] as [String:Any]
+        probe.toolTip="本机物理网络直连节点 TCP 延迟；无法确认直连时显示不可用，不回退 VPN 路由。不是代理 HTTPS 或带宽测试，不切换节点或启停 VPN。结果在当前菜单原位更新。"
+        // The deployed SDK has no keepsMenuPresented API. A native custom-view
+        // button does not invoke NSMenu selection tracking dismissal (macOS 13+).
+        let view=NSView(frame:NSRect(x:0,y:0,width:540,height:30))
+        let button=NSButton(title:probe.title,target:self,action:#selector(probeButtonClicked(_:)))
+        button.frame=NSRect(x:12,y:2,width:516,height:26); button.bezelStyle = .inline
+        button.alignment = .left; button.isEnabled=probe.isEnabled; button.toolTip=probe.toolTip
+        button.setAccessibilityLabel("直连 TCP 延迟测试，全部节点")
+        view.addSubview(button); probe.view=view; probeItem=probe; probeButton=button
+        nodeMenu.addItem(probe); nodeMenu.addItem(.separator())
         let note=NSMenuItem(title:"勾选 = 已保存启动节点，非实时出口",action:nil,keyEquivalent:""); note.isEnabled=false; nodeMenu.addItem(note)
         for node in model.nodes {
-            let row=NSMenuItem(title:safeName(node.name)+(node.needsSync ? " · 需同步默认组" : "")+(node.skipVerify ? " ⚠︎ 跳过证书校验" : ""),action:#selector(selectNode(_:)),keyEquivalent:"")
+            let title=safeName(node.name)+(node.needsSync ? " · 需同步默认组" : "")+(node.skipVerify ? " ⚠︎ 跳过证书校验" : "")
+            let row=NSMenuItem(title:title+"\t"+model.latencyLabel(node.name),action:#selector(selectNode(_:)),keyEquivalent:"")
+            let paragraph=NSMutableParagraphStyle()
+            paragraph.tabStops=[NSTextTab(textAlignment:.right,location:520,options:[:])]
+            row.attributedTitle=NSAttributedString(string:row.title,attributes:[.paragraphStyle:paragraph])
             row.target=self; row.representedObject=["name":node.name,"etag":model.etag,"generation":model.api.generation] as [String:Any]; row.state=node.selected ? .on : .off
             row.isEnabled=can && node.selectable && (!node.selected || node.needsSync) && !model.etag.isEmpty
+            row.toolTip=model.latencyTooltip(node.name)
             nodeMenu.addItem(row)
+            latencyRows[node.name]=(row,title)
         }
         if model.nodes.isEmpty { let empty=NSMenuItem(title:"尚未读取可选节点",action:nil,keyEquivalent:""); empty.isEnabled=false; nodeMenu.addItem(empty) }
         add("启动节点").submenu=nodeMenu
@@ -165,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("核心："+(Bundle.main.object(forInfoDictionaryKey:"AnyTLSCoreVersion") as? String ?? "unknown"),enabled:false)
         menu.addItem(.separator())
         let quit=add("退出并停止 VPN",#selector(quit)); quit.keyEquivalent="q"
+        updateProbeRows()
     }
     private func confirm(_ title: String, risk: Bool = true) -> Bool {
         NSApp.activate(ignoringOtherApps:true)
@@ -179,6 +239,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func stop() { if confirm("停止 VPN？",risk:false) { model.mutate(path:"/service/stop",consent:false) } }
     @objc private func reload() { if confirm("停止并重新连接 VPN？") { model.mutate(path:"/service/reload",consent:true) } }
+    @objc private func probeNodes(_ sender: NSMenuItem) {
+        guard !terminationPending, desktop?.blocksQuit != true,
+              let snapshot=sender.representedObject as? [String:Any], snapshot["etag"] as? String == model.etag,
+              snapshot["generation"] as? Int == model.api.generation else { return }
+        model.probeNodes()
+    }
     @objc private func selectNode(_ sender: NSMenuItem) {
         guard let snapshot=sender.representedObject as? [String:Any], let name=snapshot["name"] as? String,
               snapshot["etag"] as? String == model.etag, snapshot["generation"] as? Int == model.api.generation else { return }
@@ -193,19 +259,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openConsole() { NSWorkspace.shared.open(model.api.endpoint.url) }
     // No credential UI or Keychain exists in this shipping target. Startup and
     // expiry can only use DesktopRuntime's attested private-pipe authority.
-    func connectRuntime(userInitiated: Bool = false) {
-        guard !smoke, !terminationPending, !attaching, !model.api.authenticated,
-              !model.pending, !model.uncertain, desktop?.blocksQuit == false,
-              now() >= nextAttach else { return }
+    func connectRuntime(userInitiated: Bool = false, discardUnknown: Bool = false) {
+        guard !smoke, !terminationPending, !attaching,
+              (!model.api.authenticated || discardUnknown), !model.pending,
+              userInitiated || now() >= nextAttach else { return }
+        guard !model.uncertain || discardUnknown else {
+            connectionMessage="连接初始化未执行；先前操作结果未知，须明确选择重新初始化连接"; renderIfReady(); return
+        }
+        guard let runtime=desktop, !runtime.blocksQuit else {
+            connectionMessage="连接初始化受阻；组件操作或持久未知状态须先核实，不会自动安装或重放操作"; renderIfReady(); return
+        }
+        guard let owner=model.beginConnectionInitialization(userConfirmedDiscardUnknown:discardUnknown) else { return }
+        connectionOwner=owner
         attaching=true; nextAttach=now().addingTimeInterval(15)
-        connectionMessage="正在连接本机组件…"; renderIfReady()
-        desktop?.attach(login:runtimeLogin)
+        connectionMessage="正在初始化连接…"; renderIfReady()
+        runtime.attach { [weak self, weak runtime] origin,secret,done in
+            guard let self=self, self.desktop === runtime, self.connectionOwner == owner, !self.terminationPending else { done(false); return }
+            self.runtimeLogin(origin,secret,done)
+        }
         // attach may synchronously refuse before invoking login (missing runtime,
         // bundle mismatch, unsafe lifecycle state). Never schedule an auto-loop.
-        if desktop?.busy != true { attaching=false; connectionMessage="组件待初始化，请安装／更新组件；或稍后刷新状态"; renderIfReady() }
+        if runtime.busy != true && connectionOwner == owner {
+            attaching=false; connectionOwner=nil; model.finishConnectionInitialization(owner:owner,verified:false)
+            connectionMessage="连接初始化失败；组件待初始化，请检查组件后重新初始化连接"; model.startPolling(); renderIfReady()
+        }
+    }
+    @objc func reinitializeConnection() {
+        guard !terminationPending, !attaching, !model.pending, desktop?.blocksQuit == false else { return }
+        NSApp.activate(ignoringOtherApps:true)
+        let alert=NSAlert(); alert.messageText="重新初始化连接？"
+        alert.informativeText="仅重新连接本机组件；不重复上次操作、不安装或启停 VPN。丢弃客户端临时未知状态须重新验证当前组件；上次操作结果不追认为成功。磁盘中的历史 UNKNOWN 不会删除或解除。"
+        alert.addButton(withTitle:"重新初始化连接");alert.addButton(withTitle:"取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        connectRuntime(userInitiated:true,discardUnknown:true)
     }
     func sessionExpired() {
-        guard !expiryAttempted, !terminationPending, !model.pending, !model.uncertain else { return }
+        guard !expiryAttempted, !terminationPending, !model.pending, !model.uncertain, !model.initializingConnection else { return }
         expiryAttempted=true
         connectRuntime()
     }
@@ -231,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resume.state=wasRunning ? .on : .off; resume.isEnabled=wasRunning; return resume
     }
     @objc func initializeDesktop() {
-        guard !terminationPending, !model.pending, !model.uncertain else {
+        guard !terminationPending, !model.pending, !model.uncertain, !model.initializingConnection else {
             connectionMessage = model.uncertain ? "当前操作结果未知，未开始安装／更新组件；请在完整控制台核实" : "当前操作进行中，未开始安装／更新组件；请等待结果后核实"
             renderIfReady(); return
         }
@@ -263,35 +352,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func retryDesktopAuthorization() { guard !terminationPending, !model.pending, !model.uncertain else { return }; desktop?.retryAuthorization(login:runtimeLogin) }
     private func runtimeLogin(_ origin: String, _ secret: String, _ completion: @escaping (Bool)->Void) {
-        guard let endpoint=try? LocalEndpoint(origin), !model.pending, !model.uncertain else { attaching=false; completion(false); return }
-        // Bootstrap application secret never enters fields, defaults or Keychain.
-        model.stopPolling()
-        model.api.reset(endpoint:endpoint)
+        guard let endpoint=try? LocalEndpoint(origin), !model.pending,
+              !model.uncertain || model.initializingConnection else { completion(false); return }
+        let owner=connectionOwner, runtime=desktop
+        func current()->Bool { self.connectionOwner == owner && self.desktop === runtime }
+        // Bootstrap application secret stays in memory/private-pipe authority.
+        model.stopPolling(); model.api.reset(endpoint:endpoint)
+        // Own completion before login: API generation changes intentionally drop
+        // callbacks, including a 401 during proof. They must not strand attach.
+        var finished=false, epoch=self.model.api.generation
+        func finish(_ value: Bool) {
+            guard !finished else { return }; finished=true
+            guard current() else { completion(false); return }
+            let fresh=value && self.model.api.generation == epoch
+            self.attaching=false
+            if let owner=owner {
+                self.connectionOwner=nil
+                self.model.finishConnectionInitialization(owner:owner,verified:fresh)
+            } else if !fresh && self.model.api.generation == epoch { self.model.api.reset(); self.model.clearObservations() }
+            let verified=fresh && self.model.api.authenticated && !self.model.initializingConnection
+            self.connectionMessage=verified ? "连接初始化完成；本机组件已连接" : "连接初始化失败；请检查组件后重新初始化连接"
+            if verified { self.expiryAttempted=false }
+            self.model.startPolling(); if verified { self.model.refresh() }
+            self.renderIfReady(); completion(verified)
+        }
         model.api.login(password:secret) { ok in
-            guard ok else {
-                self.attaching=false; self.connectionMessage="本机组件连接失败，请稍后刷新状态或安装／更新组件"
-                self.model.startPolling(); self.renderIfReady(); completion(false); return
-            }
-            var finished=false
-            func finish(_ value: Bool) {
-                guard !finished else { return }; finished=true; self.attaching=false
-                if !value { self.model.api.reset(); self.model.clearObservations() }
-                self.connectionMessage=value ? "本机组件已连接" : "本机组件身份验证失败，请检查组件后刷新状态"
-                if value { self.expiryAttempted=false }
-                self.model.startPolling(); if value { self.model.refresh() }
-                self.renderIfReady(); completion(value)
+            guard current(), self.model.api.generation == epoch else { finish(false); return }
+            guard ok else { finish(false); return }
+            var verifyingReadiness=false
+            func observations(_ remaining: Int) {
+                guard !finished, current(), self.model.api.generation == epoch else { return }
+                if self.model.connectionObservationsReady {
+                    guard !verifyingReadiness else { return }; verifyingReadiness=true
+                    let tag=self.model.etag
+                    runtime?.verifyConnectionReadiness { ready in
+                        guard current(), self.model.api.generation == epoch else { return }
+                        finish(ready && tag == self.model.etag && self.model.connectionObservationsReady)
+                    }
+                    return
+                }
+                guard remaining>0 else { finish(false); return }
+                DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { observations(remaining-1) }
             }
             func read(_ remaining: Int) {
-                guard !finished, remaining>0 else { finish(false); return }
+                guard !finished, current(), self.model.api.generation == epoch else { return }
+                guard remaining>0 else { finish(false); return }
                 let sent=self.model.api.request("/status") { result in
-                    if case .success(let reply)=result, reply.status==200, self.desktop?.validConsoleMetadata(reply.body)==true { finish(true) }
-                    else { finish(false) }
+                    guard current(), self.model.api.generation == epoch else { finish(false); return }
+                    if case .success(let reply)=result, reply.status==200,
+                       ServiceStatus.parse(reply.body) != nil, runtime?.validConsoleMetadata(reply.body)==true {
+                        if owner != nil { self.model.refresh(); observations(100) } else { finish(true) }
+                    } else { finish(false) }
                 }
                 if !sent { DispatchQueue.main.asyncAfter(deadline:.now()+0.25) { read(remaining-1) } }
             }
             read(32)
-            DispatchQueue.main.asyncAfter(deadline:.now()+12) { finish(false) }
         }
+        epoch=model.api.generation // login synchronously resets its session.
+        DispatchQueue.main.asyncAfter(deadline:.now()+12) { finish(false) }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if smoke { return .terminateNow }

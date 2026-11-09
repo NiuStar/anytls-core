@@ -48,7 +48,7 @@ func (w *webConsole) probeNodeHandler(rw http.ResponseWriter, r *http.Request) {
 		Mode            string `json:"mode"`
 		ConfirmInsecure bool   `json:"confirm_insecure"`
 	}
-	if webDecode(rw, r, &in) != nil || in.Name == "" || (in.Mode != "tcp" && in.Mode != "https") {
+	if webDecode(rw, r, &in) != nil || in.Name == "" || (in.Mode != "tcp" && in.Mode != "https" && in.Mode != "tcp_direct") {
 		webError(rw, 400, "INVALID_INPUT")
 		return
 	}
@@ -131,6 +131,8 @@ func (w *webConsole) probeNodeHandler(rw http.ResponseWriter, r *http.Request) {
 		err = ctx.Err()
 	}
 	switch {
+	case errors.Is(err, errNodeProbeDirectUnavailable):
+		result.Status, result.Error = "UNAVAILABLE", "PROBE_DIRECT_UNAVAILABLE"
 	case errors.Is(err, errNodeProbeUnsupported):
 		result.Status, result.Error = "UNSUPPORTED", "PROBE_UNSUPPORTED"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -158,7 +160,7 @@ func (w *webConsole) probeNodeHandler(rw http.ResponseWriter, r *http.Request) {
 // authentication, proxy readiness, throughput or an automatic selection signal.
 // Configured private/loopback servers are allowed; there is no request URL.
 func webNodeProbe(ctx context.Context, n node, mode string) (float64, error) {
-	if mode != "tcp" && mode != "https" {
+	if mode != "tcp" && mode != "https" && mode != "tcp_direct" {
 		return 0, errNodeProbeUnsupported
 	}
 	ctx, cancel := context.WithTimeout(ctx, webNodeProbeTimeout)
@@ -171,6 +173,9 @@ func webNodeProbe(ctx context.Context, n node, mode string) (float64, error) {
 	}
 	if mode == "https" {
 		return webEmbeddedNodeProbe(ctx, n)
+	}
+	if mode == "tcp_direct" {
+		return webDirectNodeProbe(ctx, n)
 	}
 	start := time.Now()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(n.Server, strconv.Itoa(n.Port)))

@@ -222,6 +222,12 @@ func (m desktopMigration) inspect() (desktopMigrationMetadata, error) {
 			}
 		}
 		if committed != nil {
+			// DONE is only an admission hint. A historical transaction must
+			// prove its terminal, application links and published lineage.
+			if m.recoveryIntents(*committed, records) == nil {
+				err = m.recoveryHistory(*committed, records, &p)
+				return p, err
+			}
 			if err = m.recoveryPublished(*committed, records); err != nil {
 				return p, err
 			}

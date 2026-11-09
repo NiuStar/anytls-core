@@ -88,6 +88,30 @@ struct ServiceStatus {
         return ServiceStatus(loaded:l,running:r)
     }
 }
+// Manual TCP observations are independent of selection and lifecycle authority.
+struct NodeLatency {
+    let label: String
+    let checkedAt: Date
+    static func parse(_ d: [String:Any], name: String, etag: String, now: Date = Date()) -> NodeLatency? {
+        guard exact(d,["name","mode","status","latency_ms","error","checked_at","risk_insecure","config_etag"]),
+              d["name"] as? String == name, d["mode"] as? String == "tcp_direct", d["config_etag"] as? String == etag,
+              jsonBool(d["risk_insecure"]) != nil, let at=utcDate(d["checked_at"]),
+              (0...15).contains(now.timeIntervalSince(at)), let error=d["error"] as? String else { return nil }
+        let label: String
+        switch d["status"] as? String {
+        case "OK":
+            guard error.isEmpty, let ms=d["latency_ms"] as? NSNumber, CFGetTypeID(ms) != CFBooleanGetTypeID(),
+                  ms.doubleValue.isFinite, (0...12000).contains(ms.doubleValue) else { return nil }
+            label=String(format:"%.0f ms",ms.doubleValue.rounded())
+        case "FAILED": guard d["latency_ms"] is NSNull, ["PROBE_FAILED","PROBE_CANCELED"].contains(error) else { return nil }; label="失败"
+        case "TIMEOUT": guard d["latency_ms"] is NSNull, error == "PROBE_TIMEOUT" else { return nil }; label="超时"
+        case "UNSUPPORTED": guard d["latency_ms"] is NSNull, error == "PROBE_UNSUPPORTED" else { return nil }; label="不支持"
+        case "UNAVAILABLE": guard d["latency_ms"] is NSNull, error == "PROBE_DIRECT_UNAVAILABLE" else { return nil }; label="不可用"
+        default: return nil
+        }
+        return NodeLatency(label:label,checkedAt:at)
+    }
+}
 struct Node {
     let name: String, selectable: Bool, selected: Bool, skipVerify: Bool, needsSync: Bool
     static func parse(_ value: Any) -> Node? {

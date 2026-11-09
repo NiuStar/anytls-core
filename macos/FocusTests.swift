@@ -38,6 +38,11 @@ private final class FocusHTTP: URLProtocol {
     static let gate=NSLock()
     static var holdStatus=false, held: (() -> Void)?
     static var timeline=[String]()
+    static var nodeNames=[String](), heldProbes=[() -> Void]()
+    // The two URLProtocol startLoading calls are independent. Expose the first
+    // completion owner before the second, across the real event-tracking tick.
+    static var splitProbeAdmission=false, probeAdmissions=0
+    static var deferredProbe: (() -> Void)?
     static func event(_ text: String) { gate.lock(); timeline.append(text); gate.unlock() }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -50,7 +55,7 @@ private final class FocusHTTP: URLProtocol {
         var body: [String:Any]=[:]
         if login { body=["csrf":String(repeating:"t",count:43),"expiresIn":3600] }
         else if path.hasSuffix("/status") { body=["availability":"AVAILABLE","loaded":true,"running":true,"available":true,"version":"fixture","listenHost":"0.0.0.0"] }
-        else if path.hasSuffix("/nodes") { body=["nodes":[],"etag":"\""+String(repeating:"a",count:64)+"\""] }
+        else if path.hasSuffix("/nodes") { body=["nodes":Self.nodeNames.map { ["name":$0,"selectable":true,"selected":false,"skipVerify":false] },"etag":"\""+String(repeating:"a",count:64)+"\""] }
         let data=probe ? Data() : try! JSONSerialization.data(withJSONObject:body)
         let deliver: () -> Void = {
             Self.event("deliver " + path)
@@ -59,6 +64,12 @@ private final class FocusHTTP: URLProtocol {
             self.client?.urlProtocolDidFinishLoading(self)
         }
         Self.gate.lock()
+        if path == "/api/v1/nodes/probe" {
+            Self.probeAdmissions += 1
+            if Self.splitProbeAdmission && Self.probeAdmissions == 2 { Self.deferredProbe=deliver }
+            else { Self.heldProbes.append(deliver) }
+            Self.gate.unlock(); return
+        }
         if Self.holdStatus && path == "/api/v1/status" { Self.held=deliver; Self.timeline.append("held " + path); Self.gate.unlock(); return }
         Self.gate.unlock()
         DispatchQueue.global().asyncAfter(deadline:.now()+(login ? 0.12 : 0.01),execute:deliver)
@@ -69,10 +80,21 @@ private final class FocusHTTP: URLProtocol {
     static var checks=[String](), delegates=[AppDelegate](), children=[Process]()
     static func check(_ ok: @autoclosure ()->Bool,_ name: String) { guard ok() else { print("FAIL: "+name); for child in children where child.isRunning { child.terminate(); child.waitUntilExit() }; exit(1) }; checks.append(name); print("PASS: "+name) }
     static func pump(_ duration: Double=0.12) { RunLoop.main.run(until:Date().addingTimeInterval(duration)) }
-    static func wait(_ name: String,_ ready: ()->Bool) { let end=Date().addingTimeInterval(5); while !ready() && Date()<end { pump(0.02) }; check(ready(),name) }
+    static func wait(_ name: String,_ ready: ()->Bool) {
+        let end=Date().addingTimeInterval(5); while !ready() && Date()<end { pump(0.02) }
+        if !ready() {
+            let rows=delegates.map { ["connection":$0.connectionMessage,"runtime":$0.desktop?.message ?? "nil","busy":String($0.desktop?.busy ?? false),"initializing":String($0.model.initializingConnection),"model":$0.model.message,"auth":String($0.model.api.authenticated)] }
+            try? JSONSerialization.data(withJSONObject:["wait":name,"delegates":rows,"requests":FocusHTTP.requests,"timeline":FocusHTTP.timeline],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("wait-failure.json"))
+        }
+        check(ready(),name)
+    }
     static func config()->URLSessionConfiguration { let c=URLSessionConfiguration.ephemeral; c.protocolClasses=[FocusHTTP.self]; return c }
     static var root: URL!
     static var tick=Date()
+    static var heldInspection: ((DesktopCommandResult)->Void)?
+    static var holdInspection=false
+    static var lastInspectResult: DesktopCommandResult?
+    static var launchCommands=[[String]]()
     static func launch(missing: Bool=false)->AppDelegate {
         let dir=root.appendingPathComponent(UUID().uuidString), bundle=dir.appendingPathComponent("Fixture.app")
         let resource=bundle.appendingPathComponent("Contents/Resources/runtime")
@@ -88,7 +110,13 @@ private final class FocusHTTP: URLProtocol {
             else if args==["list"] { done(DesktopCommandResult(code:0,data:Data(),timedOut:false)); return }
             else if args.contains("-a"), let p=child { done(DesktopCommandResult(code:0,data:Data("p\(p.processIdentifier)\nu\(uid)\nn*:18089\n".utf8),timedOut:false)); return }
             else { code=1 }
-            done(DesktopCommandResult(code:code,data:code==1 ? Data() : try! JSONSerialization.data(withJSONObject:body),timedOut:false))
+            launchCommands.append(args)
+            let result=DesktopCommandResult(code:code,data:code==1 ? Data() : try! JSONSerialization.data(withJSONObject:body),timedOut:false)
+            if args==["desktop","inspect"] {
+                lastInspectResult=result
+                if holdInspection { heldInspection=done; return }
+            }
+            done(result)
         }
         let runtime=DesktopRuntime(bundle:bundle.path,home:home,uid:uid,run:runner,exists:{ !missing && $0==binary },digest:{_ in sha},portFree:{true},fixtureStateRoot:dir.appendingPathComponent("state").path,candidateSafe:{_ in true})
         runtime.launchConsole={ let p=Process(); p.executableURL=URL(fileURLWithPath:"/bin/sleep"); p.arguments=["60"]; child=p; children.append(p); return p }
@@ -104,8 +132,35 @@ private final class FocusHTTP: URLProtocol {
             }
         }
     }
+    static func recordOwnedWindows(_ phase: String) {
+        // Only NSApp's own objects: no desktop/window-server enumeration.
+        let rows: [[String:Any]]=NSApp.windows.map { window in
+            var chain=[String](), type: AnyClass?=Swift.type(of:window)
+            while let cls=type { chain.append(NSStringFromClass(cls)); type=class_getSuperclass(cls) }
+            let owned=delegates.contains { window === $0.item?.button?.window }
+            let exactClass=NSStringFromClass(Swift.type(of:window)) == "NSStatusBarWindow"
+            return ["object":String(describing:ObjectIdentifier(window)),"number":window.windowNumber,
+                    "classes":chain,"key":window.isKeyWindow,"main":window.isMainWindow,"visible":window.isVisible,
+                    "level":window.level.rawValue,"style":window.styleMask.rawValue,
+                    "baselineNumberMatch":baselineWindows.contains(window.windowNumber),"ownedButtonWindowMatch":owned,
+                    "exactClassMatch":exactClass,"nonKey":!window.isKeyWindow,
+                    "includedAsContent":contentWindows().contains { $0 === window }]
+        }
+        let owners: [[String:Any]]=delegates.map { ui in
+            ["desktopPresent":ui.desktop != nil,"itemPresent":ui.item != nil,"buttonPresent":ui.item?.button != nil,
+             "buttonWindow":ui.item?.button?.window.map { String(describing:ObjectIdentifier($0)) } ?? "nil"]
+        }
+        let data: [String:Any]=["phase":phase,"windows":rows,"owners":owners,"presentationCounts":PresentationProbe.counts,"screenCount":NSScreen.screens.count]
+        if let bytes=try? JSONSerialization.data(withJSONObject:data,options:[.sortedKeys]),
+           let stream=try? FileHandle(forWritingTo:root.appendingPathComponent("owned-windows.jsonl")) {
+            stream.seekToEndOfFile(); stream.write(bytes); stream.write(Data([10])); stream.closeFile()
+        } else if let bytes=try? JSONSerialization.data(withJSONObject:data,options:[.sortedKeys]) {
+            try? (bytes+Data([10])).write(to:root.appendingPathComponent("owned-windows.jsonl"))
+        }
+    }
     static func quiet(_ ui: AppDelegate,_ name: String) {
-        pump(); check(PresentationProbe.counts == [0,0,0,0],name+" zero activation/front/sheet/modal")
+        pump(); recordOwnedWindows(name)
+        check(PresentationProbe.counts == [0,0,0,0],name+" zero activation/front/sheet/modal")
         check(contentWindows().isEmpty,name+" zero application content windows (owned framework status host excluded)")
     }
     static func main() throws {
@@ -127,6 +182,8 @@ private final class FocusHTTP: URLProtocol {
         check(fresh.item.button!.toolTip!.contains("组件待初始化"),"fresh menu explains explicit native installation")
         check(!fresh.item.menu!.items.contains { $0.title.contains("登录") || $0.title.contains("连接设置") || $0.title.contains("记住") },"manual app login menu removed rather than hidden")
         let saved=launch(); wait("private pipe automatic startup authenticates") {saved.model.api.authenticated && saved.desktop?.busy==false}
+        check(!saved.model.initializingConnection && saved.connectionMessage.contains("初始化完成"),"startup composition completes only after fresh HTTP and runtime proof")
+        check(!FocusHTTP.requests.contains { $0.contains("/service/") },"startup initialization never starts or installs VPN")
         wait("offline connectivity verdict retained") {saved.model.connectivity == .offline}; quiet(saved,"authenticated offline startup")
         check(saved.speedView.icon.contentTintColor == NSColor.systemRed,"offline indication stays red")
         check(saved.item.button!.toolTip!.contains("网络连接失败"),"offline menu stays actionable")
@@ -138,7 +195,9 @@ private final class FocusHTTP: URLProtocol {
         saved.model.environmentChanged(); quiet(saved,"path change")
         check(!saved.applicationShouldHandleReopen(app,hasVisibleWindows:false),"Finder reopen never requests a window"); quiet(saved,"reopen")
         tick=tick.addingTimeInterval(16); FocusHTTP.serviceStatus=401; saved.model.refresh()
-        wait("401 expires session") {!saved.model.api.authenticated}; pump(0.4); quiet(saved,"expiry")
+        wait("401 expires session") {!saved.model.api.authenticated}
+        wait("401 during initialization releases actual runtime and model owners") {saved.desktop?.busy==false && !saved.model.initializingConnection}
+        pump(0.4); quiet(saved,"expiry")
         let failedCount=FocusHTTP.logins
         for _ in 0..<20 {saved.model.tick(); saved.sessionExpired()}; pump(0.3)
         check(FocusHTTP.logins==failedCount,"expiry failure never becomes 250ms login loop")
@@ -238,6 +297,8 @@ private final class FocusHTTP: URLProtocol {
         try JSONSerialization.data(withJSONObject:FocusHTTP.timeline,options:.prettyPrinted).write(to:root.appendingPathComponent("timeline.json"))
         check(saved.model.pending && !savedInstallRow().isEnabled,"pending operation disables installation menu")
         saved.initializeDesktop()
+        saved.reinitializeConnection()
+        check(PresentationProbe.counts == [0,0,0,0] && saved.model.pending,"pending quit refuses connection initialization before confirmation")
         check(saved.connectionMessage.contains("当前操作进行中") && PresentationProbe.counts == [0,0,0,0],"stale pending install action explains refusal without dispatch")
         let quitResponseHeld=settled { heldResponse() != nil }
         saved.model.abandonQuit(context:context)
@@ -320,7 +381,111 @@ private final class FocusHTTP: URLProtocol {
         recoveryUI.recoverDesktop()
         check(uiSTOPs==1 && !uiRuntime.intents.present && (try? uiRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","actual production timeout keeps recovery UNKNOWN and zero authorization")
         quiet(recoveryUI,"delayed recovery STOP timeout")
+        // New connection initialization composes the shipping delegate, runtime,
+        // URLProtocol session and persistent store; no standalone model shortcut.
+        let blocked=recoveryUI.desktop!, durableBefore=try Data(contentsOf:URL(fileURLWithPath:durableUIRoot).appendingPathComponent("recovery.json"))
+        let commandsBefore=uiSTOPs
+        recoveryUI.reinitializeConnection()
+        recoveryUI.connectRuntime(userInitiated:true,discardUnknown:true)
+        check(blocked.blocksQuit && uiSTOPs==commandsBefore && PresentationProbe.counts == [0,0,0,0],"durable recovery UNKNOWN refuses reinitialization without prompt or dispatch")
+        check((try? Data(contentsOf:URL(fileURLWithPath:durableUIRoot).appendingPathComponent("recovery.json"))) == durableBefore,"connection initialization preserves exact durable UNKNOWN bytes")
+        // Saved has only transient model UNKNOWN from the abandoned quit above.
+        check(saved.model.uncertain && saved.desktop?.blocksQuit == false,"transient UNKNOWN composition precondition remains locked")
+        let loginBefore=FocusHTTP.logins
+        PresentationProbe.response = .alertSecondButtonReturn
+        autoreleasepool { saved.reinitializeConnection() }
+        check(saved.model.uncertain && FocusHTTP.logins==loginBefore && PresentationProbe.counts == [1,0,0,1],"explicit reinitialization Cancel preserves UNKNOWN and sends no login")
+        PresentationProbe.activations=0; PresentationProbe.modals=0
+        PresentationProbe.response = .alertFirstButtonReturn
+        autoreleasepool { saved.reinitializeConnection() }
+        check(saved.model.initializingConnection && saved.model.uncertain && saved.desktop?.busy == true && PresentationProbe.counts == [1,0,0,1],"explicit reinitialization Continue holds UNKNOWN until fresh proof")
+        PresentationProbe.activations=0; PresentationProbe.modals=0
+        saved.reinitializeConnection()
+        check(PresentationProbe.counts == [0,0,0,0],"in-flight initialization refuses repeated confirmation")
+        wait("explicit reinitialization composes fresh runtime login and observations") { !saved.model.initializingConnection && saved.desktop?.busy == false }
+        check(saved.model.api.authenticated && !saved.model.uncertain && saved.model.message.contains("不追认"),"fresh composition clears only transient UNKNOWN without historical success")
+        check(FocusHTTP.logins==loginBefore+1 && !FocusHTTP.requests.contains {$0.contains("/service/") || $0.contains("/selection")},"explicit reinitialization sends one login and zero lifecycle or selection mutations")
+        quiet(saved,"completed explicit reinitialization")
+        holdInspection=true
+        let raced=launch(), oldInspection=heldInspection!, oldResult=lastInspectResult!
+        oldInspection(DesktopCommandResult(code:1,data:Data(),timedOut:false))
+        check(!raced.model.initializingConnection && raced.desktop?.busy == false,"failed attach inspection releases composite owner")
+        raced.connectRuntime(userInitiated:true)
+        let newInspection=heldInspection!, newResult=lastInspectResult!, commands=launchCommands.count
+        check(raced.model.initializingConnection && raced.desktop?.busy == true && raced.applicationShouldTerminate(app) == .terminateCancel,"active initialization blocks termination before STOP")
+        oldInspection(oldResult)
+        check(raced.model.initializingConnection && raced.desktop?.busy == true && launchCommands.count==commands,"obsolete runtime inspect callback cannot reopen or finish newer initialization")
+        holdInspection=false; newInspection(newResult)
+        wait("new initialization succeeds after obsolete callback rejection") {raced.model.api.authenticated && !raced.model.initializingConnection && raced.desktop?.busy==false}
+        quiet(raced,"late callback fenced initialization")
+        raced.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification))
+        if let child=raced.desktop?.console, child.isRunning { child.terminate(); child.waitUntilExit() }
+        check(!launchCommands.contains {$0.contains("prepare") || $0.contains("helper-install-root") || $0.contains("migration-commit")} && !FocusHTTP.requests.contains {$0.contains("/service/")},"new initialization composition never installs authorizes or starts VPN")
+        saved.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification))
+        if let child=saved.desktop?.console, child.isRunning { child.terminate(); child.waitUntilExit() }
         recoveryUI.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification)); NSStatusBar.system.removeStatusItem(recoveryUI.item)
+        FocusHTTP.nodeNames=["UI node","UI other"]
+        let live=launch(); wait("live probe fixture authenticated") { live.model.canProbe }
+        live.render()
+        let rootMenu=live.item.menu!
+        live.menuWillOpen(rootMenu)
+        let nodesMenu=rootMenu.items.first { $0.title == "启动节点" }!.submenu!
+        let probeItem=nodesMenu.items[0]
+        check(probeItem.view?.subviews.first is NSButton,"probe uses native non-dismissing custom-view button on deployed SDK")
+        live.menuWillOpen(nodesMenu)
+        let button=probeItem.view!.subviews.first as! NSButton
+        button.performClick(nil)
+        wait("live probe client holds two simultaneous requests") { FocusHTTP.gate.lock();defer { FocusHTTP.gate.unlock() };return FocusHTTP.heldProbes.count==2 }
+        check(rootMenu.items.first { $0.title == "启动节点" }?.submenu === nodesMenu && nodesMenu.items[0] === probeItem,"root and submenu item identities stable while tracking")
+        check(!button.isEnabled && button.title.contains("0/2") && nodesMenu.items[3].title.contains("测试中"),"same native rows show progress and testing without reopening")
+        FocusHTTP.gate.lock();let finishes=FocusHTTP.heldProbes;FocusHTTP.heldProbes=[];FocusHTTP.gate.unlock()
+        finishes[1]();wait("out of order result appears during tracking") { nodesMenu.items[4].title.contains("不可用") }
+        check(nodesMenu.items[3].title.contains("测试中") && button.title.contains("1/2"),"partial live progress changes only completed row")
+        finishes[0]();wait("live batch finishes without menu rebuild") { !live.model.probing }
+        check(button.isEnabled && nodesMenu.items[0] === probeItem && nodesMenu.items[3].title.contains("上次"),"same probe button reenabled and completed result retained in place")
+        live.menuDidClose(nodesMenu);live.menuDidClose(rootMenu)
+        // Exercise actual AppKit tracking, not only delegate callback simulation.
+        let popup=live.item.menu!.items.first { $0.title == "启动节点" }!.submenu!
+        let popupButton=popup.items[0].view!.subviews.first as! NSButton
+        FocusHTTP.gate.lock(); FocusHTTP.splitProbeAdmission=true; FocusHTTP.probeAdmissions=0; FocusHTTP.gate.unlock()
+        var clicked=false, stayed=false, delivered=false, splitObserved=false
+        var admissionCounts=[Int]()
+        let nativeDeadline=Date().addingTimeInterval(4)
+        let nativeTimer=Timer(timeInterval:0.15,repeats:true) { timer in
+            if Date() >= nativeDeadline { timer.invalidate(); popup.cancelTrackingWithoutAnimation();return }
+            if !clicked { clicked=true; popupButton.performClick(nil); return }
+            if !delivered {
+                FocusHTTP.gate.lock()
+                let pending=FocusHTTP.heldProbes
+                admissionCounts.append(pending.count)
+                // Never discard a completion owner on a partial batch. The
+                // two independent URLProtocol admissions may straddle this tick.
+                if pending.count == 2 { FocusHTTP.heldProbes=[] }
+                // Release the second real transport owner only AFTER observing
+                // the one-owner boundary. No fake result or extra product call.
+                if pending.count == 1, let second=FocusHTTP.deferredProbe {
+                    splitObserved=true; FocusHTTP.deferredProbe=nil; FocusHTTP.heldProbes.append(second)
+                }
+                FocusHTTP.gate.unlock()
+                if pending.count != 2 { return }; delivered=true;for finish in pending { finish() };return
+            }
+            let rowVisible=popup.items[0].view?.window != nil
+            stayed=popupButton.window != nil && rowVisible
+            if live.model.probing { return }
+            timer.invalidate(); popup.cancelTrackingWithoutAnimation()
+        }
+        RunLoop.main.add(nativeTimer,forMode:.eventTracking)
+        popup.popUp(positioning:nil,at:NSPoint(x:30,y:30),in:nil)
+        nativeTimer.invalidate()
+        try JSONSerialization.data(withJSONObject:["counts":admissionCounts,"splitObserved":splitObserved,"clicked":clicked,"stayed":stayed,"delivered":delivered,"probing":live.model.probing],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("popup-admission.json"))
+        check(clicked && stayed,"actual AppKit popUp tracking remains presented after native probe button click")
+        check(delivered && !live.model.probing && popup.items[3].title.contains("上次"),"real event-tracking run loop delivers client results and updates existing native rows")
+        FocusHTTP.gate.lock(); FocusHTTP.splitProbeAdmission=false;let closing=FocusHTTP.heldProbes;FocusHTTP.heldProbes=[];FocusHTTP.gate.unlock()
+        live.model.stopPolling();for finish in closing { finish() }
+        pump()
+        check(popupButton.window == nil,"explicit menu close is respected and late completion never reopens it")
+        check(splitObserved && admissionCounts.prefix(2).elementsEqual([1,2]),"native fixture preserves first completion owner across split transport admission")
+        live.model.stopPolling(); live.model.api.reset()
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"presentationCounts":PresentationProbe.counts,"realNetworkRequests":0,"productionKeychainAccessed":false,"osPollingObserversDisabledInFixture":true],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("focus-checks.json"))
         print("FOCUS_TESTS_OK checks=\(checks.count)")
     }

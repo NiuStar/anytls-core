@@ -4,15 +4,19 @@ package main
 // active continuation needs durable new STOP proof; history needs a terminal.
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var migrationRecoveryHold = desktopError("RECOVERY_HOLD")
@@ -250,6 +254,12 @@ func (m desktopMigration) recoveryLegacy(op string) (desktopMigrationRecord, des
 // Only authorization.json may indicate an earlier privileged worker. It must be
 // absent or an exact safe DONE record; never infer absence from a read error.
 func (m desktopMigration) recoveryAuthorizationSafe() error {
+	return m.recoveryAuthorizationFor(nil)
+}
+
+// Pending native intent is observation only, never permission to repeat the
+// authorization or STOP. Only the exact evidenced ordinary continuation fits.
+func (m desktopMigration) recoveryAuthorizationFor(pending *desktopMigrationRecord) error {
 	root := filepath.Join(m.home, ".anytls-desktop-state")
 	if _, e := os.Lstat(root); errors.Is(e, os.ErrNotExist) {
 		return nil
@@ -292,7 +302,27 @@ func (m desktopMigration) recoveryAuthorizationSafe() error {
 	}
 	// Swift omits nil console. A completed intent cannot retain a console or
 	// resume permission: either could represent unfinished activation authority.
-	if !reloadShape(tree, "schema operation stage sha state resume") || tree["schema"] != json.Number("1") || tree["state"] != "DONE" || tree["resume"] != false {
+	shape := "schema operation stage sha state resume"
+	phase := "COMMITTED"
+	if pending != nil {
+		if _, present := tree["console"]; present {
+			shape += " console"
+			if !m.recoveryHistoricalConsole(tree["console"], *pending) {
+				return migrationRecoveryHold
+			}
+		}
+		state := reloadString(tree["state"])
+		if state != "ARMED" && state != "UNKNOWN" && state != "DENIED" {
+			return migrationRecoveryHold
+		}
+		if _, ok := tree["resume"].(bool); !ok || tree["operation"] != pending.Metadata.Operation || tree["sha"] != pending.Metadata.BinarySHA256 {
+			return migrationRecoveryHold
+		}
+		phase = "AWAITING_HELPER"
+	} else if tree["state"] != "DONE" || tree["resume"] != false {
+		return migrationRecoveryHold
+	}
+	if !reloadShape(tree, shape) || tree["schema"] != json.Number("1") {
 		return migrationRecoveryHold
 	}
 	op := reloadString(tree["operation"])
@@ -300,7 +330,7 @@ func (m desktopMigration) recoveryAuthorizationSafe() error {
 		return migrationRecoveryHold
 	}
 	r, e := m.record(op)
-	if e != nil || r.Metadata.Phase != "COMMITTED" || r.Metadata.BinarySHA256 != tree["sha"] {
+	if e != nil || r.Metadata.Phase != phase || r.Metadata.BinarySHA256 != tree["sha"] {
 		return migrationRecoveryHold
 	}
 	final, e := desktopDir(root, m.uid, true)
@@ -571,6 +601,323 @@ func (m desktopMigration) recoveryPending(except string) error {
 		}
 	}
 	return nil
+}
+
+// Application completion is not terminal authority. Bind BOTH closed native
+// intents to the exact proven recovery (and, after later updates, authorization
+// to a committed plain migration). Never treat a lone DONE field as a waiver.
+func (m desktopMigration) recoveryIntents(r desktopMigrationRecord, records map[string]desktopMigrationRecord) error {
+	var pending *desktopMigrationRecord
+	for _, v := range records {
+		if v.Recovery == nil && v.Metadata.Phase == "AWAITING_HELPER" {
+			if pending != nil {
+				return migrationRecoveryHold
+			}
+			copy := v
+			pending = &copy
+		}
+	}
+	if e := m.recoveryAuthorizationFor(pending); e != nil {
+		return e
+	}
+	root := filepath.Join(m.home, ".anytls-desktop-state")
+	raw, _, e := reloadCapture(filepath.Join(root, "recovery.json"), m.uid)
+	if e != nil || len(raw) > 16384 {
+		return migrationRecoveryHold
+	}
+	t, e := reloadJSON(raw)
+	shape := "schema state consent plan recoveryOf recoveryPlanSHA sha operation"
+	if _, present := t["console"]; present {
+		shape += " console"
+		if !m.recoveryHistoricalConsole(t["console"], r) {
+			return migrationRecoveryHold
+		}
+	}
+	if e != nil || !reloadShape(t, shape) || t["schema"] != json.Number("1") || t["state"] != "DONE" || t["consent"] != "EXPLICIT_NEW_STOP" || t["plan"] != r.Metadata.Plan || t["recoveryOf"] != r.Metadata.RecoveryOf || t["recoveryPlanSHA"] != r.Metadata.RecoveryPlanSHA256 || t["sha"] != r.Metadata.BinarySHA256 || t["operation"] != r.Metadata.Operation {
+		return migrationRecoveryHold
+	}
+	raw, _, e = reloadCapture(filepath.Join(root, "authorization.json"), m.uid)
+	if e != nil {
+		return migrationRecoveryHold
+	}
+	t, e = reloadJSON(raw)
+	if e != nil {
+		return migrationRecoveryHold
+	}
+	a, ok := records[reloadString(t["operation"])]
+	if !ok || (a.Metadata.Phase != "COMMITTED" && (pending == nil || a.Metadata.Operation != pending.Metadata.Operation)) || (a.Metadata.Operation != r.Metadata.Operation && a.Recovery != nil) {
+		return migrationRecoveryHold
+	}
+	return nil
+}
+
+// The native DONE recovery retains this optional pin; unlike authorization's
+// console it is historical data only. Never observe, signal or resume its PID.
+func (m desktopMigration) recoveryHistoricalConsole(value any, r desktopMigrationRecord) bool {
+	tree := reloadMap(value)
+	if !reloadShape(tree, "pid uid seconds micros argv sha managed") {
+		return false
+	}
+	var pin struct {
+		PID     int32    `json:"pid"`
+		UID     uint32   `json:"uid"`
+		Seconds uint64   `json:"seconds"`
+		Micros  uint64   `json:"micros"`
+		Argv    []string `json:"argv"`
+		SHA     string   `json:"sha"`
+		Managed bool     `json:"managed"`
+	}
+	raw, e := json.Marshal(tree)
+	if e != nil || migrationStrict(raw, &pin) != nil || pin.PID <= 1 || pin.UID != uint32(m.uid) || pin.Micros >= 1000000 || pin.SHA != r.Metadata.OldBinarySHA256 {
+		return false
+	}
+	count := 6
+	options := map[string]string{"--listen": "0.0.0.0", "--port": "18089"}
+	if pin.Managed {
+		count = 8
+		label := desktopSum([]byte(fmt.Sprintf("%d\x00%s\x00%s", m.uid, r.Metadata.Binary, r.Metadata.Config)))[:24]
+		options["--managed-agent"] = "com.anytls.webui." + label
+	}
+	if len(pin.Argv) != count || pin.Argv[0] != r.Metadata.Binary || pin.Argv[1] != "webui" {
+		return false
+	}
+	for i := 2; i < len(pin.Argv); i += 2 {
+		v, ok := options[pin.Argv[i]]
+		if !ok || v != pin.Argv[i+1] {
+			return false
+		}
+		delete(options, pin.Argv[i])
+	}
+	return len(options) == 0
+}
+
+// Validate historical completion without binding it to today's candidate SHA
+// or to an obsolete canonical inode. Walk only unambiguous, fully evidenced
+// plain COMMITTED successors. UNKNOWN itself remains immutable and UNKNOWN.
+func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[string]desktopMigrationRecord, result *desktopMigrationMetadata) error {
+	if e := m.recoveryTerminal(r); e != nil {
+		return e
+	}
+	except := ""
+	var awaiting *desktopMigrationRecord
+	for op, v := range records {
+		if v.Recovery == nil && v.Metadata.Phase == "AWAITING_HELPER" {
+			if awaiting != nil {
+				return migrationRecoveryHold
+			}
+			copy := v
+			awaiting = &copy
+			except = op
+		}
+	}
+	if e := m.pending(except); e != nil {
+		return e
+	}
+	now, e := m.capture()
+	if e != nil || now.Pin.Aggregate != r.Pin.Aggregate || now.Pin.RootDevice != r.Pin.RootDevice || now.Pin.RootInode != r.Pin.RootInode || now.Pin.RootMode != r.Pin.RootMode {
+		return migrationRecoveryHold
+	}
+	sha := r.Metadata.BinarySHA256
+	tip := r.Metadata.Operation
+	seen := map[string]bool{r.Metadata.Operation: true, r.Recovery.OldOperation: true}
+	for {
+		var next *desktopMigrationRecord
+		for op, v := range records {
+			if seen[op] || v.Metadata.OldBinarySHA256 != sha {
+				continue
+			}
+			if next != nil || v.Recovery != nil || v.EvidenceSchema != 2 || (v.Metadata.Phase != "COMMITTED" && v.Metadata.Phase != "AWAITING_HELPER") || v.Pin.Aggregate != r.Pin.Aggregate || v.Pin.RootDevice != r.Pin.RootDevice || v.Pin.RootInode != r.Pin.RootInode || v.Pin.RootMode != r.Pin.RootMode || v.Metadata.HelperSHA256 != sha || v.BackupSHA256 != sha {
+				return migrationRecoveryHold
+			}
+			// Recompute the original plain preview token, not merely the
+			// record's syntax or STOP receipt hashes.
+			preview := v
+			preview.Metadata.Phase = "INSPECTED"
+			preview.Metadata.Operation, preview.Metadata.Stage, preview.Metadata.Plan = "", "", ""
+			preview.Action, preview.BackupSHA256 = "", ""
+			preview.StopOperation, preview.StopResponseSHA256, preview.StopReadSHA256, preview.StopDisposition = "", "", "", ""
+			raw, _ := json.Marshal(struct {
+				Record desktopMigrationRecord
+				Loaded bool
+			}{preview, preview.WasLoaded})
+			if desktopSum(raw) != v.Metadata.Plan {
+				return migrationRecoveryHold
+			}
+			if e := m.stopEvidence(v); e != nil {
+				return e
+			}
+			if _, _, e := m.recoveryImage(v.Metadata.Stage, v.Metadata.BinarySHA256); e != nil {
+				return e
+			}
+			if _, _, e := m.recoveryImage(filepath.Join(m.opPath(op), "old-binary"), sha); e != nil {
+				return e
+			}
+			sent, _, e := reloadCapture(filepath.Join(m.opPath(op), ".sent"), m.uid)
+			members, err := migrationMembers(m.opPath(op), 6)
+			if e != nil || err != nil || string(sent) != "STOP\n" || len(members) != 6 {
+				return migrationRecoveryHold
+			}
+			copy := v
+			next = &copy
+		}
+		if next == nil {
+			break
+		}
+		seen[next.Metadata.Operation] = true
+		if next.Metadata.Phase == "AWAITING_HELPER" {
+			if awaiting == nil || next.Metadata.Operation != awaiting.Metadata.Operation || m.unchanged(*next) != nil {
+				return migrationRecoveryHold
+			}
+			// An unpublished leaf does not advance the canonical lineage tip.
+			tip = next.Metadata.Operation
+			break
+		}
+		sha = next.Metadata.BinarySHA256
+		tip = next.Metadata.Operation
+	}
+	raw, _, err := reloadCapture(filepath.Join(m.home, ".anytls-desktop-state", "authorization.json"), m.uid)
+	auth, decodeErr := reloadJSON(raw)
+	authSHA := sha
+	if awaiting != nil {
+		authSHA = awaiting.Metadata.BinarySHA256
+	}
+	if err != nil || decodeErr != nil || auth["operation"] != tip || auth["sha"] != authSHA {
+		return migrationRecoveryHold
+	}
+	// No disconnected newer transaction may be mistaken for our lineage.
+	for op := range records {
+		if !seen[op] {
+			return migrationRecoveryHold
+		}
+	}
+	if now.Metadata.OldBinarySHA256 != sha {
+		return migrationRecoveryHold
+	}
+	if awaiting != nil {
+		h, err := m.helper()
+		oldReady := err == nil && migrationBound(h, awaiting.Metadata, sha) && h.HelperVersion == awaiting.Metadata.HelperVersion
+		newReady := err == nil && migrationBound(h, awaiting.Metadata, awaiting.Metadata.BinarySHA256) && h.HelperVersion == currentVersion()
+		if (!oldReady && !newReady) || !migrationStopped(h) || m.unchanged(*awaiting) != nil {
+			return migrationRecoveryHold
+		}
+		*result = awaiting.Metadata
+		return desktopError("HOLD_PENDING")
+	}
+	// Capture the fully proven published bytes before a helper callback can
+	// replace canonical. No execution ever uses that mutable installed path.
+	before, e := desktopFile(now.Metadata.Binary, m.uid, 0755)
+	if e != nil {
+		return e
+	}
+	image, e := controlInstallCapture(now.Metadata.Binary)
+	after, err := os.Lstat(now.Metadata.Binary)
+	if e != nil || err != nil || !reloadStable(before, after) || desktopSum(image) != sha {
+		return migrationRecoveryHold
+	}
+	h, e := m.helper()
+	if e != nil || !migrationBound(h, now.Metadata, sha) || !migrationStopped(h) || validateBuildVersion(h.HelperVersion) != nil {
+		return migrationRecoveryHold
+	}
+	current, err := os.Lstat(now.Metadata.Binary)
+	if err != nil || !reloadStable(before, current) {
+		return migrationRecoveryHold
+	}
+	version, e := m.recoveryImageVersion(image, sha)
+	if e != nil || version != h.HelperVersion {
+		return migrationRecoveryHold
+	}
+	current, err = os.Lstat(now.Metadata.Binary)
+	if err != nil || !reloadStable(before, current) {
+		return migrationRecoveryHold
+	}
+	// The last preflight has another callback: bind its exported old SHA/helper
+	// to the historical lineage tip, then capture again AFTER that callback.
+	preview, e := m.preflight()
+	if e != nil || preview.Metadata.OldBinarySHA256 != sha || preview.Metadata.HelperSHA256 != sha || preview.Metadata.HelperVersion != version || preview.Metadata.WasRunning || preview.WasLoaded {
+		return migrationRecoveryHold
+	}
+	final, e := m.capture()
+	if e != nil || final.Pin != preview.Pin || final.Metadata.OldBinarySHA256 != sha || final.Metadata.BinarySHA256 != preview.Metadata.BinarySHA256 || final.Pin.Aggregate != r.Pin.Aggregate || final.Pin.RootDevice != r.Pin.RootDevice || final.Pin.RootInode != r.Pin.RootInode || final.Pin.RootMode != r.Pin.RootMode {
+		return migrationRecoveryHold
+	}
+	*result = preview.Metadata
+	return nil
+}
+
+// Only called with a lineage-proven incumbent capture. The private copy is
+// exclusive, no-follow, rehashed and executed with only -version; never consult
+// TMPDIR, candidate stages or the mutable installed pathname for execution.
+func (m desktopMigration) recoveryImageVersion(image []byte, sha string) (version string, resultErr error) {
+	if len(image) == 0 || desktopSum(image) != sha {
+		return "", migrationRecoveryHold
+	}
+	root, e := desktopBase(m.home, m.uid, false)
+	if e != nil {
+		return "", e
+	}
+	dir, e := os.MkdirTemp(root, ".migration-version-")
+	if e != nil {
+		return "", migrationRecoveryHold
+	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+			// A retained executable is not successful inspection. Preserve any
+			// primary failure and expose only the fixed public HOLD code.
+			version = ""
+			resultErr = errors.Join(resultErr, migrationRecoveryHold)
+		}
+	}()
+	if _, e = desktopDir(dir, m.uid, true); e != nil {
+		return "", e
+	}
+	path := filepath.Join(dir, "anytls-macos")
+	fd, e := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0700)
+	if e != nil {
+		return "", migrationRecoveryHold
+	}
+	f := os.NewFile(uintptr(fd), path)
+	n, writeErr := f.Write(image)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil || n != len(image) {
+		return "", migrationRecoveryHold
+	}
+	if _, _, e = m.recoveryImage(path, sha); e != nil {
+		return "", e
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, diagnostic := migrationVersionOutput{cancel: cancel}, migrationVersionOutput{cancel: cancel}
+	cmd := exec.CommandContext(ctx, path, "-version")
+	cmd.Dir = dir
+	cmd.Stdout, cmd.Stderr = &out, &diagnostic
+	// Bound pipe drain even if a descendant inherits a pipe. Run/Wait owns and
+	// reaps the direct child; cancellation kills only that owned direct child.
+	cmd.WaitDelay = 200 * time.Millisecond
+	if e = cmd.Run(); e != nil || ctx.Err() != nil || out.overflow || diagnostic.overflow {
+		return "", migrationRecoveryHold
+	}
+	if _, _, e = m.recoveryImage(path, sha); e != nil {
+		return "", e
+	}
+	return strings.TrimSpace(string(out.b)), nil
+}
+
+// webBoundedOutput was considered but silently discards at 64KiB and cannot
+// cancel; the version contract needs a strict 256-byte per-stream write bound.
+type migrationVersionOutput struct {
+	b        []byte
+	overflow bool
+	cancel   context.CancelFunc
+}
+
+func (w *migrationVersionOutput) Write(p []byte) (int, error) {
+	if len(p) > 256-len(w.b) {
+		w.overflow = true
+		w.cancel()
+		return 0, migrationRecoveryHold
+	}
+	w.b = append(w.b, p...)
+	return len(p), nil
 }
 
 // Shared read-only predicates for explicit finalization and inspection. Do not

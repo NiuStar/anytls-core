@@ -1,8 +1,29 @@
-# AnyTLS macOS 菜单栏客户端 0.4.5
+# AnyTLS 菜单栏 0.5.1
 
-原生 Swift / AppKit 统一 App 0.4.5（build 0.4.5.20261108.1），发行标签 `v2026-11-08-04`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
+## App 0.5.1 / build 0.5.1.20261109.1（正式发布准备，尚未发布）
 
-从本标签 Release 按芯片下载 `anytls-core-v2026-11-08-04-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-08-04-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
+核心 `v2026-11-09-03` 须从最终冻结提交原生重建，不复用 0.5.0 核心；目标为 macOS 13+ 的 Apple Silicon arm64 与 Intel amd64 双架构独立发行包。
+- 节点菜单使用原生自定义按钮：点击测试保持菜单打开，完成结果原位更新，不重建跟踪中的菜单，不自动选择节点。
+- 全部节点测试默认最多 6 个并发，重复点击合并为同一批；乱序完成仍绑定原节点、端点、ETag 和会话。完成样本保留至明确重测或退出。
+- App 发送 `tcp_direct`，在 macOS 上只接受可用 IP 字面量；必须发现符合地址族的物理 Ethernet/Wi-Fi 路由、绑定网卡并读回内核 socket 选项，才允许 TCP connect。域名、缺失物理路由、IPv6 无对应路径或绑定失败返回 `UNAVAILABLE`，不走系统 DNS，不回退普通 TCP 或 VPN 路由。
+- 测量 TCP 建连延迟，不是带宽或代理 HTTPS。Web 原有 `tcp`/`https` 保持兼容；不切节点、不改配置、DNS 或路由，不启停 VPN。默认 IPv4-only/TUN 策略不变。
+- 启动显示连接初始化进度，提供显式「重新初始化连接…」；不重放旧操作，不把历史 UNKNOWN 改成功，不绕过持久事务保护。升级必须由用户从新 App 主动「安装／更新组件…」，使用本版配套核心与助手，不能只换 App 或默认删除历史记录／重置。
+- ad-hoc 签名，未 Developer ID 签名或公证，不承诺 Gatekeeper 放行。最终提交双架构原生构建／测试／签名验包、完整 Go／Python、分支／main／标签 CI 与公开附件核验均须独立通过；旧内部 ARM 或 Rosetta 结果不等于本版最终资格，NOT_RUN 不能计为 PASS。真实管理员安装、节点出站及 VPN-on 物理旁路端到端仍须另验。
+- 当前仅为待资格门禁的源码与发布说明，未来标签和附件名称不是已可下载的链接。构建和发布不安装生产 App／助手、不授权或启停服务／VPN。
+
+详见[0.5.1 发布说明与验收边界](releases/v2026-11-09-03.md)。以下旧版本说明是历史记录，不代表 0.5.1 的当前发行范围或验证结果。
+
+## 历史候选说明（非本版本验证结果）
+
+---
+
+# 历史说明：AnyTLS macOS 菜单栏客户端 0.4.7
+
+当前为内部手测候选，尚未公开发布。新增对完整人工对账 `operator-reconciled.json` 历史重载证据的只读兼容；保留旧 UNKNOWN、原始记录与未完成事务门禁，不重放 STOP。正式附件名是未来发布约定，受影响 Intel 原生验证及用户实际升级尚须以独立回执验收。
+
+原生 Swift / AppKit 统一 App 0.4.7（build 0.4.7.20261109.1），发行标签 `v2026-11-09-01`，macOS 13+、**Apple Silicon arm64 与 Intel x86_64（发行名 amd64）**。包内携带同一 Go 核心（CLI / 控制台 / 固定特权助手角色），没有第二个 VPN 引擎。保留菜单栏双行流量、显式启动/停止/重连、启动节点、完整控制台；不包含登录／连接设置窗口，也不读取钥匙串。
+
+从本标签 Release 按芯片下载 `anytls-core-v2026-11-09-01-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-09-01-menubar-darwin-amd64.zip`，解压、拖入「应用程序」并打开，通过菜单「安装／更新组件…」完成准备及必要的 macOS 原生授权，无需终端；首次安装不启动 VPN。0.3.1 用户先用旧 App 正常退出并停止 VPN，再替换 App。稳定标签导致核心映像身份变化，仍须从新 App 主动安装／更新，不能承诺只换 App 即可直接用。签名为 ad-hoc，未 Developer ID 签名或公证；Intel 与 Apple Silicon 使用各自原生包，不混装。旧终端一键安装及双架构 CLI 保留，发布本身不替换用户服务。
 
 组件生命周期使用独立私有根目录中的 0600 `lifecycle.lock` 内核排他 flock；校验物理父目录、所有者、普通文件与单链接，不跟随符号链接，不删除或偷取锁。竞争 App 在 prepare、授权、STOP、TERM 前拒绝。锁覆盖异步操作至本次完成；崩溃释放内核锁但不清除持久 UNKNOWN/ARMED/ACTIVATION_UNKNOWN。仅有锁文件的安全目录不代表授权记录；未知目录成员、读权限错误保持 HOLD。正常退出 drain 失败仅撤销该次 ready 证明；下次 Quit 必须新鲜 STOP。原生受控进程测试不代表真实 launchd KeepAlive、管理员授权或 VPN 路由验收；用户需另行在本机接受这些关卡。
 
@@ -13,6 +34,12 @@
 此前更新停在 STOP／暂存结果未知时，不要重复安装或删除记录。新 App 提供独立「恢复未完成的组件更新…」操作，用户在当次点击立即确认后才可新建独立 STOP／更新事务；旧未知记录及暂存映像保留，不把旧操作标为成功。恢复前验证原始证据、当前核心／助手／配置、控制台策略及共享锁。当前停止状态不是历史成功证明。
 
 恢复请求先持久化独立应用意图，再派发新的助手操作；超时、响应丢失或写入不确定保持锁定，刷新、重启和重复点击不重放 STOP 或授权。新 STOP 证明通过后才进入原生管理员授权与受控发布；不自动启动 VPN。支持范围及实际验证以精确发行收据为准，未知布局或其他未决操作仍 HOLD。
+
+## 恢复完成后的后续升级
+
+已完成的显式恢复只有在 COMMITTED、STOP 证据、`supersession.json`、两个原生 DONE 意图及当前安装／助手／配置身份共同验证后，才允许作为后续普通组件升级的起点；不是仅凭 DONE 或当前停止状态放行。恢复记录可省略 console，存在时必须符合 `pid uid seconds micros argv sha managed` 完整字段及原事务关联，作为历史数据保留，不探测、终止或恢复旧 PID。授权 DONE 仍须省略 console 且 resume=false。
+
+版本读取使用已验证安装映像的私有绑定副本，仅执行有界 `-version`，与助手身份和版本读回一致后继续原升级流程；清理失败清空版本并保持 HOLD，保留主错误。原生显式同意和既有受限安装逻辑不变，不新增 root 操作。旧 UNKNOWN 不删除、不改成功；missing terminal、未完成、配置变化、断链、分叉及未知字段继续 HOLD。Swift 源及原五套 817 条清单未变；本候选完整原生、签名副本、CI、公开附件与生产验收仍须单独完成，见[本版说明](releases/v2026-11-09-01.md)。
 
 ## 主动初始化与正常退出
 
@@ -34,7 +61,7 @@ open ./macos/build/AnyTLSMenuBar.app
 
 架构为 `arm64` 或 `amd64`，分别仅在对应原生 Mac 上构建和验包；拒绝跨架构／universal 核心，防止 App 与内嵌核心架构不一致。Intel 使用 `CORE=/absolute/path/to/qualified/amd64/anytls-macos bash scripts/build-menubar.sh amd64 ./macos/build`。必须提供显式本地 CORE，不下载。构建使用 Swift 6.1.2 的 Swift 5 语言模式、macOS 13 deployment target，无第三方依赖；先 ad-hoc 签核心、生成实际签后 SHA 清单，再签 App 并严格验证。**不是 Developer ID、公证或 Gatekeeper 放行证明**。
 
-构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-08-04-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-08-04-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
+构建不执行安装或授权。App 为 LSUIElement，无 Dock 图标，不注册开机启动；核心版本来自显式 CORE 的纯 `-version`。发行包验证需 ZIP 解压后再次 codesign --verify --strict --deep。沿用 `org.anytls.menubar.candidate` 作为既有 bundle identity，不因其历史名称更换身份；这不表示当前 App 使用钥匙串，也不是 Developer ID 认证。对应源码附件为 `anytls-core-v2026-11-09-01-corresponding-source.tar.gz`（arm64）或 `anytls-core-v2026-11-09-01-darwin-amd64-corresponding-source.tar.gz`（Intel），许可证／NOTICE 随包保留。
 
 ## 无窗口自动连接
 
@@ -65,7 +92,7 @@ open ./macos/build/AnyTLSMenuBar.app
 
 Connectivity 在 monotonic 读取边界过期，MenuModel 对已缓存的正向结果同步投影；timer 只是通知机制，不是新鲜性权威。产品 freshness 45 秒、请求 5 秒、失败间隔 15 秒、成功间隔 30 秒保持不变。自然过期夹具仅把 45.1 秒等待改为同源 uptime，不延长等待或断言时限。当前已证 clock mismatch 与历史未记录时钟的 Date 失败分开，后者根因仍 UNKNOWN；r3 P2 handler capture 修复与原 HOLD 均保留。
 
-双架构 affected 原生结果已通过；不是最终发行身份的完整 817 条／CI／公开发行通过声明，完整资格仍须另验，见[本版说明](releases/v2026-11-08-04.md)。
+双架构 affected 原生结果已通过；不是最终发行身份的完整 817 条／CI／公开发行通过声明，完整资格仍须另验，见[本版说明](releases/v2026-11-09-01.md)。
 
 ## 安全隔离验收
 

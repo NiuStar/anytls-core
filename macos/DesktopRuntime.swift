@@ -191,11 +191,28 @@ final class DesktopRuntime {
     }
     func attach(login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
         guard !busy, !blocksQuit, exists(binary), verifyBundle(), digest(binary)==expectedSHA, beginLifecycle() else { return }
-        busy=true; inspect(allowAuthorization:false,login:login)
+        busy=true; inspect(allowAuthorization:false,readOnly:true,login:login)
     }
-    private func inspect(allowAuthorization: Bool, login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
+    // Called while the attach owner still holds its lease, after fresh HTTP reads.
+    // This is not installation/reconciliation and never saves historical intent.
+    func verifyConnectionReadiness(_ done: @escaping (Bool)->Void) {
+        guard busy, !setupUncertain, !recoveryBlocksQuit,
+              !intents.present || (try? intents.load())?.state == "DONE",
+              verifyBundle(), digest(binary)==expectedSHA else { done(false); return }
+        let generation=recoveryGeneration
+        run(binary,["desktop","inspect"],10) { [weak self] result in
+            guard let self=self, self.busy, self.recoveryGeneration==generation, !self.setupUncertain, !self.recoveryBlocksQuit,
+                  !self.intents.present || (try? self.intents.load())?.state == "DONE",
+                  let metadata=self.decode(result), metadata.helper_state == "ready" else { done(false); return }
+            done(true)
+        }
+    }
+    private func inspect(allowAuthorization: Bool, readOnly: Bool = false, login: @escaping (String,String,@escaping (Bool)->Void)->Void) {
+        let generation=recoveryGeneration
+        var consumed=false
         run(binary,["desktop","inspect"],10) { [weak self] r in
-            guard let self=self else { return }
+            guard let self=self, self.busy, self.recoveryGeneration==generation, !consumed else { return }
+            consumed=true
             guard let m=self.decode(r) else { self.fail("组件检查失败／安装结果未知；不会重试授权，请核实后重试初始化"); return }
             switch m.helper_state {
             case "missing":
@@ -209,7 +226,7 @@ final class DesktopRuntime {
                     self.inspect(allowAuthorization:false,login:login)
                 }
             case "ready":
-                if var intent=try? self.intents.load(), intent.operation==String(repeating:"0",count:64) { intent.state="DONE"; do { try self.intents.save(intent); self.setupUncertain=false } catch { self.fail("授权记录无法同步；保持锁定"); return } }
+                if !readOnly, var intent=try? self.intents.load(), intent.operation==String(repeating:"0",count:64) { intent.state="DONE"; do { try self.intents.save(intent); self.setupUncertain=false } catch { self.fail("授权记录无法同步；保持锁定"); return } }
                 self.startConsole(login:login)
             default: self.fail("助手身份不匹配或不可用；请检查旧版迁移，拒绝覆盖")
             }
@@ -368,7 +385,10 @@ final class DesktopRuntime {
             guard self.busy, self.recoveryGeneration==generation else { return }
             let metadata=DesktopMigration.parse(result)
             let awaiting=metadata.map { $0.valid(home:self.home,uid:self.uid,sha:self.expectedSHA) && $0.operation==intent.operation && $0.stage==intent.stage && $0.phase=="AWAITING_HELPER" } ?? false
-            guard metadata.map(self.recoveryMetadataMatches) ?? !self.intents.recoveryPresent else { self.fail("恢复来源或新事务身份不匹配；保持 HOLD"); return }
+            if metadata==nil && self.intents.recoveryPresent { self.fail("迁移需要人工核实；不会重放 STOP 或授权"); return }
+            if let metadata=metadata {
+                guard self.recoveryMetadataMatches(metadata) else { self.fail("恢复来源或新事务身份不匹配；保持 HOLD"); return }
+            }
             guard awaiting || (["READY","DRAINING"].contains(intent.state) && self.digest(self.binary)==self.expectedSHA) else { self.fail("迁移需要人工核实；不会重放 STOP 或授权"); return }
             guard !self.recoveryBlocksQuit || self.recoveryActionAllowed() else { self.fail("恢复发布前模型状态改变；保持 HOLD"); return }
             // Go finish checks new protected-helper readiness before any publication.

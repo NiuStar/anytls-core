@@ -86,6 +86,185 @@ final class MockProtocol: URLProtocol {
         MockProtocol.handler={ _,p in p.reply(200,["csrf":token,"expiresIn":28800]) }
         var done=false, ok=false; api.login(password:"SYNTHETIC_FIXTURE_ONLY") { ok=$0; done=true }; wait { done }; check(ok,"manual login")
     }
+    static func latency() {
+        let tag="\""+String(repeating:"a",count:64)+"\"", now=Date()
+        let dto: [String:Any] = ["name":"node","mode":"tcp_direct","status":"OK","latency_ms":12.5,"error":"","checked_at":ISO8601DateFormatter().string(from:now),"risk_insecure":false,"config_etag":tag]
+        check(NodeLatency.parse(dto,name:"node",etag:tag,now:now)?.label == "13 ms","TCP latency strict success")
+        var routed=dto;routed["mode"]="tcp"
+        check(NodeLatency.parse(routed,name:"node",etag:tag,now:now) == nil,"direct parser rejects legacy system-routed TCP success")
+        var unavailable=dto;unavailable["status"]="UNAVAILABLE";unavailable["error"]="PROBE_DIRECT_UNAVAILABLE";unavailable["latency_ms"]=NSNull()
+        check(NodeLatency.parse(unavailable,name:"node",etag:tag,now:now)?.label == "不可用","direct unavailable is not measured node failure")
+        unavailable["error"]="raw network details"
+        check(NodeLatency.parse(unavailable,name:"node",etag:tag,now:now) == nil,"direct unavailable rejects non-allowlisted raw error")
+        for (key,value) in [("name","wrong" as Any),("mode","https" as Any),("config_etag","wrong" as Any),("latency_ms",true as Any),("latency_ms",-1 as Any),("latency_ms",Double.infinity as Any),("latency_ms",Double.nan as Any),("latency_ms",12001 as Any),("risk_insecure",1 as Any),("status","UNKNOWN" as Any),("error","PROBE_FAILED" as Any),("extra",false as Any)] {
+            var bad=dto; bad[key]=value; check(NodeLatency.parse(bad,name:"node",etag:tag,now:now) == nil,"TCP latency rejects malformed \(key)")
+        }
+        check(NodeLatency.parse(dto,name:"node",etag:tag,now:now.addingTimeInterval(16)) == nil,"TCP latency rejects stale sample")
+        check(NodeLatency.parse(dto,name:"node",etag:tag,now:now.addingTimeInterval(-2)) == nil,"TCP latency rejects future sample")
+        for (status,error,label) in [("FAILED","PROBE_FAILED","失败"),("FAILED","PROBE_CANCELED","失败"),("TIMEOUT","PROBE_TIMEOUT","超时"),("UNSUPPORTED","PROBE_UNSUPPORTED","不支持")] {
+            var failed=dto;failed["status"]=status;failed["error"]=error;failed["latency_ms"]=NSNull()
+            check(NodeLatency.parse(failed,name:"node",etag:tag,now:now)?.label == label,"TCP latency typed \(error)")
+            failed["latency_ms"]=0;check(NodeLatency.parse(failed,name:"node",etag:tag,now:now) == nil,"TCP latency rejects non-null failed latency")
+        }
+        let model=MenuModel(api:mockClient(),connectivityMonitor:nil);authenticate(model.api)
+        var held: MockProtocol?, currentTag=tag, names=["node","other"], probeCalls=0
+        var heldBatch=[String:MockProtocol]()
+        MockProtocol.handler={ req,p in
+            switch req.url!.path {
+            case "/api/v1/nodes":p.reply(200,["etag":currentTag,"nodes":names.map { ["name":$0,"selectable":true,"selected":$0 == "node","skipVerify":false] as [String:Any] }])
+            case "/api/v1/status":p.reply(200,["availability":"AVAILABLE","loaded":false,"running":false])
+            case "/api/v1/helper/status":p.reply(200,["available":false])
+            case "/api/v1/traffic":p.reply(200,[:])
+            case "/api/v1/nodes/probe":
+                probeCalls += 1; held=p
+                check(req.httpMethod == "POST" && req.value(forHTTPHeaderField:"If-Match") == currentTag && req.value(forHTTPHeaderField:"X-CSRF-Token") == token,"TCP probe authenticated POST literal ETag")
+                check(req.timeoutInterval == 11,"TCP probe has dedicated bounded deadline")
+                var bytes=req.httpBody ?? Data()
+                if bytes.isEmpty, let stream=req.httpBodyStream { stream.open();defer { stream.close() }; var b=[UInt8](repeating:0,count:1024);while stream.hasBytesAvailable { let n=stream.read(&b,maxLength:b.count);if n<=0 { break };bytes.append(contentsOf:b.prefix(n)) } }
+                let body=(try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any]
+                if let name=body?["name"] as? String { heldBatch[name]=p }
+                check(body.map { exact($0,["name","mode","confirm_insecure"]) && $0["mode"] as? String == "tcp_direct" && jsonBool($0["confirm_insecure"]) == false && names.contains($0["name"] as? String ?? "") } == true,"TCP probe exact non-consenting request body")
+            default:check(false,"TCP fixture unexpected endpoint")
+            }
+        }
+        model.refresh();wait { model.canProbe };drainRefresh(model.api)
+        let before=MockProtocol.calls.count
+        model.probeNodes();model.probeNodes()
+        let batchDeadline=Date().addingTimeInterval(2)
+        while heldBatch.count < 2 && Date() < batchDeadline { _=RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.01)) }
+        check(heldBatch.count == 2 && probeCalls == 2 && model.probing && !model.pending && !model.uncertain,"bounded batch admits two simultaneous held probes and coalesces repeated click")
+        model.refresh();drainRefresh(model.api)
+        check(model.probing && model.latencyLabel("node") == "测试中…","same configuration refresh preserves probe queue")
+        heldBatch["other"]!.fail()
+        var fresh=dto;fresh["checked_at"]=ISO8601DateFormatter().string(from:Date());heldBatch["node"]!.reply(200,fresh);held=nil
+        wait { !model.probing }
+        check(model.latencyLabel("node").contains("13 ms") && model.nodes.first?.selected == true,"TCP result does not alter selection")
+        check(model.latencyLabel("other").contains("不可用") && !model.pending && !model.uncertain,"TCP transport unavailable does not become node failure or mutation unknown")
+        check(MockProtocol.calls.dropFirst(before).filter { $0.httpMethod == "POST" }.allSatisfy { $0.url!.path == "/api/v1/nodes/probe" },"TCP dispatches no select save or lifecycle mutation")
+        model.environmentChanged(sleeping:true)
+        check(model.latencyLabel("node").contains("13 ms"),"completed TCP sample survives sleep in application lifetime")
+        model.environmentChanged();wait { model.canProbe };drainRefresh(model.api)
+        model.api.reset()
+        check(model.latencyLabel("node").contains("13 ms"),"completed TCP sample survives session reset")
+        model.api.reset(endpoint:try! LocalEndpoint("http://127.0.0.1:49173"))
+        check(model.latencyLabel("node") == "—","other endpoint never inherits same-name node sample")
+        model.api.reset(endpoint:try! LocalEndpoint("http://127.0.0.1:18089"))
+        check(model.latencyLabel("node").contains("13 ms"),"returning endpoint recovers its own retained batch")
+        authenticate(model.api)
+        // Restore the read/probe fixture after the dedicated login response.
+        MockProtocol.handler={ req,p in
+            switch req.url!.path {
+            case "/api/v1/nodes":p.reply(200,["etag":currentTag,"nodes":names.map { ["name":$0,"selectable":true,"selected":$0 == "node","skipVerify":false] as [String:Any] }])
+            case "/api/v1/status":p.reply(200,["availability":"AVAILABLE","loaded":false,"running":false])
+            case "/api/v1/helper/status":p.reply(200,["available":false])
+            case "/api/v1/traffic":p.reply(200,[:])
+            case "/api/v1/nodes/probe":probeCalls += 1;held=p
+            default:check(false,"retention fixture unexpected endpoint")
+            }
+        }
+        model.refresh();wait { model.canProbe };drainRefresh(model.api)
+        currentTag="\""+String(repeating:"b",count:64)+"\"";model.refresh();drainRefresh(model.api)
+        check(!model.probing && model.latencyLabel("node").contains("旧配置") && model.latencyLabel("node").contains("13 ms"),"configuration change preserves stale marked TCP sample")
+        check(model.latencyTooltip("node")?.contains("上次 TCP 测试") == true,"retained sample exposes checkedAt timestamp")
+        names=[];model.refresh();drainRefresh(model.api)
+        check(model.latencyLabel("node").contains("13 ms"),"temporarily absent node retains completed sample")
+        names=["node","other"];model.refresh();drainRefresh(model.api)
+        model.probeNodes();wait { held != nil };let obsolete=held!;held=nil
+        model.environmentChanged(sleeping:true)
+        check(!model.canProbe && !model.probing && model.latencyLabel("node") == "—","explicit retest resets current namespace; sleep clears active testing only")
+        obsolete.reply(200,fresh);_=RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.05))
+        check(model.latencyLabel("node") == "—","late canceled sample fenced")
+        model.stopPolling();model.api.reset();MockProtocol.handler=nil
+    }
+    static func batchLatency() {
+        let model=MenuModel(api:mockClient(),connectivityMonitor:nil);authenticate(model.api)
+        let tag="\""+String(repeating:"a",count:64)+"\""
+        let names=(0..<10).map { "batch-\($0)" }
+        var held=[String:MockProtocol](), admitted=[String](), mutationDone=false
+        MockProtocol.handler={ req,p in
+            switch req.url!.path {
+            case "/api/v1/nodes":p.reply(200,["etag":tag,"nodes":names.map { ["name":$0,"selectable":true,"selected":false,"skipVerify":false] }])
+            case "/api/v1/status":p.reply(200,["availability":"AVAILABLE","loaded":false,"running":false])
+            case "/api/v1/helper/status":p.reply(200,["available":false])
+            case "/api/v1/traffic":p.reply(200,[:])
+            case "/api/v1/fixture-mutation": mutationDone=true;p.reply(200,[:])
+            case "/api/v1/nodes/probe":
+                // URLProtocol exposes the stream on Darwin.
+                var bytes=req.httpBody ?? Data()
+                if bytes.isEmpty,let s=req.httpBodyStream { s.open();defer { s.close() };var b=[UInt8](repeating:0,count:4096);while s.hasBytesAvailable { let n=s.read(&b,maxLength:b.count);if n<=0 { break };bytes.append(contentsOf:b.prefix(n)) } }
+                let name=(try! JSONSerialization.jsonObject(with:bytes) as! [String:Any])["name"] as! String
+                admitted.append(name);held[name]=p
+            default:check(false,"batch fixture unexpected path")
+            }
+        }
+        model.refresh();wait { model.canProbe };drainRefresh(model.api)
+        model.probeNodes();wait { held.count == 6 }
+        check(admitted.count == 6 && Set(admitted).count == 6,"batch barrier admits exactly six unique simultaneous requests")
+        let last=held.removeValue(forKey:"batch-5")!;last.reply(429,[:])
+        wait { admitted.count == 7 }
+        check(model.probeCompleted == 1 && model.latencyLabel("batch-5").contains("不可用") && held.count == 6,"429 unavailable releases one slot without automatic retry")
+        check(model.api.request("/fixture-mutation",method:"POST",body:[:]) { _ in mutationDone=true },"unrelated mutation owner can coexist with read-only batch")
+        model.stopPolling();wait { mutationDone }
+        check(!model.probing && !model.pending && !model.uncertain,"cancel all probes leaves unrelated request owner intact")
+        held=[:];admitted=[];model.probeNodes();wait { held.count == 6 }
+        for p in held.values { p.fail() };held=[:]
+        wait { admitted.count == 10 }
+        check(Set(admitted).count == 10 && held.count == 4,"batch refills bounded slots and dispatches each node once")
+        for p in held.values { p.fail() };held=[:];wait { !model.probing }
+        check(model.probeCompleted == 10 && model.probeTotal == 10,"batch completes ten results without lifecycle UNKNOWN")
+        model.refresh();drainRefresh(model.api);admitted=[];model.probeNodes();wait { held.count == 6 }
+        let unauthorized=held.values.first!;unauthorized.reply(401,[:]);wait { !model.api.authenticated }
+        check(!model.probing && !model.pending && !model.uncertain,"401 expires batch and fences sibling callbacks")
+        model.stopPolling();model.api.reset();held=[:];MockProtocol.handler=nil
+    }
+    static func connectionInitialization() {
+        let model=MenuModel(api:mockClient(),connectivityMonitor:nil);authenticate(model.api)
+        let tag="\""+String(repeating:"a",count:64)+"\""
+        var held: MockProtocol?
+        MockProtocol.handler={ req,p in
+            switch req.url!.path {
+            case "/api/v1/status":p.reply(200,["availability":"AVAILABLE","loaded":false,"running":false])
+            case "/api/v1/helper/status":p.reply(200,["available":true])
+            case "/api/v1/nodes":p.reply(200,["etag":tag,"nodes":[]])
+            case "/api/v1/traffic":p.reply(200,[:])
+            case "/api/v1/service/start":held=p
+            default:check(false,"initialization fixture unexpected request")
+            }
+        }
+        model.refresh();wait { model.canMutate };drainRefresh(model.api)
+        let before=MockProtocol.calls.count
+        model.mutate(path:"/service/start",consent:false);wait { held != nil }
+        check(model.beginConnectionInitialization(userConfirmedDiscardUnknown:true) == nil,"initialization cannot abandon pending mutation")
+        held!.fail();held=nil;wait { model.uncertain };drainRefresh(model.api)
+        check(model.beginConnectionInitialization(userConfirmedDiscardUnknown:false) == nil,"automatic initialization never clears UNKNOWN")
+        let owner=model.beginConnectionInitialization(userConfirmedDiscardUnknown:true)
+        check(owner != nil && model.initializingConnection && model.uncertain && !model.api.authenticated && !model.canMutate,"explicit initialization resets temporary observations but retains UNKNOWN until fresh proof")
+        check(model.beginConnectionInitialization(userConfirmedDiscardUnknown:true) == nil,"initialization single flight")
+        model.finishConnectionInitialization(owner:UUID(),verified:true)
+        check(model.initializingConnection && model.uncertain,"stale initialization completion cannot unlock UNKNOWN")
+        model.finishConnectionInitialization(owner:owner!,verified:false)
+        check(!model.initializingConnection && model.uncertain && !model.canMutate,"failed initialization retains UNKNOWN")
+        let retry=model.beginConnectionInitialization(userConfirmedDiscardUnknown:true)!
+        model.finishConnectionInitialization(owner:retry,verified:true)
+        check(model.uncertain && !model.api.authenticated,"caller Boolean without fresh authenticated observations cannot clear UNKNOWN")
+        let freshOwner=model.beginConnectionInitialization(userConfirmedDiscardUnknown:true)!
+        authenticate(model.api)
+        MockProtocol.handler={ req,p in
+            switch req.url!.path {
+            case "/api/v1/status":p.reply(200,["availability":"AVAILABLE","loaded":false,"running":false])
+            case "/api/v1/helper/status":p.reply(200,["available":true])
+            case "/api/v1/nodes":p.reply(200,["etag":tag,"nodes":[]])
+            case "/api/v1/traffic":p.reply(200,[:])
+            default:check(false,"fresh initialization fixture is read only")
+            }
+        }
+        model.refresh();wait { model.connectionObservationsReady };drainRefresh(model.api)
+        check(!model.canMutate && !model.canProbe && model.uncertain,"fresh status alone cannot auto clear initialization UNKNOWN")
+        model.finishConnectionInitialization(owner:freshOwner,verified:true)
+        check(!model.uncertain && model.canMutate && model.message.contains("不追认"),"explicit fresh initialization discards only client UNKNOWN without declaring old operation success")
+        check(MockProtocol.calls.dropFirst(before).filter { $0.httpMethod == "POST" && $0.url!.path != "/api/v1/login" }.count == 1,"initialization never repeats STOP START selection or install")
+        model.stopPolling();model.api.reset();MockProtocol.handler=nil
+    }
     static func unit() {
         for value in ["http://127.0.0.1:18089","http://localhost:1","http://[::1]:65535"] { check((try? LocalEndpoint(value)) != nil,"loopback accepted \(value)") }
         for value in ["https://127.0.0.1","http://example.com","http://127.0.0.1/","http://127.0.0.1:0","http://127.0.0.1:65536","http://a@127.0.0.1","http://127.0.0.1#x","http://127.0.0.1?x","http://127.1","http://2130706433"," http://localhost","http://localhost.","http://127.0.0.1/%2f"] { check((try? LocalEndpoint(value)) == nil,"unsafe endpoint rejected") }
@@ -318,6 +497,8 @@ final class MockProtocol: URLProtocol {
     static func main() {
         if CommandLine.arguments.contains("--integration") {
             integration(); print(String(data:try! JSONSerialization.data(withJSONObject:["ok":true,"checks":checks.count]),encoding:.utf8)!)
-        } else { unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); print(output()) }
+        } else if CommandLine.arguments.contains("--initialization") { connectionInitialization(); print(output())
+        } else if CommandLine.arguments.contains("--latency") { latency(); print(output())
+        } else { unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); latency(); batchLatency(); connectionInitialization(); print(output()) }
     }
 }

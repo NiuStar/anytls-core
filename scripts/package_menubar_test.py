@@ -142,8 +142,8 @@ class PackageTests(unittest.TestCase):
             path.write_bytes(b'fixture executable, NOT a native binary')
             path.chmod(0o755)
         self.info = dict(CFBundleIdentifier='org.anytls.menubar.candidate', CFBundleExecutable='AnyTLSMenuBar',
-                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.4.5',
-                         CFBundleVersion='0.4.5.20261108.1', AnyTLSCoreVersion=TAG,
+                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.5.1',
+                         CFBundleVersion='0.5.1.20261109.1', AnyTLSCoreVersion=TAG,
                          LSMinimumSystemVersion='13.0', LSUIElement=True)
         self.write_info()
         self.runtime = self.app / 'Contents/Resources/runtime/anytls-macos'
@@ -242,8 +242,8 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.out / result['asset']) as archive:
             info = json.loads(archive.read('BUILD-INFO.json'))
             self.assertEqual(info['architecture'], 'amd64')
-            self.assertEqual(info['app_version'], '0.4.5')
-            self.assertEqual(info['app_build'], '0.4.5.20261108.1')
+            self.assertEqual(info['app_version'], '0.5.1')
+            self.assertEqual(info['app_build'], '0.5.1.20261109.1')
             self.assertEqual(info['corresponding_source'], self.prefix + '-darwin-amd64-corresponding-source.tar.gz')
             self.assertIn(b'Intel x86_64 ONLY', archive.read('README.txt'))
 
@@ -330,8 +330,8 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(script.count('-target "$MACHINE-apple-macosx13.0"'), 5)
         self.assertLess(script.index('uname -m'), script.index('CORE_VERSION='))
         self.assertIn('"$CORE" -verify_arch "$MACHINE"', script)
-        self.assertLess(script.index('codesign --force --sign - "$APP/Contents/Resources/runtime/anytls-macos"'), script.index("runtime/'manifest.json'"))
-        self.assertLess(script.index("runtime/'manifest.json'"), script.index('codesign --force --sign - "$APP"'))
+        self.assertLess(script.index('codesign --force --sign - "$APP/Contents/Resources/runtime/anytls-macos"'), script.index('runtime/"manifest.json"'))
+        self.assertLess(script.index('runtime/"manifest.json"'), script.index('codesign --force --sign - "$APP"'))
 
     def test_malformed_tag_rejected_before_native_calls(self):
         for tag in ('v2026-11-07-01/../../x', 'candidate', TAG + '\n', 'v1.2.3;id'):
@@ -430,10 +430,10 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(p.run_tests(self.root / 'test', evidence), p.SUITES)
         self.assertEqual(annotations.getvalue(), '')
         self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
-        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 208, 'QuitTests': 250,
-                                    'ConnectivityTests': 61, 'FocusTests': 90,
-                                    'DesktopRuntimeTests': 208})
-        self.assertEqual(sum(p.SUITES.values()), 817)
+        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 299, 'QuitTests': 250,
+                                    'ConnectivityTests': 61, 'FocusTests': 125,
+                                    'DesktopRuntimeTests': 212})
+        self.assertEqual(sum(p.SUITES.values()), 947)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())
