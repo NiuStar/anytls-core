@@ -176,6 +176,13 @@ func TestStartupIntegrationIPCAuthenticatedHTTP(t *testing.T) {
 	coreDone := make(chan error, 1)
 	coreStarted := false
 	tool := d.tool
+	dns := d.dns
+	d.dns = func() ([]string, error) {
+		if *loaded {
+			return nil, errors.New("private fixture final DNS failure")
+		}
+		return dns()
+	}
 	d.tool = func(ctx context.Context, name string, args ...string) (string, error) {
 		if name == "/bin/launchctl" && args[0] == "bootstrap" {
 			// A real core with no TUN or DNS lookup, only a test-owned loopback listener.
@@ -225,7 +232,8 @@ func TestStartupIntegrationIPCAuthenticatedHTTP(t *testing.T) {
 			push()
 		}
 		if name == "/usr/bin/curl" {
-			return "", errors.New("private fixture HTTPS failure")
+			t.Error("local startup invoked external HTTPS")
+			return "", errors.New("unexpected external HTTPS")
 		}
 		return tool(ctx, name, args...)
 	}
@@ -324,7 +332,7 @@ func TestStartupIntegrationIPCAuthenticatedHTTP(t *testing.T) {
 			stages[event.Stage] = true
 		}
 	}
-	for _, stage := range []string{"CORE_OPEN_SINK", "CORE_START", "CORE_CLOSE", "SNAPSHOT_REMOVE", "RECEIPT_WRITE", "HELPER_FINISH", "WEB_FINISH"} {
+	for _, stage := range []string{"CORE_OPEN_SINK", "CORE_START", "CORE_CLOSE", "FINAL_DNS", "SNAPSHOT_REMOVE", "RECEIPT_WRITE", "HELPER_FINISH", "WEB_FINISH"} {
 		if !stages[stage] {
 			t.Errorf("missing actual stage %s", stage)
 		}

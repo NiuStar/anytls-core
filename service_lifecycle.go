@@ -588,20 +588,14 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 				return true, timeout()
 			}
 			if loaded && running && strings.HasPrefix(target, "utun") {
-				// Once entered before expiry, HTTPS keeps its independent 40s
-				// retry budget and final identity checks, even past this window.
-				r.HTTPS = "FAILED"
-				if err := d.httpsExitProbe(context.Background(), target, baseline, servers); err != nil {
-					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-						r.HTTPS = "CANCELLED"
-					}
-					return true, err
-				}
-				r.HTTPS = "SUCCEEDED_SAME_INVOCATION"
+				// Local readiness has no external HTTPS dependency. Preserve the
+				// final observations; independent connectivity diagnostics must
+				// never be promoted into this invocation's startup evidence.
+				r.HTTPS = "NOT_EXECUTED"
 				r.active = &r.AfterHTTPS
 				r.AfterHTTPS.Job = "FAILED"
 				d.diagnostic.Job = "UNKNOWN"
-				// Re-read after the blocking HTTPS probe; PID alone never establishes ready.
+				// Re-observe before committing local readiness; PID alone is insufficient.
 				l, runningFinal, err := d.traceState("FINAL_JOB")
 				if err != nil {
 					return true, d.failure("READINESS", "READINESS_JOB_UNAVAILABLE", lifecycleFailure("readiness final job probe failed", err))
@@ -623,7 +617,7 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 					d.diagnostic.Tun = "TUN"
 				}
 				if !l || !runningFinal || finalTarget != target {
-					return true, d.failure("READINESS", "READINESS_CHANGED", errors.New("readiness changed during HTTPS probe"))
+					return true, d.failure("READINESS", "READINESS_CHANGED", errors.New("readiness changed during local verification"))
 				}
 				r.AfterHTTPS.Public = "VERIFIED_SAME_TUN"
 				d.startupRoutes = "FINAL_SERVER_ROUTES"
@@ -639,8 +633,11 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 					return true, d.failure("DNS", "DNS_EVIDENCE_EMPTY", errors.New("readiness DNS evidence unavailable"))
 				}
 				r.AfterHTTPS.DNS = "OBSERVED_NONEMPTY"
-				r.Readiness = "NETWORK_VERIFIED"
-				fmt.Printf("AnyTLS TUN ready; all server routes preserved; HTTPS exit probe passed; TLS identity %s\n", map[bool]string{true: "unverified (one or more routed outbounds)", false: "verified by configured CA"}[insecure])
+				r.Readiness = "LOCAL_READY"
+				r.Schema = 2
+				r.InternetVerification = "NOT_RUN"
+				d.diagnostic.Stage, d.diagnostic.Reason = "LOCAL_READY", "INTERNET_UNVERIFIED"
+				fmt.Printf("AnyTLS TUN local ready; all server routes preserved; internet unverified (not probed); TLS policy %s\n", map[bool]string{true: "unverified (one or more routed outbounds)", false: "configured CA verification required"}[insecure])
 				return true, nil
 			}
 			return false, nil

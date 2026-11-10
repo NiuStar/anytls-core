@@ -43,6 +43,7 @@ type recordsTracker struct {
 	rules     map[adapter.Rule]cr.RuleOrigin
 	final     cr.RouteProjection
 	outbounds map[string]adapter.Outbound
+	origins   map[string]cr.OutboundOrigin
 	mismatch  atomic.Bool
 }
 
@@ -142,7 +143,7 @@ func captureRecordsCA(path string) ([]byte, error) {
 }
 
 func bindRecords(instance *box.Box, raw []byte, input *RecordsInput, caVerified bool) *recordsTracker {
-	t := &recordsTracker{sink: input.Sink, rules: make(map[adapter.Rule]cr.RuleOrigin), outbounds: make(map[string]adapter.Outbound)}
+	t := &recordsTracker{sink: input.Sink, rules: make(map[adapter.Rule]cr.RuleOrigin), outbounds: make(map[string]adapter.Outbound), origins: make(map[string]cr.OutboundOrigin)}
 	m := input.Manifest
 	if m == nil || !caVerified {
 		t.report(cr.ProvenanceUnknown)
@@ -187,6 +188,7 @@ func bindRecords(instance *box.Box, raw []byte, input *RecordsInput, caVerified 
 			return t
 		}
 		t.outbounds[origin.Tag] = out
+		t.origins[origin.Tag] = origin
 	}
 	actualRules := instance.Router().Rules()
 	if len(actualRules) != len(m.Rules) {
@@ -317,6 +319,9 @@ func recordsOptionalDestination(d M.Socksaddr) *cr.Destination {
 }
 
 func (t *recordsTracker) observe(hook cr.Hook, metadata adapter.InboundContext, matched adapter.Rule, out adapter.Outbound) {
+	t.observeRoute(hook, metadata, t.route(matched, out))
+}
+func (t *recordsTracker) observeRoute(hook cr.Hook, metadata adapter.InboundContext, route cr.RouteProjection) {
 	network := cr.NetworkUnknown
 	switch metadata.Network {
 	case N.NetworkTCP:
@@ -324,13 +329,21 @@ func (t *recordsTracker) observe(hook cr.Hook, metadata adapter.InboundContext, 
 	case N.NetworkUDP:
 		network = cr.NetworkUDP
 	}
-	t.sink.TryAppend(cr.Observation{Hook: hook, Network: network, Destination: recordsDestination(metadata.Destination, metadata.Domain), OriginDestination: recordsOptionalDestination(metadata.OriginDestination), RouteOriginalDestination: recordsOptionalDestination(metadata.RouteOriginalDestination), Route: t.route(matched, out)})
+	t.sink.TryAppend(cr.Observation{Hook: hook, Network: network, Destination: recordsDestination(metadata.Destination, metadata.Domain), OriginDestination: recordsOptionalDestination(metadata.OriginDestination), RouteOriginalDestination: recordsOptionalDestination(metadata.RouteOriginalDestination), Route: route})
 }
 func (t *recordsTracker) RoutedConnection(_ context.Context, conn net.Conn, metadata adapter.InboundContext, matched adapter.Rule, out adapter.Outbound) net.Conn {
+	if selector, ok := out.(*selectionOutbound); ok {
+		base := t.route(matched, out)
+		return &liveRecordConn{conn, func(leaf adapter.Outbound) { t.observeRoute(cr.HookTCP, metadata, t.liveRoute(base, selector, leaf)) }}
+	}
 	t.observe(cr.HookTCP, metadata, matched, out)
 	return conn
 }
 func (t *recordsTracker) RoutedPacketConnection(_ context.Context, conn N.PacketConn, metadata adapter.InboundContext, matched adapter.Rule, out adapter.Outbound) N.PacketConn {
+	if selector, ok := out.(*selectionOutbound); ok {
+		base := t.route(matched, out)
+		return &liveRecordPacketConn{conn, func(leaf adapter.Outbound) { t.observeRoute(cr.HookUDP, metadata, t.liveRoute(base, selector, leaf)) }}
+	}
 	t.observe(cr.HookUDP, metadata, matched, out)
 	return conn
 }

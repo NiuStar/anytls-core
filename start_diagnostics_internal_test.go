@@ -7,7 +7,7 @@ import (
 )
 
 func TestStartDiagnosticsPrimaryAndRecovery(t *testing.T) {
-	for _, mode := range []string{"cancel", "certificate", "typedproxy", "plaintextproxy"} {
+	for _, mode := range []string{"cancel", "dns", "typedproxy", "plaintextproxy"} {
 		t.Run(mode, func(t *testing.T) {
 			d, b, c, k, _, _ := lifecycleFixture(t)
 			tool := d.tool
@@ -21,9 +21,17 @@ func TestStartDiagnosticsPrimaryAndRecovery(t *testing.T) {
 			case "plaintextproxy":
 				d.proxy = func() error { return errors.New((&systemProxyActiveError{}).Error()) }
 				want = "PROXY_STATE_UNAVAILABLE"
-			case "certificate":
-				primary = diagnosticCurlExit(60)
-				want = "HTTPS_CERTIFICATE_FAILED"
+			case "dns":
+				primary = errors.New("private DNS marker")
+				want = "DNS_STATE_UNAVAILABLE"
+			}
+			originalDNS := d.dns
+			d.dns = func() ([]string, error) {
+				loaded, _, _ := d.state()
+				if loaded {
+					return nil, primary
+				}
+				return originalDNS()
 			}
 			d.tool = func(ctx context.Context, name string, args ...string) (string, error) {
 				if name == "/usr/bin/curl" {
@@ -42,7 +50,7 @@ func TestStartDiagnosticsPrimaryAndRecovery(t *testing.T) {
 			if !errors.As(err, &e) || e.diagnostic.Reason != want {
 				t.Fatal("primary changed", err)
 			}
-			if mode == "cancel" || mode == "certificate" {
+			if mode == "cancel" || mode == "dns" {
 				if !errors.Is(err, primary) || !errors.Is(err, secondary) || e.diagnostic.Rollback != "FAILED" {
 					t.Fatal("causes/recovery lost", err)
 				}

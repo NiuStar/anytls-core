@@ -25,24 +25,24 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 		wantElapsed                         time.Duration
 		wantReason                          string
 	}{
-		{name: "immediate", wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 1},
-		{name: "ready_at_59s", readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 1, wantElapsed: 59 * time.Second},
+		{name: "immediate", wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 0},
+		{name: "ready_at_59s", readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 0, wantElapsed: 59 * time.Second},
 		{name: "ready_at_exactly_60s_rejected", readyAfter: 60 * time.Second, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
 		{name: "never_ready_rollback_cleanup", neverReady: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
 		{name: "loaded_not_running", notRunning: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "PROCESS_NOT_RUNNING"},
 		{name: "tools_consume_window", neverReady: true, publicCost: 19 * time.Second, wantPauses: 3, wantStates: 3, wantPublic: 3, wantServers: 6, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
 		{name: "state_consumes_entire_window_without_pause", stateCost: 60 * time.Second, wantStates: 1, wantElapsed: 60 * time.Second, wantReason: "READINESS_UNKNOWN"},
-		{name: "public_read_just_before_deadline", publicCost: 60*time.Second - time.Nanosecond, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 1, wantElapsed: 60*time.Second - time.Nanosecond},
+		{name: "public_read_just_before_deadline", publicCost: 60*time.Second - time.Nanosecond, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 0, wantElapsed: 60*time.Second - time.Nanosecond},
 		{name: "public_read_at_exact_deadline", publicCost: 60 * time.Second, wantStates: 1, wantPublic: 1, wantElapsed: 60 * time.Second, wantReason: "READINESS_UNKNOWN"},
 		{name: "public_read_crosses_deadline", publicCost: 61 * time.Second, wantStates: 1, wantPublic: 1, wantElapsed: 61 * time.Second, wantReason: "READINESS_UNKNOWN"},
 		{name: "server_routes_cross_deadline", serverCost: 31 * time.Second, wantStates: 1, wantPublic: 1, wantServers: 2, wantElapsed: 62 * time.Second, wantReason: "READINESS_UNKNOWN"},
 		{name: "round_begin_crosses_deadline", beginExpiry: true, wantElapsed: 60 * time.Second, wantReason: "READINESS_UNKNOWN"},
 		{name: "late_wakeup_starts_no_round", neverReady: true, pauseStep: 61 * time.Second, wantPauses: 1, wantStates: 1, wantPublic: 1, wantServers: 2, wantElapsed: 61 * time.Second, wantReason: "TUN_NOT_READY"},
-		{name: "preflight_and_bootstrap_do_not_consume_observation", preflight: 2 * time.Minute, readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 1, wantElapsed: 59 * time.Second},
-		{name: "preexpiry_https_keeps_own_budget", readyAfter: 59 * time.Second, httpsCost: 12 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 1, wantElapsed: 71 * time.Second},
+		{name: "preflight_and_bootstrap_do_not_consume_observation", preflight: 2 * time.Minute, readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 0, wantElapsed: 59 * time.Second},
+		{name: "blocked_external_probe_not_on_path", readyAfter: 59 * time.Second, httpsCost: 12 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 0, wantElapsed: 59 * time.Second},
 		{name: "route_error_fails_immediately", routeError: true, wantStates: 1, wantPublic: 1, wantReason: "READINESS_ROUTE_UNAVAILABLE"},
 		{name: "late_route_error_keeps_cause", routeError: true, publicCost: 61 * time.Second, wantStates: 1, wantPublic: 1, wantElapsed: 61 * time.Second, wantReason: "READINESS_ROUTE_UNAVAILABLE"},
-		{name: "https_still_required", failHTTPS: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 1, wantReason: "HTTPS_FAILED"},
+		{name: "https_not_required", failHTTPS: true, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 0},
 		{name: "timeout_cleanup_error_keeps_cause", neverReady: true, failCleanup: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,6 +50,7 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 			now := time.Unix(0, 0)
 			var began time.Time
 			observing, afterHTTPS, observationEnded := false, false, false
+			localCandidate := false
 			pauses, states, public, servers, probes, bootouts, clockReads := 0, 0, 0, 0, 0, 0, 0
 			primary, cleanup := errors.New("private readiness cause"), errors.New("private cleanup cause")
 			tool, state, route, remove := d.tool, d.state, d.route, d.remove
@@ -76,6 +77,9 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 				now = now.Add(step)
 			}
 			d.state = func() (bool, bool, error) {
+				if localCandidate {
+					afterHTTPS = true
+				}
 				if *loaded && !afterHTTPS && !observationEnded {
 					states++
 					now = now.Add(tc.stateCost)
@@ -101,6 +105,9 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 						servers++
 						now = now.Add(tc.serverCost)
 					}
+				}
+				if ip == "1.1.1.1" && *loaded && !tc.neverReady && now.Sub(began) >= tc.readyAfter && !tc.notRunning {
+					localCandidate = true
 				}
 				return route(ip)
 			}
@@ -142,7 +149,7 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 			}
 			v, _ := readDiagnostic(t, d.root)
 			if tc.wantSuccess {
-				if !*loaded || bootouts != 0 || v["readiness"] != "NETWORK_VERIFIED" || v["https"] != "SUCCEEDED_SAME_INVOCATION" || !strings.Contains(output, "AnyTLS TUN ready;") {
+				if !*loaded || bootouts != 0 || v["readiness"] != "LOCAL_READY" || v["https"] != "NOT_EXECUTED" || !strings.Contains(output, "AnyTLS TUN local ready;") {
 					t.Fatal("success lost independent HTTPS/identity evidence", v)
 				}
 				if _, err := os.Stat(d.root); err != nil {
@@ -162,7 +169,7 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 				if (tc.routeError || tc.failHTTPS) && !errors.Is(err, primary) {
 					t.Fatal("probe cause lost", err)
 				}
-				if *loaded || bootouts != 1 || v["readiness"] == "NETWORK_VERIFIED" || strings.Contains(output, "AnyTLS TUN ready;") {
+				if *loaded || bootouts != 1 || v["readiness"] == "NETWORK_VERIFIED" || strings.Contains(output, "AnyTLS TUN local ready;") {
 					t.Fatal("failure accepted readiness or skipped rollback", v, bootouts)
 				}
 				if tc.failCleanup {

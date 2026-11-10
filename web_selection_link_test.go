@@ -110,13 +110,25 @@ func TestWebSelectionLinkNodeAndSameNodeRepair(t *testing.T) {
 			w, cookie, csrf := linkFixture(t, selectionLinkConfig, saved)
 			calls := 0
 			w.state = func() (bool, bool, error) { calls++; return true, true, nil }
-			w.serviceAction = func(context.Context, string, bool) error { calls++; return nil }
+			w.serviceAction = func(context.Context, string, bool) error { t.Fatal("selection must not reload"); return nil }
+			identity, _ := controlHelperConfigIdentity(w.configPath)
+			actions := []string{}
+			w.selectionRecovery.request = func(_ context.Context, action string, _ bool) (controlHelperResponse, error) {
+				actions = append(actions, action)
+				r := controlHelperResponse{OK: true, Loaded: true, Running: true, ConfigIdentity: identity}
+				if action != "status" {
+					r.Code = "HOT_APPLIED"
+					r.SelectionOperation = &liveSelectionOperation{Operation: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32), Revision: 1, Node: "b"}
+				}
+				return r, nil
+			}
 			linkPost(t, w, cookie, csrf, "/api/v1/nodes/selection", `{"name":"b","confirm_insecure":true}`)
 			linkAssert(t, w, "b", "b", "127.0.0.2")
-			if calls != 3 {
-				t.Fatalf("expected one reload and two state reads, got %d", calls)
+			if calls != 1 || strings.Join(actions, ",") != "status,select" {
+				t.Fatalf("expected one local state read and one bound hot selection, state=%d helper=%v", calls, actions)
 			}
 			calls = 0
+			actions = nil
 			linkPost(t, w, cookie, csrf, "/api/v1/nodes/selection", `{"name":"b","confirm_insecure":true}`)
 			if calls != 0 {
 				t.Fatalf("no-op touched service: %d", calls)

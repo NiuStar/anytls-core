@@ -39,15 +39,16 @@ type controlHelperRegistration struct {
 	Home   string `json:"home"`
 }
 type controlHelperResponse struct {
-	OK             bool              `json:"ok"`
-	Code           string            `json:"code"`
-	Message        string            `json:"message"`
-	Loaded         bool              `json:"loaded"`
-	Running        bool              `json:"running"`
-	HelperVersion  string            `json:"helper_version"`
-	HelperSHA256   string            `json:"helper_sha256"`
-	ConfigIdentity string            `json:"config_identity"`
-	Diagnostics    *startDiagnostics `json:"diagnostics,omitempty"`
+	OK                 bool                    `json:"ok"`
+	Code               string                  `json:"code"`
+	Message            string                  `json:"message"`
+	Loaded             bool                    `json:"loaded"`
+	Running            bool                    `json:"running"`
+	HelperVersion      string                  `json:"helper_version"`
+	HelperSHA256       string                  `json:"helper_sha256"`
+	ConfigIdentity     string                  `json:"config_identity"`
+	Diagnostics        *startDiagnostics       `json:"diagnostics,omitempty"`
+	SelectionOperation *liveSelectionOperation `json:"selection_operation,omitempty"`
 }
 type controlHelperWireRequest struct {
 	Action        string `json:"action"`
@@ -93,7 +94,7 @@ func controlHelperDecodeOptional(r io.Reader, fields map[string]any, optional st
 		return errors.New("trailing input")
 	}
 	for key := range fields {
-		if !seen[key] && key != optional {
+		if !seen[key] && !strings.Contains(","+optional+",", ","+key+",") {
 			return errors.New("missing field")
 		}
 	}
@@ -111,13 +112,15 @@ func controlHelperValidRequest(q controlHelperWireRequest) bool {
 	switch q.Action {
 	case "start", "reload":
 		return true
-	case "status", "stop":
+	case "status", "stop", "select", "select-read":
 		return !q.AllowInsecure
 	}
 	return false
 }
 func controlHelperFailure(code string) controlHelperResponse {
 	messages := map[string]string{
+		"RELOAD_REQUIRED":  "Saved; this core or configuration requires an explicit reload. VPN unchanged.",
+		"SWITCH_UNKNOWN":   "Switch acknowledgment unavailable. Read runtime state before another switch; do not retry automatically.",
 		"PREFLIGHT_FAILED": "Configuration preflight failed; service unchanged.",
 		"STOP_FAILED":      "Stop or restoration failed; inspect local service diagnostics.",
 		"START_FAILED":     "Start failed; inspect local service diagnostics; recovery is not guaranteed.",
@@ -141,6 +144,10 @@ type controlHelperServer struct {
 	stop                func(context.Context) error
 	version, sha        string
 	mutation            sync.Mutex
+	liveLease           *liveSelectionLease
+	liveRootCheck       func(string) error
+	liveSocketCheck     func(string) error
+	livePeer            func(net.Conn, *startupBinding) bool
 	recordsSlot         sync.Mutex
 	recordsRead         func(context.Context, cr.Scope, cr.PageRequest) (cr.PageResponse, error)
 	recordsRegistration func() (controlHelperRegistration, error)
@@ -245,6 +252,11 @@ func (s *controlHelperServer) execute(q controlHelperWireRequest) controlHelperR
 	if q.Action == "status" {
 		return s.executeContext(context.Background(), q)
 	}
+	if q.Action == "select" || q.Action == "select-read" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.executeContext(ctx, q)
+	}
 	id, _ := st.NewID()
 	identity, _ := controlHelperConfigIdentity(s.registration.Config)
 	r, _ := s.executeStartup(q, id, identity, "LEGACY_CONTROL")
@@ -281,6 +293,19 @@ func (s *controlHelperServer) executeContext(ctx context.Context, q controlHelpe
 	var recovery string
 	if !controlHelperValidRequest(q) {
 		return controlHelperFailure("INVALID_REQUEST")
+	}
+	if q.Action == "select" || q.Action == "select-read" {
+		if !s.mutation.TryLock() {
+			return controlHelperFailure("BUSY")
+		}
+		defer s.mutation.Unlock()
+		if q.Action == "select-read" {
+			return s.readSelection(ctx)
+		}
+		if s.liveLease != nil && s.liveLease.unknown {
+			return s.liveLease.response(false)
+		}
+		return s.selectSaved(ctx)
 	}
 	if q.Action != "status" {
 
@@ -340,6 +365,9 @@ func (s *controlHelperServer) executeContext(ctx context.Context, q controlHelpe
 		if recovery == "FAILED" || recovery == "UNKNOWN" {
 			diagnostic.Restoration = recovery
 		}
+	}
+	if (q.Action == "start" || q.Action == "reload") && loaded && running || q.Action == "stop" && !loaded && !running {
+		s.liveLease = nil
 	}
 	return controlHelperResponse{OK: true, Loaded: loaded, Running: running, Message: "Control request completed.", Diagnostics: diagnostic}
 }
@@ -565,8 +593,13 @@ func controlHelperExchange(ctx context.Context, c net.Conn, q controlHelperWireR
 	if err != nil || uid != 0 {
 		return r, errors.New("FORBIDDEN: control helper peer is not root")
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-	defer stop()
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { defer close(closed); _ = c.Close() })
+	defer func() {
+		if !stop() {
+			<-closed
+		}
+	}()
 	deadline := time.Now().Add(6 * time.Minute)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -583,7 +616,7 @@ func controlHelperExchange(ctx context.Context, c net.Conn, q controlHelperWireR
 	if err = half.CloseWrite(); err != nil {
 		return r, errors.New("control helper request completion failed")
 	}
-	err = controlHelperReadResponse(c, &r)
+	err = controlHelperReadSelectionResponse(c, &r)
 	if err != nil || !r.Diagnostics.valid(r.OK) {
 		return controlHelperResponse{}, errors.New("HELPER_UNAVAILABLE: incompatible or invalid control helper response; reinstall with anytls helper install locally")
 	}
@@ -604,7 +637,10 @@ func controlHelperExchange(ctx context.Context, c net.Conn, q controlHelperWireR
 		r.Message = safe.Message
 		return r, fmt.Errorf("%s: %s", r.Code, r.Message)
 	}
-	if r.Code != "" {
+	if (q.Action == "select" || q.Action == "select-read") && (!r.Loaded || !r.Running || r.Code != "HOT_APPLIED" || !r.SelectionOperation.valid()) {
+		return controlHelperResponse{}, errors.New("invalid selection success")
+	}
+	if r.Code != "" && !((q.Action == "select" || q.Action == "select-read") && r.Code == "HOT_APPLIED") {
 		return controlHelperResponse{}, errors.New("invalid control helper success code")
 	}
 	return r, nil

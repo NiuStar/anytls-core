@@ -153,6 +153,14 @@ func TestLifecycleUnloadedMissingBaseline(t *testing.T) {
 func TestLifecycleRollbackErrors(t *testing.T) {
 	d, b, c, k, _, _ := lifecycleFixture(t)
 	primary := errors.New("probe sentinel")
+	originalDNS := d.dns
+	d.dns = func() ([]string, error) {
+		loaded, running, _ := d.state()
+		if loaded && running {
+			return nil, primary
+		}
+		return originalDNS()
+	}
 	cleanup := errors.New("bootout sentinel")
 	tool := d.tool
 	d.tool = func(ctx context.Context, n string, a ...string) (string, error) {
@@ -342,7 +350,7 @@ func TestLifecycleStopTransitions(t *testing.T) {
 	}
 }
 func TestLifecycleStartProbeTransitions(t *testing.T) {
-	for _, mode := range []string{"state", "public", "secondary", "dns", "https", "timeout", "bootstrap", "staging_cleanup_state"} {
+	for _, mode := range []string{"state", "public", "secondary", "dns", "timeout", "bootstrap", "staging_cleanup_state"} {
 		t.Run(mode, func(t *testing.T) {
 			d, b, c, k, loaded, _ := lifecycleFixture(t)
 			sentinel := errors.New("private upstream SECRET")
@@ -456,7 +464,11 @@ func TestLifecycleHTTPSExactUTUN(t *testing.T) {
 			}
 			d.route = func(ip string) (string, error) {
 				iface, err := route(ip)
-				if probed && *loaded && ip == "1.1.1.1" && mode != "unchanged" {
+				alreadyProbed := probed
+				if *loaded && ip == "1.1.1.1" {
+					probed = true
+				}
+				if alreadyProbed && *loaded && ip == "1.1.1.1" && mode != "unchanged" {
 					return "utun9", nil
 				}
 				if ip != "1.1.1.1" && iface != "en0" {
@@ -478,7 +490,7 @@ func TestLifecycleHTTPSExactUTUN(t *testing.T) {
 				t.Fatal("HTTPS probe not exercised")
 			}
 			if mode == "unchanged" {
-				if err != nil || !*loaded || !strings.Contains(output, "AnyTLS TUN ready;") {
+				if err != nil || !*loaded || !strings.Contains(output, "AnyTLS TUN local ready;") {
 					t.Fatalf("unchanged utun8 rejected: output=%q err=%v", output, err)
 				}
 				if err := d.stop(); err != nil {
@@ -486,10 +498,10 @@ func TestLifecycleHTTPSExactUTUN(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), "readiness changed during HTTPS probe") {
+			if err == nil || !strings.Contains(err.Error(), "readiness changed during local verification") {
 				t.Errorf("utun8 -> utun9 must fail readiness: %v", err)
 			}
-			if strings.Contains(output, "AnyTLS TUN ready;") {
+			if strings.Contains(output, "AnyTLS TUN local ready;") {
 				t.Error("changed utun printed ready")
 			}
 			bootouts := 0

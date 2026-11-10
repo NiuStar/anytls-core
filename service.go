@@ -324,10 +324,21 @@ func stagePrivateRunOwnedContext(ctx context.Context, binary, config, core, root
 	}
 	r.End(span, "OK", st.Fields{})
 	span = 0
+	if !externalCoreRequired() {
+		if err := stageLiveSource(config, root); err != nil {
+			return err
+		}
+	}
 	if err := startupSpan(ctx, "START", "SNAPSHOT_RULES", func() error { return stageRuleSets(config, root) }); err != nil {
 		return err
 	}
-	return startupSpan(ctx, "START", "SNAPSHOT_CA", func() error { return stageCAs(root) })
+	if err := startupSpan(ctx, "START", "SNAPSHOT_CA", func() error { return stageCAs(root) }); err != nil {
+		return err
+	}
+	if !externalCoreRequired() {
+		return finalizeLiveSource(root)
+	}
+	return nil
 }
 
 func confirmInsecure(in *os.File) error {

@@ -389,6 +389,13 @@ def core_reload_guard(app):
                     result.get('state') == 'SUCCEEDED' and
                     root.name == '.core-reload-' + result.get('operation_id', '') and
                     accepted == dict(operation_id=result['operation_id'], result_sha256=sha256(root/'result.json')))
+            if safe and ('receipt_schema' in result or os.path.lexists(root/'job.json')):
+                job = reconciliation_receipt(root,'job.json')[0]
+                local_ready = CORE_RELOAD_SUPPORT['job_local_ready'](job)
+                if local_ready or 'receipt_schema' in result:
+                    i.require(local_ready and type(result.get('receipt_schema')) is int and
+                              result['receipt_schema']==2 and job['app']==str(app) and
+                              job['operation_id']==result['operation_id'], 'CORE_RELOAD_SCHEMA')
         except (OSError, ValueError, KeyError, TypeError):
             safe = False
         if not safe:
@@ -689,16 +696,7 @@ def validate_helper_status(raw, digest, tag, identity):
                   all(type(response[k]) is str for k in required - {"ok", "loaded", "running"}), "invalid")
         i.require(response["ok"] is True and response["code"] == "", "invalid")
         if "diagnostics" in response:
-            d = response["diagnostics"]
-            fields = {"schema", "operation", "outcome", "stage", "reason", "rollback", "restoration", "cleanup", "receipt", "job", "tun"}
-            i.require(type(d) is dict and d.keys() == fields and type(d["schema"]) is int and d["schema"] == 1 and
-                      all(type(d[k]) is str for k in fields - {"schema"}), "invalid")
-            # startDiagnostics.valid(true), with the same fixed enum allowlists.
-            allowed = {"operation": "START RELOAD STOP", "outcome": "SUCCEEDED", "stage": "NONE", "reason": "NONE",
-                       "rollback": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "restoration": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN",
-                       "cleanup": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "receipt": "NOT_ATTEMPTED WRITTEN FAILED UNKNOWN",
-                       "job": "NOT_OBSERVED RUNNING NOT_RUNNING UNLOADED UNKNOWN", "tun": "NOT_OBSERVED TUN NOT_TUN UNKNOWN"}
-            i.require(all(d[k] in values.split() for k, values in allowed.items()), "invalid")
+            CORE_RELOAD_SUPPORT['diagnostics'](response['diagnostics'], reload=False, local_ready=True)
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
         raise ValueError("HELPER_STATUS_INVALID") from None
     i.require(response["helper_sha256"] == digest, "HELPER_STATUS_SHA_MISMATCH")
@@ -802,7 +800,7 @@ def request(q, timeout=5):
             need(len(raw) <= limit, 'CORE_RELOAD_FRAME')
         return strict(raw.decode('utf-8'))
 
-def status_check(r, digest, tag, identity):
+def status_check(r, digest, tag, identity, local_ready=True):
     required = 'ok code message loaded running helper_version helper_sha256 config_identity'
     need(type(r) is dict and set(required.split()) <= r.keys() and r.keys() <= set((required+' diagnostics').split()))
     need(all(type(r[k]) is bool for k in ('ok','loaded','running')) and
@@ -812,10 +810,10 @@ def status_check(r, digest, tag, identity):
          'CORE_RELOAD_STATUS_IDENTITY')
     need(not r['running'] or r['loaded'], 'CORE_RELOAD_STATUS_STATE')
     if 'diagnostics' in r:
-        diagnostics(r['diagnostics'], reload=False)
+        diagnostics(r['diagnostics'], reload=False, local_ready=local_ready)
     return r
 
-def diagnostics(d, reload=True):
+def diagnostics(d, reload=True, local_ready=False):
     shape(d, 'schema operation outcome stage reason rollback restoration cleanup receipt job tun')
     need(type(d['schema']) is int and d['schema'] == 1 and
          all(type(v) is str for k,v in d.items() if k != 'schema'))
@@ -823,10 +821,21 @@ def diagnostics(d, reload=True):
                  rollback='NOT_ATTEMPTED VERIFIED FAILED UNKNOWN', restoration='NOT_ATTEMPTED VERIFIED FAILED UNKNOWN',
                  cleanup='NOT_ATTEMPTED VERIFIED FAILED UNKNOWN', receipt='NOT_ATTEMPTED WRITTEN FAILED UNKNOWN',
                  job='NOT_OBSERVED RUNNING NOT_RUNNING UNLOADED UNKNOWN', tun='NOT_OBSERVED TUN NOT_TUN UNKNOWN')
-    need(all(d[k] in values.split() for k,values in enums.items()))
+    local = (local_ready and d['stage']=='LOCAL_READY' and d['reason']=='INTERNET_UNVERIFIED' and
+             d['operation'] in ('START','RELOAD') and d['job']=='RUNNING' and d['tun']=='TUN' and d['receipt']=='WRITTEN')
+    need(all(d[k] in values.split() for k,values in enums.items() if k not in ('stage','reason')) and
+         ((d['stage']=='NONE' and d['reason']=='NONE') or local))
     if reload:
         need(d['operation']=='RELOAD' and d['outcome']=='SUCCEEDED' and d['job']=='RUNNING' and
              d['tun']=='TUN' and d['receipt']=='WRITTEN', 'CORE_RELOAD_DIAGNOSTICS')
+
+def job_local_ready(job):
+    # Missing means frozen legacy, never an implicit upgrade to the new contract.
+    shape(job, 'app operation_id digest tag revision before'+(' receipt_schema' if 'receipt_schema' in job else ''))
+    if 'receipt_schema' not in job:
+        return False
+    need(type(job['receipt_schema']) is int and job['receipt_schema']==2)
+    return True
 
 def timeline_shape(r):
     # Source DTO shapes (internal/startuptimeline/types.go). Reject drift and
@@ -952,7 +961,7 @@ def trace_check(r, job, epoch):
     need(t['authority']=='AUXILIARY_NOT_AUTHORITY' and t['operation_id']==op and t['helper_epoch']==epoch and
          t['config_identity']==identity and t['operation']=='RELOAD' and t['source']=='MANUAL_RELOAD' and
          t['state']=='FINISHED' and t['lifecycle_result']=='SUCCEEDED' and t['helper_return']=='SUCCEEDED')
-    diagnostics(t['diagnostics'])
+    diagnostics(t['diagnostics'], local_ready=job_local_ready(job))
     need(type(t['streams']) is list)
     cores = [s for s in t['streams'] if type(s) is dict and s.get('role')=='CORE']
     need(len(cores)==1, 'CORE_RELOAD_PROVENANCE')
@@ -978,7 +987,7 @@ def worker(root):
         put(root,'claim.json',dict(pid=os.getpid()))
         claimed = True
         job = strict((root/'job.json').read_bytes())
-        shape(job, 'app operation_id digest tag revision before')
+        local_ready = job_local_ready(job)
         op = job['operation_id']
         need(hexstr(op,32) and hexstr(job['digest'],64) and hexstr(job['revision'],40) and
              type(job['tag']) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',job['tag']))
@@ -1006,10 +1015,11 @@ def worker(root):
              response['ok'] is True and response['code']=='' and response['loaded'] is True and response['running'] is True and
              response['operation_id']==op and response['helper_epoch']==epoch and response['timeline_availability']=='AVAILABLE' and
              response['helper_sha256']==job['digest'] and response['helper_version']==job['tag'] and response['config_identity']==pin['identity'])
-        diagnostics(response['diagnostics'])
+        diagnostics(response['diagnostics'], local_ready=local_ready)
         timeline = request(dict(timeline_schema=1,action='startup.read',operation_id=op))
         put(root,'timeline.json',timeline)
         trace_check(timeline,job,epoch)
+        need(timeline['trace']['diagnostics']==response['diagnostics'], 'CORE_RELOAD_DIAGNOSTICS')
         status = status_check(request(dict(action='status',allow_insecure=False)),job['digest'],job['tag'],pin['identity'])
         need(status['loaded'] and status['running'])
         unchanged()
@@ -1023,8 +1033,11 @@ def worker(root):
         interface = tun_readback()
         unchanged()
         need(processes(app)==rows, 'CORE_RELOAD_PROCESS_DRIFT')
-        put(root,'result.json',dict(state='SUCCEEDED',operation_id=op,helper_epoch=epoch,new_core=rows[0],
-                                  tun='TUN',interface=interface,sha_kind='FILE_BYTES',execution_mapping='NOT_ATTESTED',network='NOT_TESTED'))
+        result = dict(state='SUCCEEDED',operation_id=op,helper_epoch=epoch,new_core=rows[0],
+                      tun='TUN',interface=interface,sha_kind='FILE_BYTES',execution_mapping='NOT_ATTESTED',network='NOT_TESTED')
+        if local_ready:
+            result['receipt_schema'] = 2
+        put(root,'result.json',result)
         return 0
     except Exception as exc:
         if claimed and not os.path.lexists(root/'result.json'):
@@ -1096,7 +1109,7 @@ def operator_reconciliation_safe(app, root):
     need(all(n['hexstr'](marker['receipt_sha256'][name],64) and
              receipts[name][1]==marker['receipt_sha256'][name] for name in names))
     job, intent, response, result, claim, timeline = [receipts[name][0] for name in names[:-1]]
-    shape(job,'app operation_id digest tag revision before')
+    local_ready = n['job_local_ready'](job)
     shape(intent,'operation_id helper_epoch action allow_insecure single_dispatch')
     shape(result,'state operation_id error_class code')
     shape(claim,'pid')
@@ -1115,7 +1128,7 @@ def operator_reconciliation_safe(app, root):
         prior = job['before']['status']
         need(type(prior) is dict and n['hexstr'](prior.get('helper_sha256'),64) and
              type(prior.get('helper_version')) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',prior['helper_version']))
-        n['status_check'](prior,prior['helper_sha256'],prior['helper_version'],pin['identity'])
+        n['status_check'](prior,prior['helper_sha256'],prior['helper_version'],pin['identity'],local_ready=local_ready)
         need(prior['loaded'] is True and prior['running'] is True)
     epoch = intent['helper_epoch']
     need(n['hexstr'](epoch,32) and marker['helper_epoch']==epoch and intent['operation_id']==op and
@@ -1125,7 +1138,7 @@ def operator_reconciliation_safe(app, root):
          response['code']=='' and response['ok'] is True and response['loaded'] is True and response['running'] is True and
          response['operation_id']==op and response['helper_epoch']==epoch and response['timeline_availability']=='AVAILABLE' and
          response['helper_sha256']==job['digest'] and response['helper_version']==job['tag'] and response['config_identity']==pin['identity'])
-    n['diagnostics'](response['diagnostics'])
+    n['diagnostics'](response['diagnostics'],local_ready=local_ready)
     n['trace_check'](timeline,job,epoch)
     need(timeline['trace']['diagnostics']==response['diagnostics'] and
          timeline['trace']['receipt_result']=='WRITTEN' and timeline['trace']['web_return']=='NOT_ATTEMPTED' and
@@ -1155,7 +1168,7 @@ def operator_reconciliation_safe(app, root):
     shape(current,'state config core status')
     reconciliation_config(current['config'])
     need(current['state']=='STOPPED' and current['core'] is None and current['config']['identity']==pin['identity'])
-    n['status_check'](current['status'],job['digest'],job['tag'],pin['identity'])
+    n['status_check'](current['status'],job['digest'],job['tag'],pin['identity'],local_ready=local_ready)
     need(current['status']['loaded'] is False and current['status']['running'] is False)
     # Read-only receiver: in particular no worker probe, IPC, stop or unlink.
     need(all(reconciliation_receipt(root,name,raw_bytes=name=='worker.log')==receipts[name] for name in names) and
@@ -1358,7 +1371,7 @@ def reconcile_preflight(app, root):
     receipts = {name:reconciliation_receipt(root,name) for name in names}
     hashes = {name:value[1] for name,value in receipts.items()}
     job, intent, response, result, claim = [receipts[name][0] for name in names]
-    shape(job,'app operation_id digest tag revision before')
+    local_ready = n['job_local_ready'](job)
     shape(intent,'operation_id helper_epoch action allow_insecure single_dispatch')
     shape(result,'state operation_id error_class code')
     shape(claim,'pid')
@@ -1371,7 +1384,7 @@ def reconcile_preflight(app, root):
         prior = job['before']['status']
         need(type(prior) is dict and n['hexstr'](prior.get('helper_sha256'),64) and
              type(prior.get('helper_version')) is str and re.fullmatch(r'v[0-9A-Za-z.+_-]+',prior['helper_version']))
-        n['status_check'](prior,prior['helper_sha256'],prior['helper_version'],job['before']['config']['identity'])
+        n['status_check'](prior,prior['helper_sha256'],prior['helper_version'],job['before']['config']['identity'],local_ready=local_ready)
         need(prior['loaded'] is True and prior['running'] is True)
     pin, old = job['before']['config'], job['before']['core']
     reconciliation_config(pin)
@@ -1400,7 +1413,7 @@ def reconcile_preflight(app, root):
         rejection_trace(marker['helper_read'],job,epoch,diag)
         shape(marker['current'],'state config core status')
         current = marker['current']
-        n['status_check'](current['status'],job['digest'],job['tag'],pin['identity'])
+        n['status_check'](current['status'],job['digest'],job['tag'],pin['identity'],local_ready=local_ready)
         reconciliation_config(current['config'])
         need(current['config']['identity']==pin['identity'])
         if current['core'] is not None:
@@ -1530,7 +1543,7 @@ class CoreReload:
             os.fsync(parent_fd)
         finally:
             os.close(parent_fd)
-        CORE_RELOAD_SUPPORT['put'](root, 'job.json', dict(app=str(self.app),operation_id=op,digest=digest,
+        CORE_RELOAD_SUPPORT['put'](root, 'job.json', dict(receipt_schema=2,app=str(self.app),operation_id=op,digest=digest,
                                                        tag=tag,revision=revision,before=self.before))
         CORE_RELOAD_SUPPORT['put'](root, 'pending.json', dict(operation_id=op))
         progress('Core reload single-dispatch receipt: '+str(root))
@@ -1551,6 +1564,12 @@ class CoreReload:
             # Only THIS observing parent may accept exit 0. Complete result bytes
             # or a worker-created marker alone never clear UNKNOWN. Re-sync and
             # read back the result before committing an operation/hash-bound ack.
+            job = reconciliation_receipt(root, 'job.json')[0]
+            i.require(CORE_RELOAD_SUPPORT['job_local_ready'](job) and
+                      type(result.get('receipt_schema')) is int and result['receipt_schema'] == 2 and
+                      job['app'] == str(self.app) and job['operation_id'] == op and
+                      job['digest'] == digest and job['tag'] == tag and job['revision'] == revision,
+                      'CORE_RELOAD_SCHEMA')
             regular(root/'result.json')
             with (root/'result.json').open('rb') as receipt:
                 os.fsync(receipt.fileno())

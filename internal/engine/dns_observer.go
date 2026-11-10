@@ -86,6 +86,9 @@ type observedHTTPS struct {
 	metrics     *DNSMetrics
 	evidence    *de.Collector
 	transportID string
+	live        *LiveSelection
+	replyMu     sync.Mutex
+	replies     map[string]liveDNSReply
 }
 
 var (
@@ -109,6 +112,13 @@ func newObservedHTTPS(ctx context.Context, logger log.ContextLogger, tag string,
 			result = &observedHTTPS{HTTPSTransport: concrete, evidence: c, transportID: id}
 		}
 	}
+	if s := liveFrom(ctx); err == nil && s != nil && options.Detour == "live" {
+		if w, ok := result.(*observedHTTPS); ok {
+			w.live = s
+		} else {
+			result = &observedHTTPS{HTTPSTransport: upstream.(*transport.HTTPSTransport), live: s}
+		}
+	}
 	if err == nil && (options.TLS == nil || (!options.TLS.Insecure && options.TLS.Engine == "")) {
 		if observer, ok := service.FromContext[browserDNSObserver](ctx).(*browserProvenance); ok {
 			observer.trust(result)
@@ -128,19 +138,34 @@ func wrapHTTPS(upstream adapter.DNSTransport, metrics *DNSMetrics) (adapter.DNST
 	return &observedHTTPS{HTTPSTransport: concrete, metrics: metrics}, nil
 }
 
+func (t *observedHTTPS) Environment() []string {
+	if t.live != nil {
+		return t.live.dnsEnvironment()
+	}
+	return nil
+}
 func (t *observedHTTPS) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	epoch := uint64(0)
+	if t.live != nil {
+		epoch = t.live.dnsEpoch.Load()
+	}
 	start, qtype := time.Now(), dnsMetricQType(q)
 	ctx, observation := beginEvidence(t.evidence, t.transportID, q, ctx)
 	if t.metrics != nil {
 		ctx = t.metrics.traceContext(ctx)
 	}
 	response, err := t.HTTPSTransport.Exchange(ctx, q)
+	t.certifyReply(response, epoch)
 	observation.finish(response, err)
 	t.metrics.complete(qtype, response, err, time.Since(start))
 	return response, err
 }
 
 func (t *observedHTTPS) ExchangeAsync(ctx context.Context, q *dns.Msg, callback func(*dns.Msg, error)) {
+	epoch := uint64(0)
+	if t.live != nil {
+		epoch = t.live.dnsEpoch.Load()
+	}
 	start, qtype := time.Now(), dnsMetricQType(q)
 	// Delegate directly to the SDK async method, not to our Exchange: exactly
 	// one observation at completion, before forwarding the untouched callback.
@@ -149,6 +174,7 @@ func (t *observedHTTPS) ExchangeAsync(ctx context.Context, q *dns.Msg, callback 
 		ctx = t.metrics.traceContext(ctx)
 	}
 	t.HTTPSTransport.ExchangeAsync(ctx, q, func(response *dns.Msg, err error) {
+		t.certifyReply(response, epoch)
 		observation.finish(response, err)
 		t.metrics.complete(qtype, response, err, time.Since(start))
 		callback(response, err)
@@ -226,4 +252,61 @@ func dnsMetricOutcome(response *dns.Msg, err error) dnsmetrics.Outcome {
 	default:
 		return dnsmetrics.OtherRCode
 	}
+}
+
+// Cache clones retain the same semantic RR set. Certify its bounded content,
+// not a pointer (the SDK copies cached messages and ages TTLs).
+type liveDNSReply struct {
+	epoch   uint64
+	expires time.Time
+}
+
+func liveReplyKey(reply *dns.Msg) (string, time.Duration) {
+	if reply == nil {
+		return "", 0
+	}
+	copy := reply.Copy()
+	copy.Id = 0
+	ttl := uint32(^uint32(0))
+	for _, section := range [][]dns.RR{copy.Answer, copy.Ns, copy.Extra} {
+		for _, rr := range section {
+			if rr.Header().Ttl < ttl {
+				ttl = rr.Header().Ttl
+			}
+			rr.Header().Ttl = 0
+		}
+	}
+	wire, err := copy.Pack()
+	if err != nil || ttl == 0 || ttl == ^uint32(0) {
+		return "", 0
+	}
+	return recordsSHA(wire), time.Duration(ttl) * time.Second
+}
+func (t *observedHTTPS) certifyReply(reply *dns.Msg, epoch uint64) {
+	if t.live == nil {
+		return
+	}
+	key, lease := liveReplyKey(reply)
+	if key == "" {
+		return
+	}
+	t.replyMu.Lock()
+	defer t.replyMu.Unlock()
+	if t.replies == nil {
+		t.replies = make(map[string]liveDNSReply)
+	}
+	if len(t.replies) >= 512 {
+		clear(t.replies)
+	}
+	t.replies[key] = liveDNSReply{epoch, time.Now().Add(lease)}
+}
+func (t *observedHTTPS) currentReply(reply *dns.Msg) bool {
+	if t.live == nil {
+		return true
+	}
+	key, _ := liveReplyKey(reply)
+	t.replyMu.Lock()
+	defer t.replyMu.Unlock()
+	r, ok := t.replies[key]
+	return ok && r.epoch%2 == 0 && r.epoch == t.live.dnsEpoch.Load() && time.Now().Before(r.expires)
 }

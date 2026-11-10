@@ -3,7 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-struct APIReply { let status: Int; let body: [String: Any] }
+struct APIReply { let status: Int; let body: [String: Any]; let etag: String? }
 final class NoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
@@ -89,7 +89,7 @@ final class APIClient {
                     // The generation check above precedes clearing this session.
                     self.reset(); self.onExpired?(); completion(.failure(ClientError.unauthenticated)); return
                 }
-                completion(.success(APIReply(status:response.statusCode,body:json)))
+                completion(.success(APIReply(status:response.statusCode,body:json,etag:response.value(forHTTPHeaderField:"ETag"))))
             }
         }
         tasks[key]=task; task.resume()
@@ -197,6 +197,34 @@ final class MenuModel {
     private(set) var message = "未连接本机控制台"
     private(set) var operationID: String?
     private var pendingPath = "", pendingName: String?
+    private struct SelectionRecovery {
+        let operation: SelectionOperation, etag: String, changed: Bool, generation: Int
+    }
+    private var selectionRecovery: SelectionRecovery?
+    private var selectionReadOwner: UUID?
+    // The only reconciliation authority is the exact owned helper tuple. Status,
+    // node checkmarks and NO_CHANGE cannot stand in for the lost ACK.
+    var selectionReadPending: Bool { selectionReadOwner != nil }
+    func recoverSelectionReadback() {
+        guard uncertain, !pending, !initializingConnection, quitOwner == nil, api.authenticated,
+              let recovery=selectionRecovery, recovery.generation == api.generation, selectionReadOwner == nil else { return }
+        let owner=UUID(); selectionReadOwner=owner
+        let sent=api.request(recovery.operation.readbackPath) { [weak self] result in
+            guard let self=self, self.selectionReadOwner == owner else { return }
+            self.selectionReadOwner=nil
+            guard self.api.generation == recovery.generation, self.uncertain,
+                  case .success(let reply)=result, reply.status == 200,
+                  mutationVerdict(path:"/nodes/selection",status:reply.status,body:reply.body) == .applied,
+                  reply.body["apply_status"] as? String == "HOT_APPLIED",
+                  SelectionOperation.parse(reply.body["selection_operation"]) == recovery.operation,
+                  reply.etag == recovery.etag, reply.body["etag"] as? String == recovery.etag,
+                  jsonBool(reply.body["changed"]) == recovery.changed else { return }
+            self.selectionRecovery=nil; self.uncertain=false
+            self.message=selectionConnectionPolicy(reply.body)!; self.forceConnectivity=true
+            self.onChange?()
+        }
+        if !sent { selectionReadOwner=nil }
+    }
     private var quitOwner: UUID?
     var quitContext: QuitAuthContext? {
         api.authenticated ? QuitAuthContext(endpoint:api.endpoint,generation:api.generation) : nil
@@ -295,7 +323,7 @@ final class MenuModel {
         guard connectionInitializationOwner == owner else { return }
         let ready=verified && connectionObservationsReady
         connectionInitializationOwner=nil
-        if ready && discardClientUnknown { uncertain=false; operationID=nil }
+        if ready && discardClientUnknown { uncertain=false; operationID=nil; selectionRecovery=nil; selectionReadOwner=nil }
         discardClientUnknown=false
         if !ready { api.reset(); observationGeneration += 1; clearObservations() }
         message=ready ? "连接初始化完成；上次操作结果不追认为成功" : "连接初始化失败；可显式重试，先前未知结果保持锁定"
@@ -353,6 +381,7 @@ final class MenuModel {
     }
     func refresh() {
         guard api.authenticated else { return }
+        recoverSelectionReadback()
         let epoch=api.generation, observation=observationGeneration
         api.request("/status") { [weak self] result in
             guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
@@ -410,21 +439,36 @@ final class MenuModel {
         pending=true; pendingPath=path; pendingName=name; message="正在执行；不会自动重试…"; onChange?()
         var body: [String: Any] = ["confirm_insecure":consent]
         if let name=name { body["name"]=name }
+        let epoch=api.generation
+        selectionRecovery=nil; selectionReadOwner=nil
         let sent=api.request(path,method:"POST",body:body,etag:path == "/nodes/selection" ? etag : nil) { [weak self] result in
-            guard let self=self else { return }
+            guard let self=self, self.api.generation == epoch else { return }
             self.pending=false; self.observationGeneration += 1; self.clearObservations()
             var verdict: MutationVerdict = .unknown
             var failureReason: String?
+            var connectionPolicy: String?
             if case .success(let r)=result {
                 verdict=mutationVerdict(path:path,status:r.status,body:r.body)
+                if path == "/nodes/selection", r.body["apply_status"] as? String == "HOT_APPLIED",
+                   (SelectionOperation.parse(r.body["selection_operation"])?.node != name || r.etag != (r.body["etag"] as? String)) { verdict = .unknown }
+                if path == "/nodes/selection", r.status == 200, validHotSelection(r.body),
+                   r.body["apply_status"] as? String == "SWITCH_UNKNOWN", jsonBool(r.body["applied"]) == false,
+                   jsonBool(r.body["pendingReload"]) == true, jsonBool(r.body["pendingKnown"]) == false,
+                   jsonBool(r.body["readback_requires_owned_lease"]) == false,
+                   let operation=SelectionOperation.parse(r.body["selection_operation"]), operation.node == name,
+                   let tag=r.body["etag"] as? String, r.etag == tag, let changed=jsonBool(r.body["changed"]) {
+                    self.selectionRecovery=SelectionRecovery(operation:operation,etag:tag,changed:changed,generation:epoch)
+                }
                 failureReason=knownMutationFailureReason(path:path,status:r.status,body:r.body)
+                if r.body["apply_status"] as? String == "HOT_APPLIED" { connectionPolicy=selectionConnectionPolicy(r.body) }
                 if let ref=r.body["startup_operation"] as? [String: Any], ref["timeline_schema"] as? Int == 1, hex(ref["operation_id"],32) { self.operationID=ref["operation_id"] as? String }
             }
             self.uncertain = verdict == .unknown
             switch verdict {
-            case .serviceSucceeded: self.message=path == "/service/stop" ? "VPN 已停止" : "VPN 已启动"
+            case .serviceSucceeded: self.message=path == "/service/stop" ? "VPN 已停止" : "VPN 本地已就绪；外网等待独立验证"
             case .savedStopped: self.message="启动节点已保存；VPN 未运行，下次启动生效"
-            case .applied: self.message="启动节点已保存并应用；将重新读取状态"
+            case .applied: self.message=connectionPolicy ?? "启动节点已保存并应用；将重新读取状态"
+            case .reloadRequired: self.message="配置已保存；当前核心或配置不支持热切换，VPN 未重启。请显式重新应用"
             case .unchanged: self.message="选择未变化；没有重新连接"
             case .rejected:
                 if failureReason == "SYSTEM_PROXY_ACTIVE" {
@@ -439,6 +483,5 @@ final class MenuModel {
         }
         if !sent { pending=false; uncertain=true; message="操作状态未知；请打开控制台核实"; onChange?() }
     }
-    // Deliberately no 'running means success' reconciliation. A lost response with
-    // no operation identity cannot be safely replayed; the full console owns recovery.
+    // Lost responses without an owned tuple remain locked; no mutation replay.
 }

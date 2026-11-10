@@ -152,8 +152,43 @@ func knownMutationFailureReason(path: String, status: Int, body: [String: Any]) 
     return reason
 }
 
-enum MutationVerdict: Equatable { case serviceSucceeded, savedStopped, applied, unchanged, rejected, unknown }
+enum MutationVerdict: Equatable { case serviceSucceeded, savedStopped, applied, reloadRequired, unchanged, rejected, unknown }
+
+func selectionConnectionPolicy(_ body: [String:Any]) -> String? {
+    guard body["connection_policy"] as? String == "EXISTING_CONNECTIONS_RETAIN_OLD_EXIT" else { return nil }
+    return "新连接使用新节点；已有连接保留原出口"
+}
+
+struct SelectionOperation: Equatable {
+    let operation: String, generation: String, revision: UInt64, node: String
+    static func parse(_ value: Any?) -> SelectionOperation? {
+        guard let d=value as? [String:Any], exact(d,["operation","generation","revision","node"]),
+              hex(d["operation"],32), hex(d["generation"],32), let n=d["revision"] as? NSNumber,
+              CFGetTypeID(n) != CFBooleanGetTypeID(), !["f","d"].contains(String(cString:n.objCType)),
+              let revision=canonicalUInt(n.stringValue), String(revision) == n.stringValue,
+              let node=d["node"] as? String, !node.isEmpty, node.utf8.count < 4096 else { return nil }
+        return SelectionOperation(operation:d["operation"] as! String,generation:d["generation"] as! String,revision:revision,node:node)
+    }
+    var readbackPath: String {
+        var c=URLComponents(); c.path="/nodes/selection/readback"
+        c.queryItems=[URLQueryItem(name:"operation",value:operation),URLQueryItem(name:"generation",value:generation),URLQueryItem(name:"revision",value:String(revision)),URLQueryItem(name:"node",value:node)]
+        // URLComponents leaves + literal; Go query parsing treats it as a space.
+        return c.string!.replacingOccurrences(of:"+",with:"%2B")
+    }
+}
+func validHotSelection(_ body: [String:Any]) -> Bool {
+    guard exact(body,["ok","saved","changed","applied","apply_status","pendingReload","pendingKnown","etag","startup_operation","connection_policy","selection_operation","readback_requires_owned_lease"]),
+          jsonBool(body["ok"]) == true, jsonBool(body["saved"]) == true, jsonBool(body["changed"]) != nil,
+          jsonBool(body["applied"]) != nil, jsonBool(body["pendingReload"]) != nil,
+          jsonBool(body["readback_requires_owned_lease"]) != nil,
+          body["selection_operation"] is NSNull || SelectionOperation.parse(body["selection_operation"]) != nil,
+          body["startup_operation"] is NSNull, selectionConnectionPolicy(body) != nil,
+          let etag=body["etag"] as? String, etag.utf8.count == 66, etag.first == "\"", etag.last == "\"",
+          hex(String(etag.dropFirst().dropLast()),64), jsonBool(body["pendingKnown"]) != nil else { return false }
+    return true
+}
 func mutationVerdict(path: String, status: Int, body: [String: Any]) -> MutationVerdict {
+    if body["error"] as? String == "SWITCH_UNKNOWN" || body["apply_status"] as? String == "SWITCH_UNKNOWN" { return .unknown }
     if status == 202 || body["error"] as? String == "STARTUP_UNKNOWN" || body["apply_error"] as? String == "STARTUP_UNKNOWN" { return .unknown }
     if let d=body["diagnostics"] as? [String: Any], d["outcome"] as? String == "UNKNOWN" { return .unknown }
     if knownMutationFailureReason(path:path,status:status,body:body) != nil { return .rejected }
@@ -164,6 +199,10 @@ func mutationVerdict(path: String, status: Int, body: [String: Any]) -> Mutation
         switch body["apply_status"] as? String {
         case "SAVED_STOPPED": return .savedStopped
         case "APPLIED": return jsonBool(body["applied"]) == true ? .applied : .unknown
+        case "HOT_APPLIED":
+            return validHotSelection(body) && SelectionOperation.parse(body["selection_operation"]) != nil && jsonBool(body["readback_requires_owned_lease"]) == false && jsonBool(body["applied"]) == true && jsonBool(body["pendingReload"]) == false && jsonBool(body["pendingKnown"]) == true ? .applied : .unknown
+        case "RELOAD_REQUIRED":
+            return validHotSelection(body) && jsonBool(body["applied"]) == false && jsonBool(body["pendingReload"]) == true ? .reloadRequired : .unknown
         case "NO_CHANGE": return jsonBool(body["changed"]) == false ? .unchanged : .unknown
         default: return .unknown
         }
@@ -178,5 +217,13 @@ func mutationVerdict(path: String, status: Int, body: [String: Any]) -> Mutation
               ["VERIFIED","NOT_ATTEMPTED"].contains(d["cleanup"] as? String ?? ""),
               ["WRITTEN","NOT_ATTEMPTED"].contains(d["receipt"] as? String ?? "") else { return .unknown }
     }
+    if path != "/service/stop", let d=body["diagnostics"] as? [String:Any] {
+        guard exact(d,["schema","operation","outcome","stage","reason","rollback","restoration","cleanup","receipt","job","tun"]),
+              schemaOne(d["schema"]), d["operation"] as? String == (path == "/service/start" ? "START" : "RELOAD"),
+              d["outcome"] as? String == "SUCCEEDED" else { return .unknown }
+        let legacy = d["stage"] as? String == "NONE" && d["reason"] as? String == "NONE"
+        let local = d["stage"] as? String == "LOCAL_READY" && d["reason"] as? String == "INTERNET_UNVERIFIED" && d["job"] as? String == "RUNNING" && d["tun"] as? String == "TUN" && d["receipt"] as? String == "WRITTEN" && ["rollback","restoration","cleanup"].allSatisfy { ["NOT_ATTEMPTED","VERIFIED","FAILED","UNKNOWN"].contains(d[$0] as? String ?? "") }
+        guard legacy || local else { return .unknown }
+    } else if path != "/service/stop", body["diagnostics"] != nil { return .unknown }
     return path == "/service/stop" ? (!loaded && !running ? .serviceSucceeded : .unknown) : (loaded && running ? .serviceSucceeded : .unknown)
 }

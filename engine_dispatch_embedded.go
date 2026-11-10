@@ -44,7 +44,11 @@ func dispatchEngine(command string, b []byte, config, core string) error {
 func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ string, recordService bool) error {
 	b := compiled.JSON
 	if command == "check" {
-		if err := engine.Check(context.Background(), b); err != nil {
+		check := engine.Check
+		if liveSnapshotEnabled(config) {
+			check = engine.CheckControlled
+		}
+		if err := check(context.Background(), b); err != nil {
 			return err
 		}
 		fmt.Println("embedded configuration valid")
@@ -117,5 +121,8 @@ func dispatchCompiledEngine(command string, compiled compiledRuntime, config, _ 
 		}()
 	}
 	st.FromContext(ctx).End(dispatchSpan, "OK", st.Fields{})
+	if recordService && command == "run" {
+		return runLiveCore(ctx, compiled, config, input)
+	}
 	return engine.RunWithRecords(ctx, b, input)
 }

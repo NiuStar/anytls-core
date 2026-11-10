@@ -39,7 +39,8 @@ func reloadOperator(files map[string][]byte, app, op string) bool {
 	}
 	identity := desktopSum([]byte(filepath.Join(app, "config.yaml")))
 	digest, tag, rev, epoch := reloadString(j["digest"]), reloadString(j["tag"]), reloadString(j["revision"]), reloadString(i["helper_epoch"])
-	if !reloadShape(j, "app operation_id digest tag revision before") || j["app"] != app || j["operation_id"] != op || !desktopMigrationToken(digest) || !reloadTag.MatchString(tag) || !reloadRevision.MatchString(rev) || !reloadShape(c, "pid") || !reloadInt(c["pid"], true) || !reloadShape(r, "state operation_id error_class code") || r["state"] != "UNKNOWN" || r["operation_id"] != op || r["error_class"] != "ValueError" || r["code"] != "CORE_RELOAD_NEW_PROCESS" {
+	local, valid := reloadJobSchema(j)
+	if !valid || j["app"] != app || j["operation_id"] != op || !desktopMigrationToken(digest) || !reloadTag.MatchString(tag) || !reloadRevision.MatchString(rev) || !reloadShape(c, "pid") || !reloadInt(c["pid"], true) || !reloadShape(r, "state operation_id error_class code") || r["state"] != "UNKNOWN" || r["operation_id"] != op || r["error_class"] != "ValueError" || r["code"] != "CORE_RELOAD_NEW_PROCESS" {
 		return false
 	}
 	before := reloadMap(j["before"])
@@ -48,7 +49,7 @@ func reloadOperator(files map[string][]byte, app, op string) bool {
 		keys += " status"
 		p := reloadMap(prior)
 		pd, pt := reloadString(p["helper_sha256"]), reloadString(p["helper_version"])
-		if !desktopMigrationToken(pd) || !reloadTag.MatchString(pt) || !reloadStatus(prior, pd, pt, identity, true) {
+		if !desktopMigrationToken(pd) || !reloadTag.MatchString(pt) || !reloadStatus(prior, pd, pt, identity, true, local) {
 			return false
 		}
 	}
@@ -58,7 +59,7 @@ func reloadOperator(files map[string][]byte, app, op string) bool {
 	if _, ok := i["allow_insecure"].(bool); !ok {
 		return false
 	}
-	if !reloadShape(response, "timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics") || response["timeline_schema"] != json.Number("1") || response["code"] != "" || response["ok"] != true || response["loaded"] != true || response["running"] != true || response["operation_id"] != op || response["helper_epoch"] != epoch || response["timeline_availability"] != "AVAILABLE" || response["helper_sha256"] != digest || response["helper_version"] != tag || response["config_identity"] != identity || !reloadSuccessDiagnostics(response["diagnostics"]) {
+	if !reloadShape(response, "timeline_schema code ok helper_epoch operation_id timeline_availability helper_version helper_sha256 config_identity loaded running diagnostics") || response["timeline_schema"] != json.Number("1") || response["code"] != "" || response["ok"] != true || response["loaded"] != true || response["running"] != true || response["operation_id"] != op || response["helper_epoch"] != epoch || response["timeline_availability"] != "AVAILABLE" || response["helper_sha256"] != digest || response["helper_version"] != tag || response["config_identity"] != identity || !reloadSuccessDiagnostics(response["diagnostics"], local) {
 		return false
 	}
 	raw := reloadString(m["pending_raw_base64"])
@@ -114,9 +115,9 @@ func reloadOperator(files map[string][]byte, app, op string) bool {
 		return false
 	}
 	current := reloadMap(m["current"])
-	return reloadShape(current, "state config core status") && current["state"] == "STOPPED" && current["core"] == nil && reloadConfig(current["config"], identity) && reloadStatus(current["status"], digest, tag, identity, false)
+	return reloadShape(current, "state config core status") && current["state"] == "STOPPED" && current["core"] == nil && reloadConfig(current["config"], identity) && reloadStatus(current["status"], digest, tag, identity, false, local)
 }
-func reloadSuccessDiagnostics(v any) bool {
+func reloadSuccessDiagnostics(v any, localReady ...bool) bool {
 	m := reloadMap(v)
-	return reloadDiagnostics(v, false) && m["operation"] == "RELOAD" && m["job"] == "RUNNING" && m["tun"] == "TUN" && m["receipt"] == "WRITTEN"
+	return reloadDiagnostics(v, false, localReady...) && m["operation"] == "RELOAD" && m["job"] == "RUNNING" && m["tun"] == "TUN" && m["receipt"] == "WRITTEN"
 }

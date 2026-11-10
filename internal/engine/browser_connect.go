@@ -240,6 +240,11 @@ func (d *browserDialer) DialContext(ctx context.Context, network string, destina
 	if !s.attach(launchCtx, l, c) {
 		return nil, launchCtx.Err()
 	}
+	// Selection changes preserve delivered streams; ordinary shutdown/network
+	// invalidation still closes them through the existing lifecycle contract.
+	s.mu.Lock()
+	l.delivered = true
+	s.mu.Unlock()
 	keep = true
 	return c, nil
 }

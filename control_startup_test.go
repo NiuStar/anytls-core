@@ -222,13 +222,13 @@ func TestStartupCumulativeCacheRejectsClockAndRegression(t *testing.T) {
 
 func TestStartupLifecycleRollbackRetainsActualEvents(t *testing.T) {
 	d, b, c, k, loaded, _ := lifecycleFixture(t)
-	primary := errors.New("private HTTPS failure")
-	tool := d.tool
-	d.tool = func(ctx context.Context, n string, a ...string) (string, error) {
-		if n == "/usr/bin/curl" {
-			return "", primary
+	primary := errors.New("private final DNS failure")
+	dns := d.dns
+	d.dns = func() ([]string, error) {
+		if *loaded {
+			return nil, primary
 		}
-		return tool(ctx, n, a...)
+		return dns()
 	}
 	s := &controlHelperServer{registration: controlHelperRegistration{UID: 501, Config: c}, state: d.state, preflight: func(context.Context, bool) error { return nil }}
 	s.start = func(ctx context.Context, allow bool) error { return d.withStartup(ctx, s).start(b, c, k, allow) }
@@ -253,10 +253,13 @@ func TestStartupLifecycleRollbackRetainsActualEvents(t *testing.T) {
 	for _, event := range response.Trace.Streams[0].Events {
 		seen[event.Stage] = true
 	}
-	for _, stage := range []string{"SNAPSHOT_STAGE", "CONFIG_OUTBOUNDS_COMPILE", "BOOTSTRAP", "READINESS_ROUND", "HTTPS_ATTEMPT", "BOOTOUT", "RESTORE_SERVER_ROUTES", "SNAPSHOT_REMOVE", "RECEIPT_WRITE", "HELPER_FINISH"} {
+	for _, stage := range []string{"SNAPSHOT_STAGE", "CONFIG_OUTBOUNDS_COMPILE", "BOOTSTRAP", "READINESS_ROUND", "FINAL_DNS", "BOOTOUT", "RESTORE_SERVER_ROUTES", "SNAPSHOT_REMOVE", "RECEIPT_WRITE", "HELPER_FINISH"} {
 		if !seen[stage] {
 			t.Errorf("actual %s absent after rollback", stage)
 		}
+	}
+	if seen["HTTPS_ATTEMPT"] || result.Diagnostics == nil || result.Diagnostics.Stage != "DNS" || result.Diagnostics.Reason != "DNS_STATE_UNAVAILABLE" {
+		t.Fatal("local safety failure must not claim an internet attempt", result)
 	}
 	if response.Trace.State != "FINISHED" || response.Trace.ReceiptResult != "WRITTEN" {
 		t.Fatal("terminal/receipt missing", response.Trace)

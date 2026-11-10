@@ -167,8 +167,12 @@ func TestReloadUsesExistingLifecycleReadiness(t *testing.T) {
 			control = append(control, "https")
 		}
 	}
-	if !*loaded || !reflect.DeepEqual(control, []string{"stop", "start", "https"}) {
+	if !*loaded || !reflect.DeepEqual(control, []string{"stop", "start"}) {
 		t.Fatalf("loaded=%v control=%v", *loaded, control)
+	}
+	v, _ := readDiagnostic(t, d.root)
+	if v["readiness"] != "LOCAL_READY" || v["https"] != "NOT_EXECUTED" || v["internet_verification"] != "NOT_RUN" {
+		t.Fatal("reload lost local readiness/internet uncertainty", v)
 	}
 }
 
@@ -177,14 +181,19 @@ func TestReloadStartFailureKeepsLifecycleRecoveryCauses(t *testing.T) {
 	if err := d.start(binary, config, core, true); err != nil {
 		t.Fatal(err)
 	}
-	probeFailure := errors.New("private HTTPS password sentinel")
+	probeFailure := errors.New("private final DNS password sentinel")
 	recoveryFailure := errors.New("private restoration password sentinel")
+	dns := d.dns
+	d.dns = func() ([]string, error) {
+		if *loaded {
+			return nil, probeFailure
+		}
+		return dns()
+	}
 	tool := d.tool
 	stops := 0
 	d.tool = func(ctx context.Context, name string, args ...string) (string, error) {
-		if name == "/usr/bin/curl" {
-			return "", probeFailure
-		}
+
 		if name == "/bin/launchctl" && args[0] == "bootout" {
 			stops++
 			if stops == 2 {

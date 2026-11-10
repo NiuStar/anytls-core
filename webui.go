@@ -69,6 +69,8 @@ type webConsole struct {
 	startupLatest                 *webStartupOperation
 	startupReadRequest            webStartupReadFunc
 	startupControlRequest         webStartupControlFunc
+	selectionAction               func(context.Context) error
+	selectionRecovery             liveWebRecovery // guarded by metaMu; operations serialized by actionMu
 	startupLegacyRequest          webControlRequestFunc
 	startupRandom                 io.Reader
 	probeSlotsOnce                sync.Once
@@ -395,6 +397,10 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		w.metrics.get(w, rw, r)
 		return
 	}
+	if r.URL.Path == "/api/v1/nodes/selection/readback" {
+		w.getSelectionReadback(rw, r)
+		return
+	}
 	if r.URL.Path == "/api/v1/traffic" {
 		w.getTraffic(rw, r)
 		return
@@ -460,6 +466,9 @@ func (w *webConsole) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	defer w.actionMu.Unlock()
 	if w.restartPending {
 		webError(rw, 409, "RESTART_PENDING")
+		return
+	}
+	if w.selectionMutationBlocked(rw, r) {
 		return
 	}
 	w.mutate(rw, r)
@@ -844,6 +853,9 @@ func (w *webConsole) mutate(rw http.ResponseWriter, r *http.Request) {
 			w.pending = false
 			w.pendingKnown = before != ""
 			w.metaMu.Unlock()
+		}
+		if (action == "start" || action == "reload") && loaded && running && startup.diagnostics != nil && startup.diagnostics.Outcome == "SUCCEEDED" && startup.diagnostics.Stage == "LOCAL_READY" && startup.diagnostics.Reason == "INTERNET_UNVERIFIED" {
+			w.selectionReinitialized()
 		}
 		pending, _ := w.pendingState()
 		w.finishStartup(startup, nil)

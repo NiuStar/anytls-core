@@ -160,6 +160,21 @@ func newMenuBarHTTPFixture(t *testing.T) *menuBarHTTPFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	w.selectionRecovery.request = func(_ context.Context, action string, _ bool) (controlHelperResponse, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		r := controlHelperResponse{OK: true, Loaded: f.loaded, Running: f.running, ConfigIdentity: identity}
+		if action == "status" {
+			return r, nil
+		}
+		if action != "select" || !f.running {
+			return r, fmt.Errorf("invalid private selection")
+		}
+		f.actions = append(f.actions, "select")
+		r.Code = "HOT_APPLIED"
+		r.SelectionOperation = &liveSelectionOperation{Operation: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32), Revision: 1, Node: w.selectionSavedName()}
+		return r, nil
+	}
 	counter := new(ts.Counter)
 	counter.Upload(9007199254740993)
 	sampler := ts.New(counter, recordsTestPage(identity).Header)
@@ -237,7 +252,7 @@ func (f *menuBarHTTPFixture) routeHTTP(rw http.ResponseWriter, r *http.Request) 
 		if body.Status == "SAVED_STOPPED" && len(f.actions) == 0 {
 			f.savedStopped++
 		}
-		if body.Status == "APPLIED" && reflect.DeepEqual(f.actions, []string{"start", "reload"}) {
+		if body.Status == "HOT_APPLIED" && reflect.DeepEqual(f.actions, []string{"start", "select"}) {
 			f.applied++
 		}
 	}
@@ -251,7 +266,7 @@ func (f *menuBarHTTPFixture) verify(t *testing.T) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !reflect.DeepEqual(f.actions, []string{"start", "reload", "stop"}) || f.loaded || f.running {
+	if !reflect.DeepEqual(f.actions, []string{"start", "select", "stop"}) || f.loaded || f.running {
 		t.Fatalf("synthetic lifecycle: actions=%v loaded=%v running=%v", f.actions, f.loaded, f.running)
 	}
 	if f.blocked != 0 || f.savedStopped != 1 || f.applied != 1 || f.forbiddenTraffic < 1 || f.observedTraffic < 1 {

@@ -36,6 +36,7 @@ import (
 // Ephemeral, memory-only CA/password. No product inbound registration or DNS.
 type g13Fixture struct {
 	ctx                                              context.Context
+	dnsTargets                                       map[string]string
 	cancel                                           context.CancelFunc
 	listener, tcp                                    net.Listener
 	udp                                              net.PacketConn
@@ -304,12 +305,16 @@ func (f *g13Fixture) NewConnectionEx(ctx context.Context, c net.Conn, _ M.Socksa
 			}
 		}
 		// Fail closed before any non-fixture dial; unknown targets simulate remote reset.
-		if d.String() != f.tcp.Addr().String() {
+		fixtureTarget := d.String()
+		if mapped, ok := f.dnsTargets[fixtureTarget]; ok {
+			fixtureTarget = mapped
+		}
+		if d.String() != f.tcp.Addr().String() && f.dnsTargets[d.String()] == "" {
 			connection, _ := ctx.Value(g13ConnectionKey{}).(int64)
 			f.event(g13Event{connection: connection, class: "TARGET_REFUSED", target: d.String()})
 			return
 		}
-		up, e := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", d.String())
+		up, e := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", fixtureTarget)
 		if e != nil {
 			return
 		}

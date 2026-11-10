@@ -48,10 +48,10 @@ func TestLifecycleReadinessWithinSixtySeconds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("readiness ended before TUN became available inside the 60s observation window: seconds=%d want=%d probes=%d bootouts=%d: %v", seconds, readyAfter, probes, bootouts, err)
 			}
-			if seconds != readyAfter || probes != 1 || bootouts != 0 || !*loaded {
+			if seconds != readyAfter || probes != 0 || bootouts != 0 || !*loaded {
 				t.Fatalf("delayed readiness not verified immediately: seconds=%d want=%d probes=%d bootouts=%d loaded=%v", seconds, readyAfter, probes, bootouts, *loaded)
 			}
-			if !strings.Contains(output, "AnyTLS TUN ready;") {
+			if !strings.Contains(output, "AnyTLS TUN local ready;") {
 				t.Fatal("successful same-invocation HTTPS readiness was not reported")
 			}
 			if _, err := os.Stat(d.root); err != nil {

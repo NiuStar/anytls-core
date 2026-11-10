@@ -56,9 +56,11 @@ type browserProvenance struct {
 	active       map[*browserLaunch]struct{}
 }
 type browserLaunch struct {
-	cancel  context.CancelFunc
-	conn    net.Conn
-	receipt browserReceipt
+	cancel    context.CancelFunc
+	conn      net.Conn
+	receipt   browserReceipt
+	delivered bool
+	retained  bool
 }
 type browserPrepared struct {
 	owner    *browserProvenance
@@ -197,6 +199,13 @@ func (s *browserProvenance) trust(t adapter.DNSTransport) {
 	}
 }
 func (s *browserProvenance) ObserveBrowserDNS(ctx context.Context, q, r *dns.Msg, t adapter.DNSTransport) {
+	if observed, ok := t.(*observedHTTPS); ok && observed.live != nil {
+		observed.live.mu.Lock()
+		defer observed.live.mu.Unlock()
+		if !observed.currentReply(r) {
+			return
+		}
+	}
 	if refresh, ok := ctx.Value(browserRefreshKey{}).(*browserRefresh); ok {
 		if refresh.owner == s && refresh.expected == t && q != nil && r != nil {
 			s.mu.Lock()
@@ -233,7 +242,7 @@ func (s *browserProvenance) observe(scope browserClientScope, transport string, 
 	defer func() {
 		var closing []net.Conn
 		for launch := range s.active {
-			if !s.validLocked(launch.receipt) {
+			if !launch.retained && !s.validLocked(launch.receipt) {
 				launch.cancel()
 				if launch.conn != nil {
 					closing = append(closing, launch.conn)
@@ -318,13 +327,18 @@ func (s *browserProvenance) receipt(scope browserClientScope, ip netip.Addr) (br
 	}
 	return result, found
 }
-func (s *browserProvenance) InvalidateBrowserDNS() {
+func (s *browserProvenance) InvalidateBrowserDNS() { s.invalidateDNS(false) }
+func (s *browserProvenance) invalidateDNS(preserveDelivered bool) {
 	s.mu.Lock()
 	clear(s.claims)
 	s.claims = nil
 	s.epoch++
 	var conns []net.Conn
 	for launch := range s.active {
+		if preserveDelivered && launch.delivered {
+			launch.retained = true
+			continue
+		}
 		launch.cancel()
 		if launch.conn != nil {
 			conns = append(conns, launch.conn)
@@ -495,9 +509,9 @@ func (s *browserProvenance) BrowserCandidate(ctx context.Context, router adapter
 	} else if manager.Default() != outbound {
 		return netip.Addr{}, time.Time{}, false
 	}
-	// Only concrete immutable leaves supported. Selector/urltest generations are
-	// not equal to a tag and require their own leaf-generation witness.
-	if outbound.Type() != "anytls" && outbound.Type() != "direct" {
+	// Private live selectors are admitted only through their handler, which
+	// pins one immutable leaf across original and alternate CONNECT attempts.
+	if outbound.Type() != "anytls" && outbound.Type() != "direct" && !browserLiveOutbound(outbound) {
 		return netip.Addr{}, time.Time{}, false
 	}
 	var secure adapter.DNSTransport

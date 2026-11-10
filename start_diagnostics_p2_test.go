@@ -150,10 +150,24 @@ func TestDiagnosticsP2Retry(t *testing.T) {
 				}
 				return tool(ctx, name, args...)
 			}
-			err := d.start(b, c, k, true)
+			// Startup commits local readiness without curl. Exercise the retained
+			// explicit HTTPS diagnostic/retry contract independently afterwards.
+			if err := d.start(b, c, k, true); err != nil || curlCalls != 0 {
+				t.Fatal("local startup must not run diagnostics", err, curlCalls)
+			}
+			baseline, servers, err := d.baseline()
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.diagnostic = newStartDiagnostics("START")
+			d.diagnostic.Job, d.diagnostic.Tun = "RUNNING", "TUN"
+			err = d.httpsExitProbe(context.Background(), "utun8", baseline, servers)
 			if err == nil || !errors.Is(err, primary) || curlCalls != 1 {
 				t.Fatal("retry contract", err, curlCalls)
 			}
+			// The explicit probe populates invocation-local diagnostics; the
+			// lifecycle finish normally binds that value to the returned error.
+			err = &startDiagnosticError{diagnostic: *d.diagnostic, cause: err}
 			diag := p2Projection(t, err, "start")
 			job, tun, reason := "RUNNING", "TUN", "READINESS_CHANGED"
 			switch mode {

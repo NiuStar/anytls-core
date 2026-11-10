@@ -20,10 +20,10 @@ const messages = {
 };
 // Fixed vocabulary only: never display raw helper/tool errors or unknown enum values.
 const diagnosticStages = {
- NONE:['无','核实当前服务状态。'], HELPER_PREFLIGHT:['助手预检','核实助手绑定与配置预检结果。'], JOB:['服务作业','核实本机服务管理器的加载与运行状态。'], SNAPSHOT:['启动快照','核实本机快照状态与目录权限；不要删除快照。'], CONFIG:['配置编译','核实配置及其引用资源；编译失败不等于密码错误。'], PROXY:['系统代理','检查系统 HTTP、HTTPS、SOCKS 代理设置。'], SERVER_ROUTE:['服务器路由','核实服务器物理出口及旁路路由。'], PUBLIC_ROUTE:['公共路由','核实公共路由读取结果。'], DNS:['DNS 状态','核实本机 DNS 设置与读取结果。'], BASELINE:['网络基线','核实网络基线的完整性与目录权限。'], PLIST:['服务描述','核实本机服务描述生成与校验结果。'], BOOTSTRAP:['服务注册','核实服务管理器注册结果；尚不能确定系统根因。'], READINESS:['启动就绪','核实进程与 TUN 路由的当前状态。'], HTTPS:['出口 HTTPS 检查','核实出口 HTTPS 的 DNS、连接及证书链；不代表节点认证失败。'], STOP:['停止与恢复','核实停止链及路由、DNS 恢复证据。'], DIAGNOSTIC:['诊断保存','核实诊断保存权限与当前应用状态。'], UNKNOWN:['未知','核实当前服务状态；现有证据不足以确定原因。']
+ LOCAL_READY:['本地就绪','外网尚未验证；可单独进行连接检查。'], NONE:['无','核实当前服务状态。'], HELPER_PREFLIGHT:['助手预检','核实助手绑定与配置预检结果。'], JOB:['服务作业','核实本机服务管理器的加载与运行状态。'], SNAPSHOT:['启动快照','核实本机快照状态与目录权限；不要删除快照。'], CONFIG:['配置编译','核实配置及其引用资源；编译失败不等于密码错误。'], PROXY:['系统代理','检查系统 HTTP、HTTPS、SOCKS 代理设置。'], SERVER_ROUTE:['服务器路由','核实服务器物理出口及旁路路由。'], PUBLIC_ROUTE:['公共路由','核实公共路由读取结果。'], DNS:['DNS 状态','核实本机 DNS 设置与读取结果。'], BASELINE:['网络基线','核实网络基线的完整性与目录权限。'], PLIST:['服务描述','核实本机服务描述生成与校验结果。'], BOOTSTRAP:['服务注册','核实服务管理器注册结果；尚不能确定系统根因。'], READINESS:['启动就绪','核实进程与 TUN 路由的当前状态。'], HTTPS:['出口 HTTPS 检查','核实出口 HTTPS 的 DNS、连接及证书链；不代表节点认证失败。'], STOP:['停止与恢复','核实停止链及路由、DNS 恢复证据。'], DIAGNOSTIC:['诊断保存','核实诊断保存权限与当前应用状态。'], UNKNOWN:['未知','核实当前服务状态；现有证据不足以确定原因。']
 };
 const diagnosticReasons = {
- NONE:['NONE','无失败原因'], PREFLIGHT_REJECTED:['HELPER_PREFLIGHT','助手预检拒绝'],
+ INTERNET_UNVERIFIED:['LOCAL_READY','外网尚未验证（未执行启动探测）'], NONE:['NONE','无失败原因'], PREFLIGHT_REJECTED:['HELPER_PREFLIGHT','助手预检拒绝'],
  JOB_STATE_UNAVAILABLE:['JOB','服务作业状态不可读取'], JOB_ALREADY_LOADED:['JOB','服务作业已加载或运行'], JOB_NOT_LOADED:['JOB','服务作业尚未加载'],
  SNAPSHOT_EXISTS:['SNAPSHOT','启动快照已存在'], SNAPSHOT_UNAVAILABLE:['SNAPSHOT','快照状态不可读取'], SNAPSHOT_STAGE_FAILED:['SNAPSHOT','快照创建或资源准备失败'], SNAPSHOT_IDENTITY_FAILED:['SNAPSHOT','快照身份校验失败'],
  CONFIG_COMPILE_FAILED:['CONFIG','配置编译失败'], SYSTEM_PROXY_ACTIVE:['PROXY','系统代理已启用'], PROXY_STATE_UNAVAILABLE:['PROXY','系统代理状态不可读取'],
@@ -44,17 +44,17 @@ function validDiagnostics(d, operation, success) {
  if(!['START','RELOAD','STOP'].includes(d.operation)||(operation&&d.operation!==operation)||!own(diagnosticStages,d.stage)||!['SUCCEEDED','FAILED','CANCELLED','UNKNOWN'].includes(d.outcome))return false;
  if(!['rollback','restoration','cleanup'].every(k=>typeof d[k]==='string'&&own(recoveryLabels,d[k]))||typeof d.receipt!=='string'||!own(receiptLabels,d.receipt)||!['NOT_OBSERVED','RUNNING','NOT_RUNNING','UNLOADED','UNKNOWN'].includes(d.job)||!['NOT_OBSERVED','TUN','NOT_TUN','UNKNOWN'].includes(d.tun))return false;
  const matched=typeof d.reason==='string'&&own(diagnosticReasons,d.reason)&&diagnosticReasons[d.reason][0]===d.stage;
- if(success)return d.outcome==='SUCCEEDED'&&d.stage==='NONE'&&d.reason==='NONE';
+ if(success)return d.outcome==='SUCCEEDED'&&((d.stage==='NONE'&&d.reason==='NONE')||(d.stage==='LOCAL_READY'&&d.reason==='INTERNET_UNVERIFIED'&&['START','RELOAD'].includes(d.operation)&&d.job==='RUNNING'&&d.tun==='TUN'&&d.receipt==='WRITTEN'));
  if(d.outcome==='SUCCEEDED')return d.stage==='DIAGNOSTIC'&&d.reason==='RECEIPT_WRITE_FAILED'&&d.receipt==='FAILED';
  if(d.outcome==='UNKNOWN')return d.stage==='UNKNOWN'&&d.reason==='UNKNOWN';
  if(d.outcome==='CANCELLED')return d.reason==='CANCELLED'&&d.stage!=='NONE';
- return matched&&d.stage!=='UNKNOWN'&&d.reason!=='NONE'&&d.reason!=='RECEIPT_WRITE_FAILED';
+ return matched&&d.stage!=='LOCAL_READY'&&d.stage!=='UNKNOWN'&&d.reason!=='NONE'&&d.reason!=='RECEIPT_WRITE_FAILED';
 }
 function serviceRecoveryWarning(data,operation) {
  if(!own(data,'diagnostics'))return '';
  const d=data.diagnostics;
  if(!validDiagnostics(d,operation,true))return '警告：成功响应的诊断数据无效，未采用网络恢复结论。';
- return d.restoration==='FAILED'||d.restoration==='UNKNOWN'?'警告：服务操作已完成，但先前网络恢复'+(d.restoration==='FAILED'?'检查失败':'未能确认')+'。已有诊断证据保留；恢复差异本身不阻止下次启动。请核实路由与 DNS。':'';
+ return (d.stage==='LOCAL_READY'?'本地 TUN 已就绪；外网尚未验证（启动未执行外部探测）。 ':'')+(d.restoration==='FAILED'||d.restoration==='UNKNOWN'?'警告：服务操作已完成，但先前网络恢复'+(d.restoration==='FAILED'?'检查失败':'未能确认')+'。已有诊断证据保留；恢复差异本身不阻止下次启动。请核实路由与 DNS。':'');
 }
 function serviceFeedback(code,data,operation) {
  if(typeof code!=='string'||!serviceErrorCodes.has(code))return '';
@@ -68,15 +68,65 @@ function serviceFeedback(code,data,operation) {
  const observations={NOT_OBSERVED:'未观察',RUNNING:'运行中',NOT_RUNNING:'未运行',UNLOADED:'未加载',UNKNOWN:'未知',TUN:'已接管',NOT_TUN:'未接管'};
  return [coarse,result,'阶段：'+diagnosticStages[d.stage][0]+'；原因：'+reason,'回滚：'+recoveryLabels[d.rollback]+'；网络恢复：'+recoveryLabels[d.restoration],'快照清理：'+recoveryLabels[d.cleanup]+'；诊断回执：'+receiptLabels[d.receipt],'作业观察：'+observations[d.job]+'；TUN 观察：'+observations[d.tun],'下一步：'+diagnosticStages[d.stage][1]+(d.restoration==='FAILED'||d.restoration==='UNKNOWN'?' 网络恢复尚未确认，请核实路由与 DNS。':'')+(d.operation==='RELOAD'?' 新启动回滚不代表旧 VPN 已恢复。':'')].join('\n');
 }
+// UNKNOWN is an in-memory mutation lock, not a service-status conclusion.
+let selectionUnknown=false, selectionRecovery=null, selectionReadOwner=null, selectionInFlight=false;
+const selectionFields=['ok','saved','changed','applied','apply_status','pendingReload','pendingKnown','etag','startup_operation','connection_policy','selection_operation','readback_requires_owned_lease'];
+function selectionTuple(value){
+ if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==4||!['operation','generation','revision','node'].every(k=>own(value,k))||!['operation','generation'].every(k=>typeof value[k]==='string'&&/^[a-f0-9]{32}$/.test(value[k]))||!Number.isSafeInteger(value.revision)||value.revision<0||typeof value.node!=='string'||!value.node||new TextEncoder().encode(value.node).length>=4096)return null;
+ return {...value};
+}
+function selectionEnvelope(data){
+ return data&&typeof data==='object'&&Object.keys(data).length===selectionFields.length&&selectionFields.every(k=>own(data,k))&&data.ok===true&&data.saved===true&&typeof data.changed==='boolean'&&typeof data.applied==='boolean'&&typeof data.pendingReload==='boolean'&&typeof data.pendingKnown==='boolean'&&typeof data.etag==='string'&&/^"[a-f0-9]{64}"$/.test(data.etag)&&data.startup_operation===null&&data.connection_policy==='EXISTING_CONNECTIONS_RETAIN_OLD_EXIT'&&typeof data.readback_requires_owned_lease==='boolean'&&(data.selection_operation===null||selectionTuple(data.selection_operation)!==null);
+}
+function selectionHot(data){return selectionEnvelope(data)&&data.apply_status==='HOT_APPLIED'&&data.applied===true&&data.pendingReload===false&&data.pendingKnown===true&&data.readback_requires_owned_lease===false&&selectionTuple(data.selection_operation)!==null;}
+function rememberSelection(data,name){
+ const hot=selectionHot(data)&&(!name||data.selection_operation.node===name);
+ const known=selectionEnvelope(data)&&data.applied===false&&data.readback_requires_owned_lease===false&&((data.apply_status==='SAVED_STOPPED'&&data.selection_operation===null)||(data.apply_status==='NO_CHANGE'&&data.changed===false)||(data.apply_status==='RELOAD_REQUIRED'&&data.pendingReload===true));
+ const legacy=data&&Object.keys(data).length===8&&['ok','saved','changed','applied','apply_status','pendingReload','pendingKnown','startup_operation'].every(k=>own(data,k))&&data.ok===true&&data.saved===true&&typeof data.changed==='boolean'&&data.apply_status==='APPLIED'&&data.applied===true&&data.pendingReload===false&&data.pendingKnown===true;
+ if(hot||known||legacy){selectionUnknown=false;selectionRecovery=null;return;}
+ selectionUnknown=true;selectionRecovery=null;
+ const tuple=selectionTuple(data?.selection_operation);
+ if(selectionEnvelope(data)&&data.apply_status==='SWITCH_UNKNOWN'&&data.applied===false&&data.pendingReload===true&&data.pendingKnown===false&&data.readback_requires_owned_lease===false&&tuple&&(!name||tuple.node===name))selectionRecovery={tuple,etag:data.etag,changed:data.changed,session:sessionGeneration};
+ if(!selectionRecovery)notice('切换结果未知，缺少可精确读回的操作凭据；请显式重新初始化服务，普通刷新不能解锁。',true);
+ else notice('切换结果未知；操作已锁定。可在节点页点击“刷新节点”只读核实原操作，不会再次切换。',true);
+}
+async function recoverSelectionReadback(){
+ if(!selectionUnknown||selectionReadOwner||!csrf)return;
+ const recovery=selectionRecovery;
+ if(!recovery||recovery.session!==sessionGeneration){notice('切换结果未知；请显式重新初始化服务，普通刷新不能解锁。',true);return;}
+ const owner={controller:new AbortController(),timer:null};selectionReadOwner=owner;
+ owner.timer=setTimeout(()=>owner.controller.abort(),7000);
+ const current=()=>selectionReadOwner===owner&&selectionRecovery===recovery&&recovery.session===sessionGeneration&&Boolean(csrf);
+ try{
+  const query=new URLSearchParams({...recovery.tuple,revision:String(recovery.tuple.revision)});
+  const data=await api('/nodes/selection/readback?'+query,{method:'GET',signal:owner.controller.signal},current);
+  if(!current())return;
+  const tuple=selectionTuple(data.selection_operation);
+  if(!selectionHot(data)||data.etag!==recovery.etag||data.changed!==recovery.changed||!tuple||!['operation','generation','revision','node'].every(k=>tuple[k]===recovery.tuple[k]))throw new Error('切换读回未匹配原操作；保持锁定，不自动重试。');
+  selectionUnknown=false;selectionRecovery=null;savedFeedback(data);
+ }catch(error){if(current())notice('切换读回未确认；保持锁定，不自动重试。',true);}
+ finally{clearTimeout(owner.timer);if(selectionReadOwner===owner)selectionReadOwner=null;}
+}
 async function api(path, options = {}, current = ()=>true) {
  const session=sessionGeneration;
+ const selectionMutation=options.method==='POST'&&['/nodes/selection','/groups/selection'].includes(path);
+ if(selectionUnknown&&options.method&&options.method!=='GET'&&!['/service/start','/service/reload','/logout','/login'].includes(path))throw new Error('切换结果未知；仅允许只读核实，或明确重新初始化服务。');
+ if(selectionMutation&&(selectionUnknown||selectionInFlight))throw new Error('切换尚未确认；先只读核实原操作，不得重复提交。');
+ const requestedNode=selectionMutation&&path==='/nodes/selection'?options.body?.name:null;
+ if(selectionMutation){selectionInFlight=true;selectionUnknown=true;}
  const startupMutation=Boolean(options.method&&options.method!=='GET'&&(/^\/service\/(start|stop|reload)$/.test(path)||['/config','/nodes','/groups/selection','/nodes/selection','/rules','/rules/delete','/profiles/switch','/import/commit','/subscriptions/apply'].includes(path)));
  const trace=startupMutation&&typeof startupBegin==='function'?startupBegin(!path.startsWith('/service/')):null;if(trace)trace.mutation=true;
  const headers = new Headers(options.headers || {});
  if (options.body !== undefined) { headers.set('Content-Type','application/json'); options.body = JSON.stringify(options.body); }
  if (options.method && options.method !== 'GET') headers.set('X-CSRF-Token',csrf);
- let response,data;try{response=await fetch('/api/v1'+path, { ...options, headers, credentials:'same-origin', cache:'no-store', redirect:'error' });data=await response.json();}catch(error){if(trace&&startupCurrent(trace))startupResult({startup_operation:{timeline_schema:1,operation_id:trace.id,availability:trace.id?'AVAILABLE':'UNAVAILABLE'}},trace);throw new Error(trace?'服务器未返回有效数据；已发送的服务操作不会自动重试。':'服务器未返回有效数据。');}
+ let response,data;try{response=await fetch('/api/v1'+path, { ...options, headers, credentials:'same-origin', cache:'no-store', redirect:'error' });data=await response.json();}catch(error){if(selectionMutation&&session===sessionGeneration){selectionUnknown=true;selectionRecovery=null;}if(trace&&startupCurrent(trace))startupResult({startup_operation:{timeline_schema:1,operation_id:trace.id,availability:trace.id?'AVAILABLE':'UNAVAILABLE'}},trace);throw new Error(trace?'服务器未返回有效数据；已发送的服务操作不会自动重试。':'服务器未返回有效数据。');}finally{if(selectionMutation)selectionInFlight=false;}
+ if(selectionMutation&&session===sessionGeneration){
+  if(response.ok)rememberSelection(data,requestedNode);
+  else if(data?.error==='SWITCH_UNKNOWN'||response.status>=500){selectionUnknown=true;selectionRecovery=null;}
+  else selectionUnknown=false;
+ }
  if(!current()||(options.signal&&options.signal.aborted)||session!==sessionGeneration)throw new Error('会话或读取已更换，忽略旧操作响应。');
+ if((selectionMutation||path.startsWith('/nodes/selection/readback?'))&&response.ok&&['HOT_APPLIED','SWITCH_UNKNOWN'].includes(data?.apply_status)&&response.headers.get('ETag')!==data.etag){if(selectionMutation){selectionUnknown=true;selectionRecovery=null;}throw new Error('切换回执配置摘要不匹配；保持锁定。');}
  if(trace&&!startupCurrent(trace))throw new Error('操作已更换，忽略旧操作响应。');
  if(trace&&session===sessionGeneration)startupResult(data,trace);
  if (!response.ok) {
@@ -85,6 +135,7 @@ async function api(path, options = {}, current = ()=>true) {
   const feedback=serviceOperation?serviceFeedback(data.error,data,serviceOperation):'';
   const error=new Error(feedback || (typeof data.error==='string'&&own(messages,data.error)?messages[data.error]:'操作失败（'+response.status+'）。请检查本机配置或命令行状态。')); error.code=data.error; error.details=data; throw error;
  }
+ if(response.ok&&['/service/start','/service/reload'].includes(path)&&data?.ok===true&&data.loaded===true&&data.running===true&&data.diagnostics?.stage==='LOCAL_READY'&&validDiagnostics(data.diagnostics,path==='/service/start'?'START':'RELOAD',true)){selectionUnknown=false;selectionRecovery=null;selectionReadOwner=null;}
  return data;
 }
 function syncServiceUI(state, title) {
@@ -112,9 +163,10 @@ function saveBody(body) {return {...body,confirm_insecure:true};}
 function savedFeedback(data) {
  if(data.changed){invalidateNodes();invalidateGroups();clearProfiles();invalidateRules();}
  const result=data.apply_status;
- const applied=result==='APPLIED';
- const failed=data.changed && !applied && result!=='SAVED_STOPPED';
- const text=!data.changed?'配置未变化，没有重新连接。':applied?'配置已保存并自动生效。':result==='SAVED_STOPPED'?'配置已保存；VPN 未运行，下次启动时生效。':'配置已保存，但自动应用未完成；配置尚未确认生效，当前连接状态以概览为准。';
+ const hotPolicy=result==='HOT_APPLIED';
+ const applied=result==='APPLIED'||selectionHot(data);
+ const failed=(hotPolicy&&!applied)||result==='SWITCH_UNKNOWN'||Boolean(data.changed&&!applied&&result!=='SAVED_STOPPED');
+ const text=hotPolicy?(applied?'节点已快速切换；新连接使用新节点，已有连接保留原出口。':'切换回执无效；连接保留策略尚未核实，请只读核实原操作，不要自动重试。'):result==='SWITCH_UNKNOWN'?'配置已保存；切换结果未知，已锁定重复提交。请只读核实原操作；无操作凭据时需显式重新初始化服务。':!data.changed?'配置未变化，没有重新连接。':result==='RELOAD_REQUIRED'?'配置已保存；当前核心或配置不支持热切换，VPN 未重启。请显式重新应用。':applied?'配置已保存并自动生效。':result==='SAVED_STOPPED'?'配置已保存；VPN 未运行，下次启动时生效。':'配置已保存，但自动应用未完成；配置尚未确认生效，当前连接状态以概览为准。';
  const detail=failed?serviceFeedback(data.apply_error,data,'RELOAD'):'';
  const warning=applied?serviceRecoveryWarning(data,'RELOAD'):'';
  notice(text+(detail?'\n'+detail:data.apply_error&&typeof data.apply_error==='string'&&own(messages,data.apply_error)?' '+messages[data.apply_error]:'')+(warning?'\n'+warning:''),Boolean(failed||warning));
@@ -212,14 +264,14 @@ function filterNodes(){
 }
 $('nodes-search').addEventListener('input',filterNodes);
 async function loadNodes(){const request=++nodesRequest,session=sessionGeneration;cancelProbes();nodesEtag='';renderExtraButtons();let result;try{result=await api('/nodes',{},()=>request===nodesRequest&&session===sessionGeneration&&Boolean(csrf));}catch(e){if(request===nodesRequest&&session===sessionGeneration)invalidateNodes();throw e;}if(request!==nodesRequest||session!==sessionGeneration||!csrf)return;if(!Array.isArray(result.nodes)||typeof result.etag!=='string'||!result.etag){invalidateNodes();throw new Error('节点列表响应不完整，请重新读取。');}const target=$('nodes-list');target.replaceChildren();nodesLoaded=true;nodesEtag=result.etag;
- for(const n of result.nodes){const row=element('article',undefined,'node-card');row.nodeSearch=n;row.classList.toggle('selected',Boolean(n.selected));const choose=element('button',undefined,'select-node');choose.type='button';choose.dataset.nodeSelect='true';const selectionLabel=!n.selectable?'不可选择':n.selected?(n.selectionNeedsSync?'启动节点 · 同步默认组':'当前启动节点'):n.defaultSelected&&n.selectionNeedsSync?'默认出口 · 设为启动节点':'设为启动节点';choose.setAttribute('aria-label',selectionLabel+'：'+n.name);choose.setAttribute('aria-pressed',String(Boolean(n.selected)));choose.disabled=!n.selectable||Boolean(n.selected&&!n.selectionNeedsSync);choose.append(element('span',selectionLabel,'selection-label'+(n.selected?'':' unselected')),element('strong',n.name,'node-name'));const meta=element('span',undefined,'card-meta');meta.append(element('span',n.type,'protocol'));choose.append(meta);if(n.skipVerify)choose.append(element('span','跳过证书校验 · 风险','badge risky'));choose.onclick=()=>{const current=()=>request===nodesRequest&&session===sessionGeneration&&Boolean(csrf)&&nodesEtag===result.etag;if(!current())return;return operation('保存节点选择',async()=>{if(!current())return;const saved=await api('/nodes/selection',{method:'POST',headers:{'If-Match':result.etag},body:saveBody({name:n.name})});if(!current())return;savedFeedback(saved);await refreshAfterSave(loadNodes);});};row.append(choose);
+ for(const n of result.nodes){const row=element('article',undefined,'node-card');row.nodeSearch=n;row.classList.toggle('selected',Boolean(n.selected));const choose=element('button',undefined,'select-node');choose.type='button';choose.dataset.nodeSelect='true';choose.dataset.nodeSelectable=String(Boolean(n.selectable&&!(n.selected&&!n.selectionNeedsSync)));const selectionLabel=!n.selectable?'不可选择':n.selected?(n.selectionNeedsSync?'启动节点 · 同步默认组':'当前启动节点'):n.defaultSelected&&n.selectionNeedsSync?'默认出口 · 设为启动节点':'设为启动节点';choose.setAttribute('aria-label',selectionLabel+'：'+n.name);choose.setAttribute('aria-pressed',String(Boolean(n.selected)));choose.disabled=!n.selectable||Boolean(n.selected&&!n.selectionNeedsSync);choose.append(element('span',selectionLabel,'selection-label'+(n.selected?'':' unselected')),element('strong',n.name,'node-name'));const meta=element('span',undefined,'card-meta');meta.append(element('span',n.type,'protocol'));choose.append(meta);if(n.skipVerify)choose.append(element('span','跳过证书校验 · 风险','badge risky'));choose.onclick=()=>{const current=()=>request===nodesRequest&&session===sessionGeneration&&Boolean(csrf)&&nodesEtag===result.etag;if(!current())return;return operation('保存节点选择',async()=>{if(!current())return;const saved=await api('/nodes/selection',{method:'POST',headers:{'If-Match':result.etag},body:saveBody({name:n.name})});if(!current())return;savedFeedback(saved);await refreshAfterSave(loadNodes);});};row.append(choose);
  const probes=element('div',undefined,'card-controls'),probeResult=element('span','尚未测速','probe-result latency');probeResult.setAttribute('role','status');probeResult.dataset.latency='unknown';row.probeResult=probeResult;row.probeName=n.name;meta.append(probeResult);
  const proxy=element('button','代理延迟','test-node');proxy.type='button';proxy.dataset.probe='https';proxy.setAttribute('aria-label','测试 '+n.name+' 的代理延迟');proxy.onclick=()=>startProbes([row],'https');const more=element('button','更多','more');more.type='button';more.setAttribute('aria-label',n.name+' 的更多操作');more.setAttribute('aria-haspopup','dialog');const tcp=element('button','TCP延迟');tcp.type='button';tcp.dataset.probe='tcp';tcp.onclick=()=>startProbes([row],'tcp');probes.append(proxy,more);row.append(probes);
  const edit=element('details');const summary=element('summary','编辑节点参数');edit.append(summary);
  const form=element('form');form.className='node-form';
  const inputs={};for(const [key,title,value,type] of [['server','服务器',n.server,'text'],['port','端口',n.port,'number'],['sni','SNI',n.sni||'','text'],['password','新节点密码（留空保留）','','password']]){const label=element('label',title);const input=element('input');input.type=type;input.value=value;input.autocomplete=key==='password'?'new-password':'off';input.setAttribute('aria-label',title);if(key==='port'){input.min='1';input.max='65535';}if(key==='server'||key==='port')input.required=true;label.append(input);form.append(label);inputs[key]=input;}
  let finishDetails=null;const submit=element('button','保存节点参数');submit.type='submit';form.append(submit);form.onsubmit=event=>{event.preventDefault();operation('保存节点参数',async()=>{const closeDetails=finishDetails;const saved=await api('/nodes',{method:'PUT',headers:{'If-Match':result.etag},body:saveBody({name:n.name,server:inputs.server.value,port:Number(inputs.port.value),sni:inputs.sni.value,password:inputs.password.value})});inputs.password.value='';closeDetails?.();savedFeedback(saved);await refreshAfterSave(loadNodes);});};edit.append(form);more.onclick=()=>{const dialog=window.AnyTLSProduct?.nodeDetails(n,edit,tcp),owner=dialog?.firstElementChild,session=sessionGeneration,route=location.hash,close=dialog?.querySelector('.close')?.onclick;finishDetails=()=>{if(session===sessionGeneration&&csrf&&location.hash===route&&dialog?.open&&dialog.firstElementChild===owner&&dialog.contains(edit)){close?.();dialog.replaceChildren();}};};row.addEventListener('click',event=>{if(event.target.closest('button,a,input,summary,details'))return;choose.click();});target.append(row);}filterNodes();renderExtraButtons();}
-$('refresh-nodes').onclick=()=>operation('刷新节点',loadNodes);
+$('refresh-nodes').onclick=()=>operation('刷新节点',async()=>{await loadNodes();await recoverSelectionReadback();});
 function invalidateGroups(){groupsRequest++;groupsEtag='';$('groups-list').replaceChildren();$('groups-count').textContent='尚未读取';}
 async function loadGroups(){
  const request=++groupsRequest,session=sessionGeneration;groupsEtag='';$('groups-list').replaceChildren();$('groups-count').textContent='正在读取…';
@@ -663,7 +715,8 @@ function renderExtraButtons(){
  for(const id of ['save-profile','refresh-profiles'])$(id).disabled=busy||!csrf;
  for(const button of document.querySelectorAll('[data-profile-action]'))button.disabled=busy||!csrf||!profilesEtag;
  $('copy-editor').disabled=busy||!csrf||!etag;
- for(const button of document.querySelectorAll('[data-group-save]'))button.disabled=busy||!csrf||!groupsEtag;
+ for(const button of document.querySelectorAll('[data-group-save]'))button.disabled=busy||selectionUnknown||!csrf||!groupsEtag;
+ for(const button of document.querySelectorAll('[data-node-select]'))button.disabled=busy||selectionUnknown||!csrf||!nodesEtag||button.dataset.nodeSelectable!=='true';
  $('probe-all').disabled=busy||!csrf||!nodesEtag||!$('nodes-list').querySelectorAll('article').length;
  for(const button of document.querySelectorAll('[data-probe]'))button.disabled=busy||!csrf||!nodesEtag;
  $('cancel-probes').hidden=!probeRunning;$('cancel-probes').disabled=!probeRunning;

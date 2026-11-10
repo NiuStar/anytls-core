@@ -73,6 +73,18 @@ func stageCAs(root string) error {
 		}
 		required[name] = true
 	}
+	if source, e := readSnapshotSource(config, snapshotConfigLimit, false); e == nil && liveSnapshotEnabled(config) && liveSourceEligible(source) {
+		group, _, e := defaultSelectionGroup(source)
+		if e == nil && group != nil {
+			for _, name := range group.Proxies {
+				required[name] = true
+			}
+		} else if e == nil {
+			for _, n := range nodes {
+				required[n.Name] = true
+			}
+		}
+	}
 	replacements := map[string]string{}
 	copied := map[string]string{}
 	digests := map[string]bool{}

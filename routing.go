@@ -64,6 +64,9 @@ func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cf
 	}
 	if len(doc.Rules) == 0 {
 		applyTUNAddressFamily(cfg, ipv6)
+		if liveSnapshotEnabled(path) {
+			finalizeLiveSelection(b, nodes, selected, cfg, allowInsecure, manifest)
+		}
 		return nil
 	}
 	route := cfg["route"].(map[string]any)
@@ -288,5 +291,8 @@ func applyRoutingCaptured(path string, b []byte, nodes []node, selected node, cf
 		inbound["route_exclude_address"] = excluded
 	}
 	applyTUNAddressFamily(cfg, ipv6)
+	if liveSnapshotEnabled(path) {
+		finalizeLiveSelection(b, nodes, selected, cfg, allowInsecure, manifest)
+	}
 	return nil
 }

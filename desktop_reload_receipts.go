@@ -182,12 +182,16 @@ func reloadCore(v any, app string) bool {
 	m := reloadMap(v)
 	return reloadShape(m, "pid uid birth command") && reloadInt(m["pid"], true) && m["uid"] == json.Number("0") && reloadString(m["birth"]) != "" && strings.HasPrefix(reloadString(m["command"]), filepath.Join(app, "service/anytls-macos")+" ")
 }
-func reloadDiagnostics(v any, stop bool) bool {
+func reloadDiagnostics(v any, stop bool, localReady ...bool) bool {
 	m := reloadMap(v)
 	if !reloadShape(m, "schema operation outcome stage reason rollback restoration cleanup receipt job tun") || m["schema"] != json.Number("1") {
 		return false
 	}
-	enums := map[string]string{"operation": "START RELOAD STOP", "outcome": "SUCCEEDED", "stage": "NONE", "reason": "NONE", "rollback": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "restoration": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "cleanup": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "receipt": "NOT_ATTEMPTED WRITTEN FAILED UNKNOWN", "job": "NOT_OBSERVED RUNNING NOT_RUNNING UNLOADED UNKNOWN", "tun": "NOT_OBSERVED TUN NOT_TUN UNKNOWN"}
+	local := len(localReady) == 1 && localReady[0] && !stop && m["stage"] == "LOCAL_READY" && m["reason"] == "INTERNET_UNVERIFIED" && (m["operation"] == "START" || m["operation"] == "RELOAD") && m["job"] == "RUNNING" && m["tun"] == "TUN" && m["receipt"] == "WRITTEN"
+	if !local && (m["stage"] != "NONE" || m["reason"] != "NONE") {
+		return false
+	}
+	enums := map[string]string{"operation": "START RELOAD STOP", "outcome": "SUCCEEDED", "rollback": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "restoration": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "cleanup": "NOT_ATTEMPTED VERIFIED FAILED UNKNOWN", "receipt": "NOT_ATTEMPTED WRITTEN FAILED UNKNOWN", "job": "NOT_OBSERVED RUNNING NOT_RUNNING UNLOADED UNKNOWN", "tun": "NOT_OBSERVED TUN NOT_TUN UNKNOWN"}
 	for k, values := range enums {
 		found := false
 		for _, s := range strings.Fields(values) {
@@ -201,12 +205,12 @@ func reloadDiagnostics(v any, stop bool) bool {
 	}
 	return !stop || (m["operation"] == "STOP" && m["job"] == "UNLOADED" && m["tun"] != "TUN")
 }
-func reloadStatus(v any, digest, tag, identity string, loaded bool) bool {
+func reloadStatus(v any, digest, tag, identity string, loaded bool, localReady ...bool) bool {
 	m := reloadMap(v)
 	keys := "ok code message loaded running helper_version helper_sha256 config_identity"
 	if _, ok := m["diagnostics"]; ok {
 		keys += " diagnostics"
-		if !reloadDiagnostics(m["diagnostics"], false) {
+		if !reloadDiagnostics(m["diagnostics"], false, localReady...) {
 			return false
 		}
 	}
@@ -309,9 +313,35 @@ func reloadTrace(v any, op, epoch, digest, tag, revision, identity string, stop 
 	last, _ := strconv.ParseUint(s.Events[len(s.Events)-1].ElapsedNS, 10, 64)
 	return (!stop || finalState) && !terminal.Before(previous) && !terminal.After(finish) && elapsed >= last
 }
+
+// No tag/date inference: only an explicit new job schema opts into local-ready.
+func reloadJobSchema(j map[string]any) (local, valid bool) {
+	keys := "app operation_id digest tag revision before"
+	if schema, present := j["receipt_schema"]; present {
+		return true, schema == json.Number("2") && reloadShape(j, keys+" receipt_schema")
+	}
+	return false, reloadShape(j, keys)
+}
+
 func reloadAccepted(files map[string][]byte, app, op string) bool {
 	r, e := reloadJSON(files["result.json"])
-	if e != nil || !reloadShape(r, "state operation_id helper_epoch new_core tun interface sha_kind execution_mapping network") || r["state"] != "SUCCEEDED" || r["operation_id"] != op || !reloadID.MatchString(reloadString(r["helper_epoch"])) || !reloadCore(r["new_core"], app) || r["tun"] != "TUN" || !reloadInterface.MatchString(reloadString(r["interface"])) || r["sha_kind"] != "FILE_BYTES" || r["execution_mapping"] != "NOT_ATTESTED" || r["network"] != "NOT_TESTED" {
+	keys := "state operation_id helper_epoch new_core tun interface sha_kind execution_mapping network"
+	if files["job.json"] != nil {
+		j, err := reloadJSON(files["job.json"])
+		local, valid := reloadJobSchema(j)
+		if err != nil || !valid || local && r["receipt_schema"] != json.Number("2") {
+			return false
+		}
+	}
+	if schema, present := r["receipt_schema"]; present {
+		keys += " receipt_schema"
+		j, err := reloadJSON(files["job.json"])
+		local, valid := reloadJobSchema(j)
+		if schema != json.Number("2") || err != nil || !valid || !local || j["app"] != app || j["operation_id"] != op {
+			return false
+		}
+	}
+	if e != nil || !reloadShape(r, keys) || r["state"] != "SUCCEEDED" || r["operation_id"] != op || !reloadID.MatchString(reloadString(r["helper_epoch"])) || !reloadCore(r["new_core"], app) || r["tun"] != "TUN" || !reloadInterface.MatchString(reloadString(r["interface"])) || r["sha_kind"] != "FILE_BYTES" || r["execution_mapping"] != "NOT_ATTESTED" || r["network"] != "NOT_TESTED" {
 		return false
 	}
 	// Match the two commands the worker actually accepts, bound only within
@@ -338,7 +368,8 @@ func reloadReconciled(files map[string][]byte, app, op string) bool {
 	identity := desktopSum([]byte(filepath.Join(app, "config.yaml")))
 	digest, tag, rev := reloadString(j["digest"]), reloadString(j["tag"]), reloadString(j["revision"])
 	epoch := reloadString(i["helper_epoch"])
-	if !reloadShape(j, "app operation_id digest tag revision before") || j["app"] != app || j["operation_id"] != op || !desktopMigrationToken(digest) || !reloadTag.MatchString(tag) || !reloadRevision.MatchString(rev) || !reloadShape(c, "pid") || !reloadInt(c["pid"], true) || !reloadShape(r, "state operation_id error_class code") || r["state"] != "UNKNOWN" || r["operation_id"] != op || r["error_class"] != "ValueError" || r["code"] != "CORE_RELOAD_INVALID" {
+	local, valid := reloadJobSchema(j)
+	if !valid || j["app"] != app || j["operation_id"] != op || !desktopMigrationToken(digest) || !reloadTag.MatchString(tag) || !reloadRevision.MatchString(rev) || !reloadShape(c, "pid") || !reloadInt(c["pid"], true) || !reloadShape(r, "state operation_id error_class code") || r["state"] != "UNKNOWN" || r["operation_id"] != op || r["error_class"] != "ValueError" || r["code"] != "CORE_RELOAD_INVALID" {
 		return false
 	}
 	before := reloadMap(j["before"])
@@ -347,7 +378,7 @@ func reloadReconciled(files map[string][]byte, app, op string) bool {
 		keys += " status"
 		p := reloadMap(prior)
 		pd, pt := reloadString(p["helper_sha256"]), reloadString(p["helper_version"])
-		if !desktopMigrationToken(pd) || !reloadTag.MatchString(pt) || !reloadStatus(prior, pd, pt, identity, true) {
+		if !desktopMigrationToken(pd) || !reloadTag.MatchString(pt) || !reloadStatus(prior, pd, pt, identity, true, local) {
 			return false
 		}
 	}
@@ -373,7 +404,7 @@ func reloadReconciled(files map[string][]byte, app, op string) bool {
 		return false
 	}
 	current := reloadMap(m["current"])
-	if !reloadShape(current, "state config core status") || current["state"] != "STOPPED" || current["core"] != nil || !reloadConfig(current["config"], identity) || !reloadStatus(current["status"], digest, tag, identity, false) {
+	if !reloadShape(current, "state config core status") || current["state"] != "STOPPED" || current["core"] != nil || !reloadConfig(current["config"], identity) || !reloadStatus(current["status"], digest, tag, identity, false, local) {
 		return false
 	}
 	stop := reloadMap(m["stop_sha256"])

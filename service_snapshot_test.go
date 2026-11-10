@@ -65,6 +65,17 @@ func TestServiceSnapshotBuildMode(t *testing.T) {
 				t.Fatalf("snapshot must not require core in embedded mode: %v", err)
 			}
 			want := []string{"anytls-macos", "config.yaml", "config.yaml.selected", "rules"}
+			if embedded {
+				want = append(want, liveSourceName)
+				b, e := os.ReadFile(filepath.Join(dest, liveSourceName))
+				if e != nil {
+					t.Fatal(e)
+				}
+				src, e := decodeLiveSource(b)
+				if e != nil || len(src.Staged) == 0 || len(src.Rules) != 1 {
+					t.Fatalf("invalid staged selection lease: %v", e)
+				}
+			}
 			if !embedded {
 				want = append(want, "sing-box")
 			}

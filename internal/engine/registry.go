@@ -48,6 +48,9 @@ func Context(ctx context.Context) context.Context {
 	outbounds := outbound.NewRegistry()
 	anytls.RegisterOutbound(outbounds)
 	direct.RegisterOutbound(outbounds)
+	if liveFrom(ctx) != nil {
+		registerLive(outbounds)
+	}
 
 	dnsTransports := dns.NewTransportRegistry()
 	dns.RegisterTransport[option.RemoteHTTPSDNSServerOptions](dnsTransports, constant.DNSTypeHTTPS, newObservedHTTPS)

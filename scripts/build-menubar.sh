@@ -35,7 +35,7 @@ app=pathlib.Path(sys.argv[1]); runtime=app/"Contents/Resources/runtime"
 # Go prints its version with the standard prefix; metadata uses currentVersion().
 v=sys.argv[2].strip().removeprefix("anytls-macos ").removeprefix("AnyTLS ")
 (runtime/"manifest.json").write_text(json.dumps(dict(schema=1,binary="anytls-macos",arch=sys.argv[3],version=v,sha256=hashlib.sha256((runtime/"anytls-macos").read_bytes()).hexdigest()),sort_keys=True)+"\n")
-p=dict(CFBundleIdentifier="org.anytls.menubar.candidate",CFBundleName="AnyTLSMenuBar",CFBundleDisplayName="AnyTLS 菜单栏",CFBundleExecutable="AnyTLSMenuBar",CFBundlePackageType="APPL",CFBundleShortVersionString="0.5.1",CFBundleVersion="0.5.1.20261109.1",AnyTLSCoreVersion=v,LSMinimumSystemVersion="13.0",LSUIElement=True,NSHighResolutionCapable=True,NSAppTransportSecurity={"NSAllowsLocalNetworking":True})
+p=dict(CFBundleIdentifier="org.anytls.menubar.candidate",CFBundleName="AnyTLSMenuBar",CFBundleDisplayName="AnyTLS 菜单栏",CFBundleExecutable="AnyTLSMenuBar",CFBundlePackageType="APPL",CFBundleShortVersionString="0.5.2",CFBundleVersion="0.5.2.20261110.1",AnyTLSCoreVersion=v,LSMinimumSystemVersion="13.0",LSUIElement=True,NSHighResolutionCapable=True,NSAppTransportSecurity={"NSAllowsLocalNetworking":True})
 with (app/"Contents/Info.plist").open("wb") as f: plistlib.dump(p,f)' "$APP" "$CORE_VERSION" "$ARCH"
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --strict --deep "$APP"

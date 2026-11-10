@@ -21,6 +21,20 @@ func (e probeExitError) ExitCode() int { return int(e) }
 
 var _ interface{ ExitCode() int } = (*exec.ExitError)(nil)
 
+// Explicit diagnostic helper fixture: startup first, then a separately requested
+// probe. A failed internet check never undoes successful local startup.
+func explicitHTTPSFixture(t *testing.T, d serviceLifecycle, b, c, k string) error {
+	t.Helper()
+	if err := d.start(b, c, k, true); err != nil {
+		return err
+	}
+	baseline, servers, err := d.baseline()
+	if err != nil {
+		return err
+	}
+	return d.httpsExitProbe(context.Background(), "utun8", baseline, servers)
+}
+
 func TestLifecycleHTTPSRetryRecovery(t *testing.T) {
 	for _, code := range []int{6, 7, 28, 35, 52, 56} {
 		for _, failures := range []int{1, 2} {
@@ -53,7 +67,7 @@ func TestLifecycleHTTPSRetryRecovery(t *testing.T) {
 					}
 					return "198.51.100.1", nil
 				}
-				if err := d.start(b, c, k, true); err != nil {
+				if err := explicitHTTPSFixture(t, d, b, c, k); err != nil {
 					t.Fatalf("transient failure not recovered: %v", err)
 				}
 				if attempts != failures+1 || !*loaded {
@@ -97,8 +111,8 @@ func TestLifecycleHTTPSRetryFailureRollback(t *testing.T) {
 				}
 				return tool(ctx, name, args...)
 			}
-			err := d.start(b, c, k, true)
-			if err == nil || attempts != wantAttempts || *loaded || bootouts != 1 {
+			err := explicitHTTPSFixture(t, d, b, c, k)
+			if err == nil || attempts != wantAttempts || !*loaded || bootouts != 0 {
 				t.Fatalf("err=%v attempts=%d bootouts=%d loaded=%v", err, attempts, bootouts, *loaded)
 			}
 			if cause != nil && !errors.Is(err, cause) {
@@ -110,8 +124,8 @@ func TestLifecycleHTTPSRetryFailureRollback(t *testing.T) {
 			if mode == "permanent_transient" && !strings.Contains(err.Error(), "curl exit 35") {
 				t.Fatalf("missing curl category: %v", err)
 			}
-			if _, err := os.Stat(d.root); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("rollback did not restore/clean: %v", err)
+			if err := d.stop(); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -220,7 +234,7 @@ func TestLifecycleHTTPSRetryIdentityDrift(t *testing.T) {
 					}
 					return route(ip)
 				}
-				err := d.start(b, c, k, true)
+				err := explicitHTTPSFixture(t, d, b, c, k)
 				if err == nil || attempts != failAt || !errors.Is(err, probeExitError(28)) {
 					t.Fatalf("identity drift lost or retried: attempts=%d err=%v", attempts, err)
 				}

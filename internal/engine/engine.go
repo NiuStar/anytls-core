@@ -11,6 +11,7 @@ import (
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing/service"
 )
 
 // operationError retains the cause for errors.Is/As without formatting upstream
@@ -105,6 +106,24 @@ func RunWithRecords(ctx context.Context, runtimeJSON []byte, records *RecordsInp
 	if err != nil {
 		return lifecycleError("construct", err)
 	}
+	if s := liveFrom(ctx); s != nil {
+		s.mu.Lock()
+		s.dnsRouter = service.FromContext[adapter.DNSRouter](ctx)
+		s.reset = func() {
+			service.FromContext[adapter.DNSRouter](ctx).ClearCache()
+			for _, transport := range service.FromContext[adapter.DNSTransportManager](ctx).Transports() {
+				transport.Reset()
+			}
+			if observer := service.FromContext[browserDNSObserver](ctx); observer != nil {
+				if owned, ok := observer.(*browserProvenance); ok {
+					owned.invalidateDNS(true)
+				} else {
+					observer.InvalidateBrowserDNS()
+				}
+			}
+		}
+		s.mu.Unlock()
+	}
 	if records != nil && records.Sink == nil && records.OpenSink != nil && ctx.Err() == nil {
 		// Keep the caller's input immutable and open durable recording only once
 		// runtime validation has succeeded. No second decode or Box is needed.
@@ -137,6 +156,7 @@ func execute(ctx context.Context, instance adapter.SimpleLifecycle, start bool) 
 func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start bool, stopAdmission func()) (err error) {
 	recorder := st.FromContext(ctx)
 	defer func() {
+		liveClosed(ctx)
 		if stopAdmission != nil {
 			stopAdmission()
 		}
@@ -168,6 +188,7 @@ func executeRecords(ctx context.Context, instance adapter.SimpleLifecycle, start
 	}
 	recorder.Observe("START", "CORE_WAIT", "OK", st.Fields{})
 	dnsEvidence(ctx).Loaded()
+	liveReady(ctx)
 	<-ctx.Done()
 	return ctx.Err()
 }

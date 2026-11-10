@@ -191,5 +191,5 @@ func (w *webConsole) saveLinkedSelection(rw http.ResponseWriter, r *http.Request
 	}
 	changed := !webProfileEqual(old[:2], target[:2])
 	// A no-op must still have passed CAS and readback in the shared helper.
-	w.finishConfigSave(rw, r, changed, `"`+shaHex(candidate)+`"`, consent)
+	w.finishSelectionSave(rw, r, changed, `"`+shaHex(candidate)+`"`, consent)
 }

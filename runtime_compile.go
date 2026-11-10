@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
@@ -16,6 +17,7 @@ type compiledRuntime struct {
 	JSON           []byte
 	Manifest       *cr.Manifest
 	familyPolicy   *fp.Snapshot
+	livePlan       *livePlan
 	startupContext context.Context
 }
 
@@ -47,6 +49,31 @@ func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (c
 	r.End(mapSpan, startupCode(err), st.Fields{})
 	if err != nil || cfg == nil {
 		return compiledRuntime{}, err
+	}
+	var plan *livePlan
+	if liveSnapshotEnabled(o.Config) {
+		// The graph is already final. Control metadata is derived from manifest
+		// labels, not a second graph transformation or mutable selection file.
+		if m != nil {
+			for _, out := range m.Outbounds {
+				if out.Type == "anytls-selection" {
+					plan = &livePlan{Nodes: map[string]string{}}
+				}
+			}
+		}
+		if plan != nil {
+			for _, out := range m.Outbounds {
+				if strings.HasPrefix(out.Tag, "live-leaf-") && out.NodeLabel != nil {
+					plan.Nodes[*out.NodeLabel] = out.Tag
+				}
+			}
+			for _, out := range cfg["outbounds"].([]any) {
+				v := out.(map[string]any)
+				if v["tag"] == "live" {
+					plan.Initial, _ = v["default"].(string)
+				}
+			}
+		}
 	}
 	jsonSpan := r.Begin("START", "CORE_JSON_ENCODE", st.Fields{})
 	b, err := json.MarshalIndent(cfg, "", "  ")
@@ -92,7 +119,7 @@ func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (c
 			}
 		}
 	}
-	return compiledRuntime{JSON: b, Manifest: m, familyPolicy: fp.Capture(b, m, sources), startupContext: ctx}, nil
+	return compiledRuntime{JSON: b, Manifest: m, familyPolicy: fp.Capture(b, m, sources), startupContext: ctx, livePlan: plan}, nil
 }
 
 func addCapturedSource(m *cr.Manifest, kind cr.SourceKind, ordinal int, b []byte, present bool) {

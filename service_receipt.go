@@ -52,34 +52,35 @@ type diagnosticServer struct {
 	Restoration string `json:"restoration"`
 }
 type serviceDiagnostic struct {
-	Schema            int                `json:"schema_version"`
-	Trust             string             `json:"trust"`
-	Engine            string             `json:"engine_mode"`
-	Network           string             `json:"network"`
-	Operation         string             `json:"operation"`
-	Outcome           string             `json:"outcome"`
-	Code              string             `json:"error_code"`
-	Readiness         string             `json:"readiness"`
-	HTTPS             string             `json:"https"`
-	Rollback          string             `json:"rollback"`
-	Stopped           string             `json:"stopped"`
-	Restoration       string             `json:"restoration"`
-	Snapshot          string             `json:"snapshot"`
-	Identity          diagnosticIdentity `json:"identity"`
-	Baseline          diagnosticEvidence `json:"baseline"`
-	BeforeHTTPS       diagnosticEvidence `json:"before_https"`
-	AfterHTTPS        diagnosticEvidence `json:"after_https"`
-	Restore           diagnosticEvidence `json:"restore"`
-	Servers           []diagnosticServer `json:"servers"`
-	ServerCount       int                `json:"server_count"`
-	ServerDetails     string             `json:"server_details"`
-	active            *diagnosticEvidence
-	diagnostic        *startDiagnostics
-	phase             string
-	startupCtx        context.Context
-	startupSegment    string
-	startupAppInfo    os.FileInfo
-	startupConfigInfo os.FileInfo
+	Schema               int                `json:"schema_version"`
+	Trust                string             `json:"trust"`
+	Engine               string             `json:"engine_mode"`
+	Network              string             `json:"network"`
+	Operation            string             `json:"operation"`
+	Outcome              string             `json:"outcome"`
+	Code                 string             `json:"error_code"`
+	Readiness            string             `json:"readiness"`
+	HTTPS                string             `json:"https"`
+	InternetVerification string             `json:"internet_verification,omitempty"`
+	Rollback             string             `json:"rollback"`
+	Stopped              string             `json:"stopped"`
+	Restoration          string             `json:"restoration"`
+	Snapshot             string             `json:"snapshot"`
+	Identity             diagnosticIdentity `json:"identity"`
+	Baseline             diagnosticEvidence `json:"baseline"`
+	BeforeHTTPS          diagnosticEvidence `json:"before_https"`
+	AfterHTTPS           diagnosticEvidence `json:"after_https"`
+	Restore              diagnosticEvidence `json:"restore"`
+	Servers              []diagnosticServer `json:"servers"`
+	ServerCount          int                `json:"server_count"`
+	ServerDetails        string             `json:"server_details"`
+	active               *diagnosticEvidence
+	diagnostic           *startDiagnostics
+	phase                string
+	startupCtx           context.Context
+	startupSegment       string
+	startupAppInfo       os.FileInfo
+	startupConfigInfo    os.FileInfo
 }
 
 func diagnosticUnknown() diagnosticEvidence {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	st "github.com/NiuStar/anytls-core/internal/startuptimeline"
@@ -35,6 +36,24 @@ func TestWebStartupFourRealSaveRoutes(t *testing.T) {
 					}
 					return nil
 				}
+				selectionRoute := strings.HasSuffix(route, "/selection")
+				if selectionRoute {
+					identity, _ := controlHelperConfigIdentity(w.configPath)
+					w.selectionRecovery.request = func(_ context.Context, action string, _ bool) (controlHelperResponse, error) {
+						r := controlHelperResponse{OK: true, Loaded: true, Running: true, ConfigIdentity: identity}
+						if action == "status" {
+							return r, nil
+						}
+						calls++
+						if mode == "failure" {
+							return r, errors.New("SECRET_SENTINEL")
+						}
+						r.Code = "HOT_APPLIED"
+						r.SelectionOperation = &liveSelectionOperation{Operation: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32), Revision: 1, Node: w.selectionSavedName()}
+						return r, nil
+					}
+					w.serviceAction = func(context.Context, string, bool) error { t.Fatal("selection must not reload"); return nil }
+				}
 				rec := httptest.NewRecorder()
 				w.ServeHTTP(rec, webAutoRequest(t, w, cookie, csrf, route, mode != "same", true))
 				var body struct {
@@ -44,6 +63,16 @@ func TestWebStartupFourRealSaveRoutes(t *testing.T) {
 				}
 				if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &body) != nil || !body.Saved {
 					t.Fatal(rec.Code, rec.Body.String())
+				}
+				if selectionRoute {
+					want := 0
+					if mode != "stopped" {
+						want = 1
+					}
+					if body.Ref != nil || calls != want || w.startupLatest != old || body.Applied != (mode == "success" || mode == "same") {
+						t.Fatal(rec.Body.String(), calls)
+					}
+					return
 				}
 				if mode == "same" || mode == "stopped" {
 					if body.Ref != nil || calls != 0 || w.startupLatest != old {

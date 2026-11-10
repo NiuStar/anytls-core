@@ -36,7 +36,7 @@ func readDiagnostic(t *testing.T, root string) (map[string]any, string) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if v["trust"] != "UNTRUSTED_DIAGNOSTIC" || v["schema_version"] != float64(1) {
+	if v["trust"] != "UNTRUSTED_DIAGNOSTIC" || (v["schema_version"] != float64(1) && !(v["schema_version"] == float64(2) && v["readiness"] == "LOCAL_READY" && v["internet_verification"] == "NOT_RUN" && v["https"] == "NOT_EXECUTED")) {
 		t.Fatal("receipt trust/schema")
 	}
 	for _, secret := range []string{root, "fixture", "SECRET", "BEGIN CERTIFICATE", "runtime.json", "password", "203.0.113.", "192.0.2.53"} {
@@ -56,7 +56,7 @@ func TestReceiptLifecycle(t *testing.T) {
 	if externalCoreRequired() {
 		wantMode = "EXTERNAL"
 	}
-	if v["engine_mode"] != wantMode || v["network"] != "TUN" || v["operation"] != "START" || v["outcome"] != "SUCCEEDED" || v["readiness"] != "NETWORK_VERIFIED" || v["https"] != "SUCCEEDED_SAME_INVOCATION" {
+	if v["engine_mode"] != wantMode || v["network"] != "TUN" || v["operation"] != "START" || v["outcome"] != "SUCCEEDED" || v["readiness"] != "LOCAL_READY" || v["https"] != "NOT_EXECUTED" || v["internet_verification"] != "NOT_RUN" {
 		t.Fatalf("wrong start outcome: %v", v)
 	}
 	sum := sha256.Sum256([]byte("app"))
@@ -91,7 +91,14 @@ func TestReceiptLifecycle(t *testing.T) {
 }
 func TestReceiptFailedRollback(t *testing.T) {
 	d, b, c, k, loaded, _ := lifecycleFixture(t)
-	primary := errors.New("SECRET HTTPS")
+	primary := errors.New("SECRET DNS")
+	originalDNS := d.dns
+	d.dns = func() ([]string, error) {
+		if *loaded {
+			return nil, primary
+		}
+		return originalDNS()
+	}
 	rollback := errors.New("SECRET bootout")
 	tool := d.tool
 	d.tool = func(ctx context.Context, n string, a ...string) (string, error) {
@@ -108,7 +115,7 @@ func TestReceiptFailedRollback(t *testing.T) {
 		t.Fatal("original failure identities/state lost")
 	}
 	v, _ := readDiagnostic(t, d.root)
-	if v["outcome"] != "FAILED" || v["readiness"] == "NETWORK_VERIFIED" || v["stopped"] == "VERIFIED" || v["rollback"] != "FAILED" || v["https"] != "FAILED" {
+	if v["outcome"] != "FAILED" || v["readiness"] == "NETWORK_VERIFIED" || v["stopped"] == "VERIFIED" || v["rollback"] != "FAILED" || v["https"] != "NOT_EXECUTED" {
 		t.Fatalf("false ready/stopped: %v", v)
 	}
 }
@@ -173,6 +180,14 @@ func TestReceiptWriteFailure(t *testing.T) {
 }
 func TestReceiptCancelled(t *testing.T) {
 	d, b, c, k, _, _ := lifecycleFixture(t)
+	originalDNS := d.dns
+	d.dns = func() ([]string, error) {
+		loaded, _, _ := d.state()
+		if loaded {
+			return nil, context.Canceled
+		}
+		return originalDNS()
+	}
 	tool := d.tool
 	d.tool = func(ctx context.Context, n string, a ...string) (string, error) {
 		if n == "/usr/bin/curl" {
@@ -184,7 +199,7 @@ func TestReceiptCancelled(t *testing.T) {
 		t.Fatal("cancel identity lost")
 	}
 	v, _ := readDiagnostic(t, d.root)
-	if v["https"] != "CANCELLED" || v["outcome"] != "CANCELLED" || v["rollback"] != "SUCCEEDED" || v["readiness"] == "NETWORK_VERIFIED" {
+	if v["https"] != "NOT_EXECUTED" || v["outcome"] != "CANCELLED" || v["rollback"] != "SUCCEEDED" || v["readiness"] == "NETWORK_VERIFIED" {
 		t.Fatalf("cancel faked success: %v", v)
 	}
 }
@@ -332,13 +347,17 @@ func TestReceiptPhaseEvidence(t *testing.T) {
 			}
 			d.route = func(ip string) (string, error) {
 				if *loaded {
+					alreadyProbed := probed
+					if ip == "1.1.1.1" {
+						probed = true
+					}
 					if mode == "timeout" && ip == "1.1.1.1" {
 						return "en0", nil
 					}
 					if mode == "secondary" && ip == "203.0.113.2" {
 						return "utun9", nil
 					}
-					if mode == "final_changed" && probed && ip == "1.1.1.1" {
+					if mode == "final_changed" && alreadyProbed && ip == "1.1.1.1" {
 						return "utun9", nil
 					}
 				}
@@ -352,7 +371,7 @@ func TestReceiptPhaseEvidence(t *testing.T) {
 				t.Fatalf("wrong branch: %v", v)
 			}
 			if mode == "final_changed" {
-				if v["https"] != "SUCCEEDED_SAME_INVOCATION" || v["after_https"].(map[string]any)["public_route"] != "FAILED" {
+				if v["https"] != "NOT_EXECUTED" || v["after_https"].(map[string]any)["public_route"] != "FAILED" {
 					t.Fatal("final change evidence incorrect")
 				}
 			} else if v["https"] != "NOT_EXECUTED" {

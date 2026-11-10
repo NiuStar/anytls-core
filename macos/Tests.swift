@@ -497,6 +497,7 @@ final class MockProtocol: URLProtocol {
     static func main() {
         if CommandLine.arguments.contains("--integration") {
             integration(); print(String(data:try! JSONSerialization.data(withJSONObject:["ok":true,"checks":checks.count]),encoding:.utf8)!)
+        } else if CommandLine.arguments.contains("--known-failures") { checks.append(contentsOf:KnownFailureTests.run()); print(output())
         } else if CommandLine.arguments.contains("--initialization") { connectionInitialization(); print(output())
         } else if CommandLine.arguments.contains("--latency") { latency(); print(output())
         } else { unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); latency(); batchLatency(); connectionInitialization(); print(output()) }

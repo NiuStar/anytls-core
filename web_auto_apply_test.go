@@ -157,6 +157,41 @@ func TestWebAutoApplyFourSaveRoutes(t *testing.T) {
 					}
 					return nil
 				}
+				selectionRoute := strings.HasSuffix(route, "/selection")
+				if selectionRoute {
+					identity, _ := controlHelperConfigIdentity(w.configPath)
+					w.selectionRecovery.request = func(_ context.Context, action string, _ bool) (controlHelperResponse, error) {
+						r := controlHelperResponse{OK: true, Loaded: true, Running: true, ConfigIdentity: identity}
+						if action == "status" {
+							return r, nil
+						}
+						calls++
+						if w.actionMu.TryLock() {
+							w.actionMu.Unlock()
+							t.Error("selection released action lock")
+						}
+						if mode == "concurrent" {
+							f, e := os.OpenFile(w.configPath, os.O_APPEND|os.O_WRONLY, 0600)
+							if e != nil {
+								t.Fatal(e)
+							}
+							_, _ = f.WriteString("x-concurrent: changed\n")
+							_ = f.Close()
+						}
+						if mode == "selected-concurrent" {
+							if e := os.WriteFile(selectedPath(w.configPath), []byte("external\n"), 0600); e != nil {
+								t.Fatal(e)
+							}
+						}
+						if mode == "failed" || mode == "unconfirmed" || mode == "unknown-after" || mode == "inconsistent-after" {
+							return r, errors.New("SECRET_NATIVE_ERROR")
+						}
+						r.Code = "HOT_APPLIED"
+						r.SelectionOperation = &liveSelectionOperation{Operation: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32), Revision: 1, Node: w.selectionSavedName()}
+						return r, nil
+					}
+					w.serviceAction = func(context.Context, string, bool) error { t.Fatal("selection must not reload"); return nil }
+				}
 				r := webAutoRequest(t, w, cookie, csrf, route, mode != "noop", consent)
 				rec := httptest.NewRecorder()
 				w.ServeHTTP(rec, r)
@@ -171,15 +206,23 @@ func TestWebAutoApplyFourSaveRoutes(t *testing.T) {
 				case "failed", "unconfirmed", "concurrent", "selected-concurrent", "unknown-after", "inconsistent-after":
 					status, applied, pending = "APPLY_FAILED", false, true
 				}
+				if selectionRoute {
+					if mode == "running" || mode == "noop" {
+						status, applied, pending, wantCalls = "HOT_APPLIED", true, false, 1
+					}
+					if mode == "failed" || mode == "unconfirmed" || mode == "concurrent" || mode == "selected-concurrent" || mode == "unknown-after" || mode == "inconsistent-after" {
+						status, applied, pending = "SWITCH_UNKNOWN", false, true
+					}
+				}
 				webAutoResult(t, rec, status, mode != "noop", applied, pending)
 				if calls != wantCalls {
 					t.Fatalf("reload calls: %d want %d", calls, wantCalls)
 				}
-				if mode == "noop" && stateCalls != 0 {
+				if mode == "noop" && !selectionRoute && stateCalls != 0 {
 					t.Fatal("no-op touched service")
 				}
 				if applied {
-					if w.baseline != w.fingerprint() || w.baseline == baseline || !w.pendingKnown {
+					if w.baseline != w.fingerprint() || (w.baseline == baseline && mode != "noop") || !w.pendingKnown {
 						t.Fatal("new baseline not confirmed")
 					}
 				} else if w.baseline != baseline {
