@@ -430,10 +430,10 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(p.run_tests(self.root / 'test', evidence), p.SUITES)
         self.assertEqual(annotations.getvalue(), '')
         self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
-        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 520, 'QuitTests': 250,
+        self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 529, 'QuitTests': 250,
                                     'ConnectivityTests': 61, 'FocusTests': 125,
                                     'DesktopRuntimeTests': 212})
-        self.assertEqual(sum(p.SUITES.values()), 1168)
+        self.assertEqual(sum(p.SUITES.values()), 1177)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())

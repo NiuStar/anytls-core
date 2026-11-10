@@ -44,10 +44,14 @@ func compileLiveSelection(raw []byte, nodes []node, selected node, cfg map[strin
 		mode = "tun"
 	}
 	originals := cfg["outbounds"].([]any)
+	// Reuse only the private warm leaf for this member, never a fixed-rule
+	// outbound even when its dial options happen to be identical.
+	byTag := make(map[string]map[string]any, len(originals))
 	servers := map[string]bool{}
 	cas := map[string]bool{"": true}
 	for _, r := range originals {
 		o := r.(map[string]any)
+		byTag[o["tag"].(string)] = o
 		if o["type"] == "anytls" {
 			servers[o["server"].(string)] = true
 			tls := o["tls"].(map[string]any)
@@ -58,7 +62,7 @@ func compileLiveSelection(raw []byte, nodes []node, selected node, cfg map[strin
 	plan := &livePlan{Nodes: map[string]string{}}
 	outbounds := append([]any(nil), originals...)
 	tags := []string{}
-	for _, name := range members {
+	for i, name := range members {
 		n, e := choose(nodes, name)
 		if e != nil || !selectable(n) || n.SkipVerify || !servers[n.Server] {
 			continue
@@ -72,9 +76,14 @@ func compileLiveSelection(raw []byte, nodes []node, selected node, cfg map[strin
 		if !cas[path] {
 			continue
 		}
-		tag := fmt.Sprintf("live-leaf-%d", len(tags))
+		tag := fmt.Sprintf("warm-%d", i)
 		out["tag"] = tag
-		outbounds = append(outbounds, out)
+		if mode != "tun" || !reflect.DeepEqual(byTag[tag], out) {
+			// Proxy mode and non-warm callers retain their existing leaf path.
+			tag = fmt.Sprintf("live-leaf-%d", len(tags))
+			out["tag"] = tag
+			outbounds = append(outbounds, out)
+		}
 		tags = append(tags, tag)
 		plan.Nodes[name] = tag
 		if name == selected.Name {

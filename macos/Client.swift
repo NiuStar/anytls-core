@@ -20,6 +20,7 @@ final class APIClient {
     private let configuration: () -> URLSessionConfiguration
     private var owners: [String: UUID] = [:]
     private var tasks: [String: URLSessionDataTask] = [:]
+    var requestsInFlight: Int { owners.count }
     func cancelProbe() {
         for key in owners.keys.filter({ $0 == "/nodes/probe" || $0.hasPrefix("/nodes/probe#") }) {
             owners.removeValue(forKey:key); tasks.removeValue(forKey:key)?.cancel()
@@ -119,7 +120,11 @@ final class MenuModel {
     private var sleeping=false
     private var trafficIdentity: String?
     var onChange: (() -> Void)?
-    private(set) var status: ServiceStatus?
+    private var observedStatus: ServiceStatus?
+    private(set) var status: ServiceStatus? {
+        get { guard statusGeneration == api.generation, let at=statusAt, now().timeIntervalSince(at)<=15 else { return nil }; return observedStatus }
+        set { observedStatus=newValue }
+    }
     private(set) var nodes: [Node] = []
     private(set) var etag = ""
     private struct RetainedLatency {
@@ -140,8 +145,8 @@ final class MenuModel {
     private(set) var probing = false
     private var probeQueue: [String] = []
     var canProbe: Bool {
-        !initializingConnection && api.authenticated && !sleeping && !pending && !uncertain && quitOwner == nil && !etag.isEmpty && !nodes.isEmpty &&
-        (nodesAt.map { Date().timeIntervalSince($0)<=15 } ?? false)
+        !initializingConnection && api.authenticated && !sleeping && !pending && !uncertain && quitOwner == nil && !etag.isEmpty && !nodes.isEmpty && nodesGeneration == api.generation &&
+        (nodesAt.map { now().timeIntervalSince($0)<=15 } ?? false)
     }
     func latencyLabel(_ name: String) -> String {
         if probing && latencyGeneration == api.generation && activeProbeNames.contains(name) { return "测试中…" }
@@ -169,13 +174,13 @@ final class MenuModel {
         probeNext()
     }
     private func probeNext() {
-        guard let owner=probeOwner, canProbe, latencyGeneration == api.generation else { cancelProbes(); onChange?(); return }
+        guard let owner=probeOwner, canProbe, latencyGeneration == api.generation else { cancelProbes(); changed(); return }
         while !probeQueue.isEmpty && activeProbeNames.count < Self.probeConcurrency {
             let name=probeQueue.removeFirst(), tag=etag, epoch=api.generation, origin=api.endpoint.origin
             activeProbeNames.insert(name)
             let sent=api.request("/nodes/probe",method:"POST",body:["name":name,"mode":"tcp_direct","confirm_insecure":false],etag:tag,requestIdentity:owner.uuidString+":"+name) { [weak self] result in
                 guard let self=self, self.probeOwner == owner, self.api.generation == epoch, self.etag == tag, self.canProbe else { return }
-                if case .success(let r)=result, r.status == 412 { self.cancelProbes(); self.onChange?(); self.refresh(); return }
+                if case .success(let r)=result, r.status == 412 { self.cancelProbes(); self.changed(); self.refresh(); return }
                 let sample: NodeLatency?
                 if case .success(let r)=result, r.status == 200, let parsed=NodeLatency.parse(r.body,name:name,etag:tag) { sample=parsed } else { sample=nil }
                 self.latencySamples[origin,default:[:]][name]=RetainedLatency(label:sample?.label ?? "不可用",checkedAt:sample?.checkedAt,completedAt:Date(),etag:tag)
@@ -184,11 +189,11 @@ final class MenuModel {
             }
             if !sent, probeOwner == owner {
                 latencySamples[origin,default:[:]][name]=RetainedLatency(label:"不可用",checkedAt:nil,completedAt:Date(),etag:tag)
-                cancelProbes(); onChange?(); return
+                cancelProbes(); changed(); return
             }
         }
         if probeQueue.isEmpty && activeProbeNames.isEmpty { probing=false; probeOwner=nil }
-        onChange?()
+        changed()
     }
     private(set) var traffic: TrafficRate?
     private(set) var helperAvailable = false
@@ -221,7 +226,7 @@ final class MenuModel {
                   jsonBool(reply.body["changed"]) == recovery.changed else { return }
             self.selectionRecovery=nil; self.uncertain=false
             self.message=selectionConnectionPolicy(reply.body)!; self.forceConnectivity=true
-            self.onChange?()
+            self.changed()
         }
         if !sent { selectionReadOwner=nil }
     }
@@ -240,13 +245,13 @@ final class MenuModel {
             completion(uncertain ? .unknown : .blocked); return
         }
         let owner=UUID(); quitOwner=owner; pending=true; cancelConnectivity(); cancelProbes()
-        message="正在核实并停止 VPN…"; onChange?()
+        message="正在核实并停止 VPN…"; changed()
         func finish(_ outcome: QuitOutcome) {
             guard self.quitOwner == owner else { return }
             self.quitOwner=nil; self.pending=false
             if outcome == .unknown { self.uncertain=true }
             self.message = outcome == .stopped ? "VPN 已停止" : (outcome == .unknown ? "停止结果未知；请打开控制台核实" : "退出已取消；无法确认 VPN 已停止")
-            self.onChange?(); completion(outcome)
+            self.changed(); completion(outcome)
         }
         let readSent=api.request("/status") { [weak self] result in
             guard let self=self, self.ownsQuit(context,owner) else { return }
@@ -284,13 +289,32 @@ final class MenuModel {
         dispatchPrecondition(condition:.onQueue(.main))
         guard quitOwner != nil else { return }
         quitOwner=nil; pending=false; uncertain=true; observationGeneration += 1
-        clearObservations(); message="停止结果未知；请打开控制台核实"; onChange?()
+        clearObservations(); message="停止结果未知；请打开控制台核实"; changed()
     }
     private var statusAt: Date?
     private var nodesAt: Date?
     private var statusGeneration = -1, helperGeneration = -1, nodesGeneration = -1
-    private var timer: Timer?
-    private var tickCount = 0
+    private(set) var pollingTimer: Timer?
+    var now: () -> Date = Date.init
+    private var menuOpen=false
+    var pollingInterval: TimeInterval { sleeping || !api.authenticated ? 5 : (menuOpen ? 0.25 : (status?.running == true || pending ? 1 : 5)) }
+    private(set) var expiryTimer: Timer?
+    private var scheduledInterval: TimeInterval = 0
+    private var pollingGeneration = -1
+    private var nextStatus=Date.distantPast, nextConfiguration=Date.distantPast
+    private var helperAt: Date?
+    private var lastPresentation: [String] = []
+    private func changed() {
+        if pollingTimer != nil && scheduledInterval != pollingInterval { installPollingTimer() }
+        if pollingTimer != nil { scheduleExpiry() }
+        let presentation=[String(api.generation),String(api.authenticated),String(describing:status?.loaded),String(describing:status?.running),
+            String(helperAvailable),etag,String(pending),String(uncertain),message,String(initializingConnection),String(describing:connectivity),
+            String(probing),String(probeCompleted),String(probeTotal)] + nodes.flatMap { [$0.name,String($0.selected),String($0.selectable),String($0.skipVerify),String($0.needsSync),latencyLabel($0.name)] } +
+            [traffic.map { "\($0.runtimeIdentity):\($0.upload):\($0.download):\($0.duration):\($0.totalUpload):\($0.totalDownload)" } ?? "—"]
+        guard presentation != lastPresentation else { return }
+        lastPresentation=presentation; onChange?()
+    }
+    func setMenuOpen(_ open: Bool) { menuOpen=open; if pollingTimer != nil && scheduledInterval != pollingInterval { installPollingTimer() }; tick() }
     private var observationGeneration = 0
     init(api: APIClient, connectivityMonitor: ConnectivityMonitor? = ConnectivityMonitor()) {
         self.api=api; self.connectivityMonitor=connectivityMonitor
@@ -299,7 +323,7 @@ final class MenuModel {
             guard let self=self else { return }
             if self.pending { self.pending=false; self.uncertain=true }
             self.clearObservations(); self.message=self.uncertain ? "会话已失效；先前操作结果未知，请打开控制台核实" : "本机会话已过期；正在重新验证组件，失败后可稍后刷新状态"
-            self.onChange?()
+            self.changed()
         }
     }
     private var connectionInitializationOwner: UUID?
@@ -308,8 +332,9 @@ final class MenuModel {
     var connectionObservationsReady: Bool {
         api.authenticated && status != nil && helperAvailable && !etag.isEmpty &&
         statusGeneration == api.generation && helperGeneration == api.generation && nodesGeneration == api.generation &&
-        (statusAt.map { Date().timeIntervalSince($0)<=15 } ?? false) &&
-        (nodesAt.map { Date().timeIntervalSince($0)<=15 } ?? false)
+        (statusAt.map { now().timeIntervalSince($0)<=15 } ?? false) &&
+        (nodesAt.map { now().timeIntervalSince($0)<=15 } ?? false) &&
+        (helperAt.map { now().timeIntervalSince($0)<=15 } ?? false)
     }
     @discardableResult
     func beginConnectionInitialization(userConfirmedDiscardUnknown: Bool = false) -> UUID? {
@@ -317,7 +342,7 @@ final class MenuModel {
         let owner=UUID(); connectionInitializationOwner=owner
         discardClientUnknown=uncertain && userConfirmedDiscardUnknown
         stopPolling(); observationGeneration += 1; api.reset(); clearObservations()
-        message="正在初始化连接；不重复上次操作…"; onChange?(); return owner
+        message="正在初始化连接；不重复上次操作…"; changed(); return owner
     }
     func finishConnectionInitialization(owner: UUID, verified: Bool) {
         guard connectionInitializationOwner == owner else { return }
@@ -327,88 +352,112 @@ final class MenuModel {
         discardClientUnknown=false
         if !ready { api.reset(); observationGeneration += 1; clearObservations() }
         message=ready ? "连接初始化完成；上次操作结果不追认为成功" : "连接初始化失败；可显式重试，先前未知结果保持锁定"
-        onChange?()
+        changed()
     }
-    var canMutate: Bool { !initializingConnection && api.authenticated && !pending && !uncertain && quitOwner == nil && status != nil && helperAvailable }
+    var canMutate: Bool { !initializingConnection && !sleeping && api.authenticated && !pending && !uncertain && quitOwner == nil && status != nil && helperAvailable &&
+        statusGeneration == api.generation && helperGeneration == api.generation &&
+        (statusAt.map { now().timeIntervalSince($0)<=15 } ?? false) && (helperAt.map { now().timeIntervalSince($0)<=15 } ?? false) }
     private func cancelConnectivity() {
         connectivityMonitor?.onChange=nil; connectivityMonitor?.cancel(); connectivity = .idle
     }
     private func checkConnectivity(force: Bool = false) {
         guard !sleeping, api.authenticated, !pending, !uncertain, status?.running == true,
-              let at=statusAt, Date().timeIntervalSince(at)<=15 else { cancelConnectivity(); return }
+              let at=statusAt, now().timeIntervalSince(at)<=15 else { cancelConnectivity(); return }
         let epoch=api.generation, observation=observationGeneration
         connectivityMonitor?.onChange={ [weak self] state in
             guard let self=self, self.api.generation == epoch, self.observationGeneration == observation,
                   !self.sleeping, self.api.authenticated, !self.pending, !self.uncertain,
-                  self.status?.running == true, let at=self.statusAt, Date().timeIntervalSince(at)<=15 else { return }
-            self.connectivity=state; self.onChange?()
+                  self.status?.running == true, let at=self.statusAt, self.now().timeIntervalSince(at)<=15 else { return }
+            self.connectivity=state; self.changed()
         }
         connectivityMonitor?.check(force:force)
     }
     func environmentChanged(sleeping: Bool = false) {
         self.sleeping=sleeping; observationGeneration += 1; clearObservations(); forceConnectivity=true
         if !sleeping && api.authenticated { refresh() }
-        onChange?()
+        changed()
     }
-    func clearObservations() { cancelProbes(); cancelConnectivity(); status=nil; statusAt=nil; nodes=[]; nodesAt=nil; etag=""; traffic=nil; trafficIdentity=nil; helperAvailable=false }
+    func clearObservations() { nextStatus = .distantPast; nextConfiguration = .distantPast; helperAt=nil; cancelProbes(); cancelConnectivity(); status=nil; statusAt=nil; nodes=[]; nodesAt=nil; etag=""; traffic=nil; trafficIdentity=nil; helperAvailable=false }
     func login(endpoint: LocalEndpoint, password: String, completion: @escaping (Bool) -> Void) {
         // Never discard an unresolved command simply by changing session/endpoint.
         if initializingConnection || pending || quitOwner != nil || (uncertain && endpoint != api.endpoint) { completion(false); return }
-        api.reset(endpoint:endpoint); clearObservations(); message="正在连接…"; onChange?()
+        api.reset(endpoint:endpoint); clearObservations(); message="正在连接…"; changed()
         api.login(password:password) { [weak self] ok in
             guard let self=self else { return }
             self.message=ok ? (self.uncertain ? "先前操作结果未知；请打开控制台核实" : "已连接本机控制台") : "连接失败；检查端口与应用专用密码"
-            if ok { self.refresh() }; self.onChange?(); completion(ok)
+            if ok { self.refresh() }; self.changed(); completion(ok)
         }
     }
     func startPolling() {
-        guard timer == nil else { return }
-        timer=Timer(timeInterval:0.25,repeats:true) { [weak self] _ in self?.tick() }
-        RunLoop.main.add(timer!,forMode:.common)
+        guard pollingTimer == nil else { return }; installPollingTimer()
     }
-    func stopPolling() { timer?.invalidate(); timer=nil; cancelConnectivity(); cancelProbes() }
+    private func installPollingTimer() {
+        pollingTimer?.invalidate(); scheduledInterval=pollingInterval
+        let t=Timer(timeInterval:scheduledInterval,repeats:true) { [weak self] _ in self?.tick() }
+        t.tolerance=min(0.1,scheduledInterval/10); pollingTimer=t
+        RunLoop.main.add(t,forMode:.common)
+    }
+    private func scheduleExpiry() {
+        expiryTimer?.invalidate(); expiryTimer=nil
+        let deadlines=([statusAt,helperAt,nodesAt,traffic?.sampledAt].compactMap { $0 }).map { $0.addingTimeInterval(15.001) }.filter { $0 > now() }
+        guard let deadline=deadlines.min() else { return }
+        let t=Timer(timeInterval:deadline.timeIntervalSince(now()),repeats:false) { [weak self] _ in self?.expireObservations(); self?.changed() }
+        expiryTimer=t; RunLoop.main.add(t,forMode:.common)
+    }
+    func stopPolling() { expiryTimer?.invalidate(); expiryTimer=nil; pollingTimer?.invalidate(); pollingTimer=nil; cancelConnectivity(); cancelProbes() }
+    private func expireObservations() {
+        if let t=traffic, !t.fresh(now()) { traffic=nil }
+        if let at=statusAt, now().timeIntervalSince(at)>15 { status=nil; helperAvailable=false; cancelConnectivity() }
+        if let at=helperAt, now().timeIntervalSince(at)>15 { helperAvailable=false }
+        if let at=nodesAt, now().timeIntervalSince(at)>15 { cancelProbes(); nodes=[]; nodesAt=nil; etag="" }
+        if latencyGeneration != api.generation && latencyGeneration != -1 { cancelProbes() }
+    }
     func tick() {
         api.expireIfNeeded()
-        if let t=traffic, !t.fresh() { traffic=nil }
-        if let at=statusAt, Date().timeIntervalSince(at)>15 { status=nil; helperAvailable=false; cancelConnectivity() }
-        if let at=nodesAt, Date().timeIntervalSince(at)>15 { cancelProbes(); nodes=[]; nodesAt=nil; etag="" }
-        if latencyGeneration != api.generation && latencyGeneration != -1 { cancelProbes() }
-        guard api.authenticated && !sleeping else { traffic=nil; cancelConnectivity(); onChange?(); return }
-        readTraffic(); tickCount += 1
-        if tickCount % 20 == 0 { refresh() }
+        if pollingGeneration != api.generation { observationGeneration += 1; clearObservations(); pollingGeneration=api.generation }
+        expireObservations()
+        guard api.authenticated && !sleeping else { traffic=nil; cancelConnectivity(); changed(); return }
+        readTraffic()
+        if now() >= nextStatus { refresh(configuration:now() >= nextConfiguration) }
         if status?.running == true && !pending && !uncertain { checkConnectivity() }
-        onChange?()
+        changed()
     }
-    func refresh() {
-        guard api.authenticated else { return }
+    func refresh(configuration: Bool = true) {
+        guard api.authenticated && !sleeping else { return }
+        pollingGeneration=api.generation
         recoverSelectionReadback()
+        nextStatus=now().addingTimeInterval(5)
+        if configuration { nextConfiguration=now().addingTimeInterval(10) }
         let epoch=api.generation, observation=observationGeneration
         api.request("/status") { [weak self] result in
             guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
-            if case .success(let r)=result, r.status == 200 { self.status=ServiceStatus.parse(r.body); self.statusAt=Date(); self.statusGeneration=epoch }
+            let old=self.status
+            if case .success(let r)=result, r.status == 200 { self.status=ServiceStatus.parse(r.body); self.statusAt=self.now(); self.statusGeneration=epoch }
             else { self.status=nil; self.statusAt=nil }
             if self.status?.running == true && !self.pending && !self.uncertain {
                 self.checkConnectivity(force:self.forceConnectivity); self.forceConnectivity=false
             } else { self.cancelConnectivity() }
-            self.onChange?()
+            if !configuration && (old?.running != self.status?.running || old?.loaded != self.status?.loaded) { self.refresh() }
+            self.changed()
         }
-        api.request("/helper/status") { [weak self] result in
-            guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
-            if case .success(let r)=result { self.helperAvailable = r.status == 200 && jsonBool(r.body["available"]) == true; self.helperGeneration=epoch }
-            else { self.helperAvailable=false }; self.onChange?()
-        }
-        api.request("/nodes") { [weak self] result in
-            guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
-            var nextNodes: [Node] = [], nextTag=""
-            if case .success(let r)=result, r.status == 200, let list=r.body["nodes"] as? [Any],
-               let etag=r.body["etag"] as? String, etag.range(of:#"^\"[a-f0-9]{64}\"$"#,options:.regularExpression) != nil {
-                let parsed=list.compactMap(Node.parse)
-                if parsed.count == list.count && Set(parsed.map { $0.name }).count == parsed.count { nextNodes=parsed; nextTag=etag }
+        if configuration {
+            api.request("/helper/status") { [weak self] result in
+                guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
+                if case .success(let r)=result { self.helperAvailable = r.status == 200 && jsonBool(r.body["available"]) == true; self.helperGeneration=epoch; self.helperAt=self.now() }
+                else { self.helperAvailable=false; self.helperAt=nil }; self.changed()
             }
-            if nextTag != self.etag || nextNodes.map({ $0.name }) != self.nodes.map({ $0.name }) { self.cancelProbes() }
-            self.nodes=nextNodes; self.etag=nextTag; self.nodesAt=nextTag.isEmpty ? nil : Date()
-            self.nodesGeneration=epoch
-            self.onChange?()
+            api.request("/nodes") { [weak self] result in
+                guard let self=self, self.api.generation == epoch, self.observationGeneration == observation else { return }
+                var nextNodes: [Node] = [], nextTag=""
+                if case .success(let r)=result, r.status == 200, let list=r.body["nodes"] as? [Any],
+                   let etag=r.body["etag"] as? String, etag.range(of:#"^\"[a-f0-9]{64}\"$"#,options:.regularExpression) != nil {
+                    let parsed=list.compactMap(Node.parse)
+                    if parsed.count == list.count && Set(parsed.map { $0.name }).count == parsed.count { nextNodes=parsed; nextTag=etag }
+                }
+                if nextTag != self.etag || nextNodes.map({ $0.name }) != self.nodes.map({ $0.name }) { self.cancelProbes() }
+                self.nodes=nextNodes; self.etag=nextTag; self.nodesAt=nextTag.isEmpty ? nil : self.now(); self.nodesGeneration=epoch
+                self.changed()
+            }
         }
         readTraffic()
     }
@@ -416,27 +465,27 @@ final class MenuModel {
         let observation=observationGeneration
         api.request("/traffic") { [weak self] result in
             guard let self=self, self.observationGeneration == observation else { return }
-            if case .success(let r)=result, r.status == 200 { self.traffic=TrafficRate.parse(r.body) } else { self.traffic=nil }
+            if case .success(let r)=result, r.status == 200 { self.traffic=TrafficRate.parse(r.body,now:self.now()) } else { self.traffic=nil }
             if let identity=self.traffic?.runtimeIdentity {
                 if let old=self.trafficIdentity, old != identity {
-                    self.cancelProbes(); self.cancelConnectivity(); self.status=nil; self.statusAt=nil; self.forceConnectivity=true
+                    self.observationGeneration += 1; self.clearObservations(); self.forceConnectivity=true
                     self.trafficIdentity=identity; self.refresh(); return
                 }
                 self.trafficIdentity=identity
             }
-            self.onChange?()
+            self.changed()
         }
     }
     func mutate(path: String, name: String? = nil, consent: Bool) {
         guard canMutate, ["/service/start","/service/stop","/service/reload","/nodes/selection"].contains(path),
-              let at=statusAt, Date().timeIntervalSince(at)<=15 else { return }
-        if path == "/nodes/selection" && (etag.isEmpty || !nodes.contains(where: { $0.name == name && $0.selectable })) { return }
+              let at=statusAt, now().timeIntervalSince(at)<=15 else { return }
+        if path == "/nodes/selection" && (!canProbe || etag.isEmpty || !nodes.contains(where: { $0.name == name && $0.selectable })) { return }
         if path == "/service/start" && (status?.running != false || status?.loaded != false) { return }
         if path == "/service/reload" && status?.running != true { return }
         if path == "/service/stop" && status?.loaded != true && status?.running != true { return }
         cancelConnectivity(); cancelProbes()
         operationID=nil; observationGeneration += 1; status=nil; traffic=nil
-        pending=true; pendingPath=path; pendingName=name; message="正在执行；不会自动重试…"; onChange?()
+        pending=true; pendingPath=path; pendingName=name; message="正在执行；不会自动重试…"; changed()
         var body: [String: Any] = ["confirm_insecure":consent]
         if let name=name { body["name"]=name }
         let epoch=api.generation
@@ -479,9 +528,9 @@ final class MenuModel {
             case .unknown: self.message="操作结果未知；已锁定操作，不自动重试。打开控制台核实"
             }
             self.forceConnectivity = verdict == .applied || (verdict == .serviceSucceeded && path != "/service/stop")
-            self.refresh(); self.onChange?()
+            self.refresh(); self.changed()
         }
-        if !sent { pending=false; uncertain=true; message="操作状态未知；请打开控制台核实"; onChange?() }
+        if !sent { pending=false; uncertain=true; message="操作状态未知；请打开控制台核实"; changed() }
     }
     // Lost responses without an owned tuple remain locked; no mutation replay.
 }

@@ -493,13 +493,83 @@ final class MockProtocol: URLProtocol {
         check(model.connectivity == .idle && monitor.state == .idle,"session cancellation cannot resurrect expired online proof")
         model.stopPolling(); model.api.reset(); MockProtocol.handler=nil
     }
+    static func pollingCounts() {
+        let savedDrains=drainedRefreshes
+        defer { drainedRefreshes=savedDrains }
+        let api=mockClient(); authenticate(api)
+        let model=MenuModel(api:api,connectivityMonitor:nil)
+        var clock=Date(), callbacks=0, violations=[String]()
+        model.now={ clock }; model.onChange={ callbacks += 1 }
+        let tag="\""+String(repeating:"a",count:64)+"\""
+        var running=true, held=false
+        MockProtocol.handler={ req,p in
+            if held { return }
+            switch req.url!.path {
+            case "/api/v1/status": p.reply(200,["availability":"AVAILABLE","loaded":running,"running":running])
+            case "/api/v1/helper/status": p.reply(200,["available":true])
+            case "/api/v1/nodes": p.reply(200,["etag":tag,"nodes":[["name":"node","selectable":true,"selected":true,"skipVerify":false]]])
+            default: p.reply(200,fixture(now:clock))
+            }
+        }
+        model.refresh(); drainRefresh(api); model.startPolling()
+        func replay(_ name: String, _ maximum: Int) {
+            let before=MockProtocol.calls.count; callbacks=0
+            let end=clock.addingTimeInterval(60); var wakes=0
+            while clock.addingTimeInterval(model.pollingInterval)<=end {
+                clock=clock.addingTimeInterval(model.pollingInterval); model.pollingTimer!.fireDate = .distantFuture; model.pollingTimer!.fire(); wakes += 1
+                // Drain actual URLProtocol/API callbacks, not synthetic request totals.
+                pumpUntil { api.requestsInFlight == 0 }
+            }
+            let calls=Array(MockProtocol.calls.dropFirst(before))
+            let paths=Dictionary(grouping:calls,by:{ $0.url!.path }).mapValues { $0.count }
+            let requests=calls.count
+            fputs("COUNT \(name) wakes=\(wakes) requests=\(requests) callbacks=\(callbacks) paths=\(paths)\n",stderr)
+            if wakes>maximum { violations.append("adaptive \(name) wake contract") }
+            if requests>maximum+40 { violations.append("adaptive \(name) request contract") }
+            if callbacks != 0 { violations.append("unchanged \(name) callback contract") }
+        }
+        replay("running",60)
+        running=false; model.refresh(); drainRefresh(api)
+        replay("stopped",12)
+        model.setMenuOpen(true)
+        if model.pollingTimer?.timeInterval != 0.25 { violations.append("open menu timer") }
+        replay("menu-open",240)
+        model.setMenuOpen(false)
+        check(violations.isEmpty,"adaptive count contracts: \(violations)")
+        if model.pollingTimer?.timeInterval != 5 { violations.append("closing stopped menu timer") }
+        pumpUntil { api.requestsInFlight == 0 }
+        callbacks=0
+        MockProtocol.handler={ req,p in
+            if req.url!.path == "/api/v1/traffic" {
+                var dto=fixture(now:clock);var snapshot=dto["snapshot"] as! [String:Any]
+                snapshot["upload_bytes"]="18446744073709551614";dto["snapshot"]=snapshot;p.reply(200,dto)
+            } else if req.url!.path == "/api/v1/status" { p.reply(200,["availability":"AVAILABLE","loaded":false,"running":false]) }
+            else if req.url!.path == "/api/v1/helper/status" { p.reply(200,["available":true]) }
+            else { p.reply(200,["etag":tag,"nodes":[["name":"node","selectable":true,"selected":true,"skipVerify":false]]]) }
+        }
+        model.tick();pumpUntil { api.requestsInFlight == 0 }
+        check(callbacks == 1 && model.traffic?.totalUpload == 18446744073709551614,"changed traffic renders closed-menu two-line telemetry")
+        held=true; clock=clock.addingTimeInterval(15.001)
+        check(!model.canMutate && !model.canProbe,"freshness denied before timer delivery")
+        let requestsBeforeExpiry=MockProtocol.calls.count
+        model.expiryTimer?.fire()
+        check(model.status == nil && model.etag.isEmpty,"independent native expiry timer clears stalled status and nodes")
+        check(MockProtocol.calls.count == requestsBeforeExpiry,"expiry timer never authorizes or dispatches reads")
+        model.environmentChanged(sleeping:true)
+        let before=MockProtocol.calls.count
+        model.tick(); check(MockProtocol.calls.count == before,"sleep dispatches no reads")
+        replay("sleep",12)
+        model.stopPolling(); api.reset(); MockProtocol.handler=nil
+        check(violations.isEmpty,"adaptive count contracts: \(violations)")
+    }
     static func output() -> String { String(data:try! JSONSerialization.data(withJSONObject:["status":"PASS","checks":checks],options:[.prettyPrinted,.sortedKeys]),encoding:.utf8)! }
     static func main() {
         if CommandLine.arguments.contains("--integration") {
             integration(); print(String(data:try! JSONSerialization.data(withJSONObject:["ok":true,"checks":checks.count]),encoding:.utf8)!)
+        } else if CommandLine.arguments.contains("--polling") { pollingCounts(); print(output())
         } else if CommandLine.arguments.contains("--known-failures") { checks.append(contentsOf:KnownFailureTests.run()); print(output())
         } else if CommandLine.arguments.contains("--initialization") { connectionInitialization(); print(output())
         } else if CommandLine.arguments.contains("--latency") { latency(); print(output())
-        } else { unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); latency(); batchLatency(); connectionInitialization(); print(output()) }
+        } else { pollingCounts(); unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); latency(); batchLatency(); connectionInitialization(); print(output()) }
     }
 }

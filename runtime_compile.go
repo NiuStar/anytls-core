@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
-	"strings"
 
 	cr "github.com/NiuStar/anytls-core/internal/connectionrecords"
 	fp "github.com/NiuStar/anytls-core/internal/familypolicy"
@@ -52,28 +51,8 @@ func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (c
 	}
 	var plan *livePlan
 	if liveSnapshotEnabled(o.Config) {
-		// The graph is already final. Control metadata is derived from manifest
-		// labels, not a second graph transformation or mutable selection file.
-		if m != nil {
-			for _, out := range m.Outbounds {
-				if out.Type == "anytls-selection" {
-					plan = &livePlan{Nodes: map[string]string{}}
-				}
-			}
-		}
-		if plan != nil {
-			for _, out := range m.Outbounds {
-				if strings.HasPrefix(out.Tag, "live-leaf-") && out.NodeLabel != nil {
-					plan.Nodes[*out.NodeLabel] = out.Tag
-				}
-			}
-			for _, out := range cfg["outbounds"].([]any) {
-				v := out.(map[string]any)
-				if v["tag"] == "live" {
-					plan.Initial, _ = v["default"].(string)
-				}
-			}
-		}
+		// Derive from the final selector's explicit membership, not tag spelling.
+		plan = liveSelectionPlanFromManifest(cfg, m)
 	}
 	jsonSpan := r.Begin("START", "CORE_JSON_ENCODE", st.Fields{})
 	b, err := json.MarshalIndent(cfg, "", "  ")
@@ -120,6 +99,42 @@ func prepareRuntimeWithRecordsContext(ctx context.Context, o *runtimeOptions) (c
 		}
 	}
 	return compiledRuntime{JSON: b, Manifest: m, familyPolicy: fp.Capture(b, m, sources), startupContext: ctx, livePlan: plan}, nil
+}
+
+func liveSelectionPlanFromManifest(cfg map[string]any, m *cr.Manifest) *livePlan {
+	if m == nil {
+		return nil
+	}
+	origins := make(map[string]cr.OutboundOrigin, len(m.Outbounds))
+	for _, out := range m.Outbounds {
+		origins[out.Tag] = out
+	}
+	for _, item := range cfg["outbounds"].([]any) {
+		out := item.(map[string]any)
+		if out["tag"] != "live" || out["type"] != "anytls-selection" || origins["live"].Type != "anytls-selection" {
+			continue
+		}
+		plan := &livePlan{Nodes: map[string]string{}}
+		plan.Initial, _ = out["default"].(string)
+		tags, ok := out["outbounds"].([]string)
+		if !ok || len(tags) == 0 || len(tags) > 256 {
+			return nil
+		}
+		initial := false
+		for _, tag := range tags {
+			origin, ok := origins[tag]
+			if !ok || origin.Type != "anytls" || origin.NodeLabel == nil {
+				return nil
+			}
+			plan.Nodes[*origin.NodeLabel] = tag
+			initial = initial || tag == plan.Initial
+		}
+		if !initial {
+			return nil
+		}
+		return plan
+	}
+	return nil
 }
 
 func addCapturedSource(m *cr.Manifest, kind cr.SourceKind, ordinal int, b []byte, present bool) {

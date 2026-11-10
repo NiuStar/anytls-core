@@ -74,7 +74,9 @@ type webConsole struct {
 	startupLegacyRequest          webControlRequestFunc
 	startupRandom                 io.Reader
 	probeSlotsOnce                sync.Once
-	probeSlots                    chan struct{} // published by probeSlotsOnce; TCP/HTTPS share eight slots
+	probeSlots                    chan struct{}                             // published by probeSlotsOnce; TCP/HTTPS share eight slots
+	getSourceRead                 func(string, int64, bool) ([]byte, error) // instance-only GET observation seam
+	getYAMLParse                  func([]byte, *yaml.Node) error            // instance-only GET parse seam
 	// Restart authority is installed only by the verified managed CLI path.
 	restartCheck   func() error
 	restartRequest func()
@@ -515,19 +517,24 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 		}
 		webJSON(rw, 200, map[string]any{"loaded": loaded, "running": running, "availability": availability, "pendingReload": pending, "pendingKnown": known, "version": currentVersion(), "readiness": "NOT_OBSERVED", "transport": w.transport(), "listenHost": w.listenHost})
 	case "/api/v1/nodes", "/api/v1/groups":
-		b, err := readSnapshotSource(w.configPath, snapshotConfigLimit, false)
+		b, err := w.readGETSource(w.configPath, snapshotConfigLimit, false)
 		if err != nil {
 			webError(rw, 500, "CONFIG_UNAVAILABLE")
 			return
 		}
-		nodes, err := loadNodesBytes(b)
+		decode := w.getConfigDecode(b)
+		nodes, err := loadNodesDecode(decode)
 		if err != nil {
 			webError(rw, 422, "CONFIG_INVALID")
 			return
 		}
 		if r.URL.Path == "/api/v1/nodes" {
-			selected := effectiveWebSelection(w.configPath, b, nodes)
-			defaultSelected, linked, needsSync := webSelectionLinkState(b, nodes, selected)
+			selectedBytesRaw, selectedErr := w.readGETSource(selectedPath(w.configPath), snapshotSelectedLimit, true)
+			selected := ""
+			if selectedErr == nil {
+				selected, _ = selectedBytes(selectedBytesRaw, nodes)
+			}
+			defaultSelected, linked, needsSync := webSelectionLinkStateDecode(b, nodes, selected, decode)
 			list := make([]map[string]any, 0, len(nodes))
 			for _, n := range nodes {
 				list = append(list, map[string]any{"name": n.Name, "type": n.Type, "server": n.Server, "port": n.Port, "hasPassword": n.Password != "", "selectable": selectable(n), "skipVerify": n.SkipVerify, "sni": n.SNI, "selected": selected == n.Name, "defaultSelected": defaultSelected == n.Name, "selectionNeedsSync": needsSync[n.Name]})
@@ -538,7 +545,7 @@ func (w *webConsole) get(rw http.ResponseWriter, r *http.Request, session webSes
 		var doc struct {
 			Groups []proxyGroup `yaml:"proxy-groups"`
 		}
-		if yaml.Unmarshal(b, &doc) != nil {
+		if decode(&doc) != nil {
 			webError(rw, 422, "CONFIG_INVALID")
 			return
 		}

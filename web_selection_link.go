@@ -11,11 +11,15 @@ import (
 // Only the actual final MATCH target links the startup card. No guessed group
 // names, nested traversal or policy/rule rewriting. Dedicated groups stay local.
 func defaultSelectionGroup(b []byte) (*proxyGroup, []proxyGroup, error) {
+	return defaultSelectionGroupDecode(func(v any) error { return yaml.Unmarshal(b, v) })
+}
+
+func defaultSelectionGroupDecode(decode func(any) error) (*proxyGroup, []proxyGroup, error) {
 	var doc struct {
 		Rules  []string     `yaml:"rules"`
 		Groups []proxyGroup `yaml:"proxy-groups"`
 	}
-	if err := yaml.Unmarshal(b, &doc); err != nil {
+	if err := decode(&doc); err != nil {
 		return nil, nil, err
 	}
 	if len(doc.Rules) == 0 {
@@ -66,8 +70,12 @@ func effectiveWebSelection(config string, _ []byte, nodes []node) string {
 // rules remain outside this contract. Reuse the actual editor to avoid offering
 // repairs for nonmembers, alias/merge targets or unsupported group edits.
 func webSelectionLinkState(b []byte, nodes []node, startup string) (defaultSelected string, linked bool, needsSync map[string]bool) {
+	return webSelectionLinkStateDecode(b, nodes, startup, func(v any) error { return yaml.Unmarshal(b, v) })
+}
+
+func webSelectionLinkStateDecode(b []byte, nodes []node, startup string, decode func(any) error) (defaultSelected string, linked bool, needsSync map[string]bool) {
 	needsSync = make(map[string]bool)
-	group, groups, err := defaultSelectionGroup(b)
+	group, groups, err := defaultSelectionGroupDecode(decode)
 	if err != nil || group == nil || group.Type != "select" {
 		return
 	}

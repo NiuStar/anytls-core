@@ -140,12 +140,16 @@ func loadNodes(path string) ([]node, error) {
 }
 
 func loadNodesBytes(b []byte) ([]node, error) {
+	return loadNodesDecode(func(v any) error { return yaml.Unmarshal(b, v) })
+}
+
+func loadNodesDecode(decode func(any) error) ([]node, error) {
 	var doc struct {
 		IPv6    yaml.Node `yaml:"ipv6"`
 		Proxies []node    `yaml:"proxies"`
 		Nodes   []node    `yaml:"nodes"`
 	}
-	if err := yaml.Unmarshal(b, &doc); err != nil {
+	if err := decode(&doc); err != nil {
 		return nil, err
 	}
 	nodes := append(doc.Proxies, doc.Nodes...)

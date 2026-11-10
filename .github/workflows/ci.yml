@@ -50,6 +50,19 @@ jobs:
           bash -n install.sh
           bash -n install-control-helper.sh
       - run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
+      - name: Offline full-race CI contract regressions
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_race_test.py
+      - name: Full unfiltered native race qualification
+        env:
+          CGO_ENABLED: '1'
+        run: python3 scripts/ci-race.py
+      - name: Preserve full-race evidence on every platform
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-race-${{ matrix.os }}
+          path: ${{ env.RACE_EVIDENCE }}
+          if-no-files-found: warn
       - run: python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - run: mkdir -p dist
       - run: python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o dist/anytls-macos .

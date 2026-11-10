@@ -16,7 +16,7 @@ func finalizeLiveSelection(raw []byte, nodes []node, selected node, cfg map[stri
 	if m == nil {
 		return
 	}
-	// Warm candidates and immutable live leaves are both constructed SDK objects.
+	// Reused warm leaves already have origins; append only newly built objects.
 	for _, item := range cfg["outbounds"].([]any) {
 		out := item.(map[string]any)
 		tag := out["tag"].(string)

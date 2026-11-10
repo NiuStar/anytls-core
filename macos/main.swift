@@ -42,7 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var pendingMigrationResume=false
     private var menu: NSMenu!
     private var trackingMenus=Set<ObjectIdentifier>()
-    private var probeRefreshTimer: Timer?
     private var probeItem: NSMenuItem?
     private var probeButton: NSButton?
     private var latencyRows=[String:(NSMenuItem,String)]()
@@ -138,17 +137,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var menuIsOpen=false
     func menuWillOpen(_ opening: NSMenu) {
         if trackingMenus.isEmpty && opening === menu { render() }
-        trackingMenus.insert(ObjectIdentifier(opening)); menuIsOpen=true
-        if probeRefreshTimer == nil {
-            let timer=Timer(timeInterval:0.1,repeats:true) { [weak self] _ in self?.updateProbeRows() }
-            probeRefreshTimer=timer
-            RunLoop.main.add(timer,forMode:.common); RunLoop.main.add(timer,forMode:.eventTracking)
-        }
+        trackingMenus.insert(ObjectIdentifier(opening)); menuIsOpen=true; model.setMenuOpen(true)
         updateProbeRows()
     }
     func menuDidClose(_ closing: NSMenu) {
         trackingMenus.remove(ObjectIdentifier(closing)); menuIsOpen = !trackingMenus.isEmpty
-        if !menuIsOpen { probeRefreshTimer?.invalidate(); probeRefreshTimer=nil; render() }
+        if !menuIsOpen { model.setMenuOpen(false); render() }
     }
     private func updateProbeRows() {
         guard let probe=probeItem else { return }
