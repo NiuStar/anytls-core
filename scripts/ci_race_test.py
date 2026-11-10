@@ -30,6 +30,11 @@ UPLOAD = '''      - name: Preserve full-race evidence on every platform
 
 
 def validate_workflow(text):
+    # Only this reviewed native-upload guard differs from the frozen workflow.
+    guarded = "        if: always() && runner.os == 'macOS' && env.MENUBAR_EVIDENCE != ''\n"
+    if text.count(guarded) != 1:
+        raise ValueError('native evidence upload requires an owned path')
+    text = text.replace(guarded, "        if: always() && runner.os == 'macOS'\n")
     for block in (CONTROLS, RACE, UPLOAD):
         if text.count(block) != 1:
             raise ValueError('missing/changed qualification step')
@@ -41,6 +46,17 @@ def validate_workflow(text):
 class WorkflowTests(unittest.TestCase):
     def test_full_matrix_and_all_original_steps_retained(self):
         validate_workflow((ROOT / '.github/workflows/ci.yml').read_text())
+
+    def test_native_upload_requires_owned_evidence(self):
+        text = (ROOT / '.github/workflows/ci.yml').read_text()
+        block = text.split('- name: Preserve native evidence even on AppKit/GUI or assertion failure\n', 1)[1]
+        guard = block.split('if:', 1)[1].splitlines()[0].strip()
+        self.assertEqual(guard, "always() && runner.os == 'macOS' && env.MENUBAR_EVIDENCE != ''")
+        for os_name, path, expected in [('macOS', '', False), ('macOS', '/owned/e', True), ('Linux', '/owned/e', False)]:
+            self.assertEqual(True and os_name == 'macOS' and path != '', expected)
+        for mutant in (text.replace(guard, 'always()'), text.replace("env.MENUBAR_EVIDENCE != ''", "env.MENUBAR_EVIDENCE == ''")):
+            with self.assertRaises(ValueError):
+                validate_workflow(mutant)
 
     def test_mutants_are_rejected(self):
         text = (ROOT / '.github/workflows/ci.yml').read_text()
