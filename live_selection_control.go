@@ -117,7 +117,7 @@ func stageLiveSource(config, root string) error {
 	if e != nil {
 		return e
 	}
-	if !liveSourceEligible(source.config) {
+	if !liveSourceEligibleStage(source.config) {
 		return nil
 	}
 	staged, e := captureServiceConfig(filepath.Join(root, "config.yaml"))

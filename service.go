@@ -206,28 +206,32 @@ func captureServiceConfig(config string) (serviceConfigBytes, error) {
 }
 
 func (captured serviceConfigBytes) selected() (node, error) {
+	n, _, err := captured.selectedAndNodes()
+	return n, err
+}
+func (captured serviceConfigBytes) selectedAndNodes() (node, []node, error) {
 	nodes, err := loadNodesBytes(captured.config)
 	if err != nil {
-		return node{}, err
+		return node{}, nil, err
 	}
 	if captured.selection == nil {
-		return node{}, errors.New("select a node first with 'anytls config'")
+		return node{}, nil, errors.New("select a node first with 'anytls config'")
 	}
 	current, err := selectedBytes(captured.selection, nodes)
 	if err != nil {
-		return node{}, err
+		return node{}, nil, err
 	}
 	if current == "" {
-		return node{}, errors.New("select a node first with 'anytls config'")
+		return node{}, nil, errors.New("select a node first with 'anytls config'")
 	}
 	n, err := choose(nodes, current)
 	if err != nil {
-		return node{}, err
+		return node{}, nil, err
 	}
 	if _, err := buildNode(n, "tun", 0, n.SkipVerify); err != nil {
-		return node{}, err
+		return node{}, nil, err
 	}
-	return n, nil
+	return n, nodes, nil
 }
 func servicePaths() (binary, config, core string, err error) {
 	binary, err = os.Executable()

@@ -69,13 +69,9 @@ func serviceOutbounds(config string, allowInsecure bool) ([]string, bool, error)
 }
 
 func (captured serviceConfigBytes) compile(allowInsecure bool) (map[string]any, error) {
-	n, err := captured.selected()
+	n, nodes, err := captured.selectedAndNodes()
 	if err != nil {
 		return nil, lifecycleFailure("service selection unavailable", err)
-	}
-	nodes, err := loadNodesBytes(captured.config)
-	if err != nil {
-		return nil, lifecycleFailure("service config unavailable", err)
 	}
 	cfg, err := buildNode(n, "tun", 0, allowInsecure)
 	if err != nil {
