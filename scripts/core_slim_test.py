@@ -67,6 +67,10 @@ class CoreSlimTests(unittest.TestCase):
         receipt = ctx['receipt']
         self.assertEqual(receipt['core_slim'], dict(identity_sha256=w.CORE_IDENTITY_SHA, patch_sha256=w.sha(self.patch), files=self.core['files']))
         self.assertIn('intermediate', receipt['result_sha256_scope'])
+        startup_m, startup_patch = w.rule_startup_identity()
+        staged = self.root / 'box.go'
+        staged.write_bytes(w.transform_rule_startup(staged.read_bytes(), startup_m, startup_patch))
+        ctx['rule_startup_m'] = startup_m
         assertion = next(n for n in transaction.body if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call) and any(isinstance(a, ast.Constant) and a.value == 'final staged core sources changed' for a in n.value.args))
         code = compile(ast.Module(body=[assertion], type_ignores=[]), str(SCRIPT), 'exec')
         exec(code, ctx)

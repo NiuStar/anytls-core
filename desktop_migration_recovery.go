@@ -696,14 +696,14 @@ func (m desktopMigration) recoveryHistoricalConsole(value any, r desktopMigratio
 // plain COMMITTED successors. UNKNOWN itself remains immutable and UNKNOWN.
 func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[string]desktopMigrationRecord, result *desktopMigrationMetadata) error {
 	if e := m.recoveryTerminal(r); e != nil {
-		return e
+		return m.recoveryObserved("HISTORY_TERMINAL", e)
 	}
 	except := ""
 	var awaiting *desktopMigrationRecord
 	for op, v := range records {
 		if v.Recovery == nil && v.Metadata.Phase == "AWAITING_HELPER" {
 			if awaiting != nil {
-				return migrationRecoveryHold
+				return m.recoveryObserved("HISTORY_MULTIPLE_AWAITING", migrationRecoveryHold)
 			}
 			copy := v
 			awaiting = &copy
@@ -711,11 +711,11 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 		}
 	}
 	if e := m.pending(except); e != nil {
-		return e
+		return m.recoveryObserved("HISTORY_PENDING", e)
 	}
 	now, e := m.capture()
 	if e != nil || now.Pin.Aggregate != r.Pin.Aggregate || now.Pin.RootDevice != r.Pin.RootDevice || now.Pin.RootInode != r.Pin.RootInode || now.Pin.RootMode != r.Pin.RootMode {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_CAPTURE", migrationRecoveryHold)
 	}
 	sha := r.Metadata.BinarySHA256
 	tip := r.Metadata.Operation
@@ -727,7 +727,7 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 				continue
 			}
 			if next != nil || v.Recovery != nil || v.EvidenceSchema != 2 || (v.Metadata.Phase != "COMMITTED" && v.Metadata.Phase != "AWAITING_HELPER") || v.Pin.Aggregate != r.Pin.Aggregate || v.Pin.RootDevice != r.Pin.RootDevice || v.Pin.RootInode != r.Pin.RootInode || v.Pin.RootMode != r.Pin.RootMode || v.Metadata.HelperSHA256 != sha || v.BackupSHA256 != sha {
-				return migrationRecoveryHold
+				return m.recoveryObserved("HISTORY_SUCCESSOR", migrationRecoveryHold)
 			}
 			// Recompute the original plain preview token, not merely the
 			// record's syntax or STOP receipt hashes.
@@ -741,21 +741,21 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 				Loaded bool
 			}{preview, preview.WasLoaded})
 			if desktopSum(raw) != v.Metadata.Plan {
-				return migrationRecoveryHold
+				return m.recoveryObserved("HISTORY_PREVIEW_TOKEN", migrationRecoveryHold)
 			}
 			if e := m.stopEvidence(v); e != nil {
-				return e
+				return m.recoveryObserved("HISTORY_STOP_EVIDENCE", e)
 			}
 			if _, _, e := m.recoveryImage(v.Metadata.Stage, v.Metadata.BinarySHA256); e != nil {
-				return e
+				return m.recoveryObserved("HISTORY_STAGE", e)
 			}
 			if _, _, e := m.recoveryImage(filepath.Join(m.opPath(op), "old-binary"), sha); e != nil {
-				return e
+				return m.recoveryObserved("HISTORY_BACKUP", e)
 			}
 			sent, _, e := reloadCapture(filepath.Join(m.opPath(op), ".sent"), m.uid)
 			members, err := migrationMembers(m.opPath(op), 6)
 			if e != nil || err != nil || string(sent) != "STOP\n" || len(members) != 6 {
-				return migrationRecoveryHold
+				return m.recoveryObserved("HISTORY_MEMBERS", migrationRecoveryHold)
 			}
 			copy := v
 			next = &copy
@@ -766,7 +766,7 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 		seen[next.Metadata.Operation] = true
 		if next.Metadata.Phase == "AWAITING_HELPER" {
 			if awaiting == nil || next.Metadata.Operation != awaiting.Metadata.Operation || m.unchanged(*next) != nil {
-				return migrationRecoveryHold
+				return m.recoveryObserved("HISTORY_AWAITING_IDENTITY", migrationRecoveryHold)
 			}
 			// An unpublished leaf does not advance the canonical lineage tip.
 			tip = next.Metadata.Operation
@@ -782,23 +782,23 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 		authSHA = awaiting.Metadata.BinarySHA256
 	}
 	if err != nil || decodeErr != nil || auth["operation"] != tip || auth["sha"] != authSHA {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_AUTHORIZATION", migrationRecoveryHold)
 	}
 	// No disconnected newer transaction may be mistaken for our lineage.
 	for op := range records {
 		if !seen[op] {
-			return migrationRecoveryHold
+			return m.recoveryObserved("HISTORY_DISCONNECTED", migrationRecoveryHold)
 		}
 	}
 	if now.Metadata.OldBinarySHA256 != sha {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_CANONICAL_SHA", migrationRecoveryHold)
 	}
 	if awaiting != nil {
 		h, err := m.helper()
 		oldReady := err == nil && migrationBound(h, awaiting.Metadata, sha) && h.HelperVersion == awaiting.Metadata.HelperVersion
 		newReady := err == nil && migrationBound(h, awaiting.Metadata, awaiting.Metadata.BinarySHA256) && h.HelperVersion == currentVersion()
 		if (!oldReady && !newReady) || !migrationStopped(h) || m.unchanged(*awaiting) != nil {
-			return migrationRecoveryHold
+			return m.recoveryObserved("HISTORY_AWAITING_HELPER", migrationRecoveryHold)
 		}
 		*result = awaiting.Metadata
 		return desktopError("HOLD_PENDING")
@@ -807,38 +807,38 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 	// replace canonical. No execution ever uses that mutable installed path.
 	before, e := desktopFile(now.Metadata.Binary, m.uid, 0755)
 	if e != nil {
-		return e
+		return m.recoveryObserved("HISTORY_CANONICAL_FILE", e)
 	}
 	image, e := controlInstallCapture(now.Metadata.Binary)
 	after, err := os.Lstat(now.Metadata.Binary)
 	if e != nil || err != nil || !reloadStable(before, after) || desktopSum(image) != sha {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_CANONICAL_CAPTURE", migrationRecoveryHold)
 	}
 	h, e := m.helper()
 	if e != nil || !migrationBound(h, now.Metadata, sha) || !migrationStopped(h) || validateBuildVersion(h.HelperVersion) != nil {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_HELPER", migrationRecoveryHold)
 	}
 	current, err := os.Lstat(now.Metadata.Binary)
 	if err != nil || !reloadStable(before, current) {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_CANONICAL_BEFORE_PROBE", migrationRecoveryHold)
 	}
 	version, e := m.recoveryImageVersion(image, sha)
 	if e != nil || version != h.HelperVersion {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_VERSION", migrationRecoveryHold)
 	}
 	current, err = os.Lstat(now.Metadata.Binary)
 	if err != nil || !reloadStable(before, current) {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_CANONICAL_AFTER_PROBE", migrationRecoveryHold)
 	}
 	// The last preflight has another callback: bind its exported old SHA/helper
 	// to the historical lineage tip, then capture again AFTER that callback.
 	preview, e := m.preflight()
 	if e != nil || preview.Metadata.OldBinarySHA256 != sha || preview.Metadata.HelperSHA256 != sha || preview.Metadata.HelperVersion != version || preview.Metadata.WasRunning || preview.WasLoaded {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_PREFLIGHT", migrationRecoveryHold)
 	}
 	final, e := m.capture()
 	if e != nil || final.Pin != preview.Pin || final.Metadata.OldBinarySHA256 != sha || final.Metadata.BinarySHA256 != preview.Metadata.BinarySHA256 || final.Pin.Aggregate != r.Pin.Aggregate || final.Pin.RootDevice != r.Pin.RootDevice || final.Pin.RootInode != r.Pin.RootInode || final.Pin.RootMode != r.Pin.RootMode {
-		return migrationRecoveryHold
+		return m.recoveryObserved("HISTORY_FINAL_CAPTURE", migrationRecoveryHold)
 	}
 	*result = preview.Metadata
 	return nil
@@ -849,40 +849,40 @@ func (m desktopMigration) recoveryHistory(r desktopMigrationRecord, records map[
 // TMPDIR, candidate stages or the mutable installed pathname for execution.
 func (m desktopMigration) recoveryImageVersion(image []byte, sha string) (version string, resultErr error) {
 	if len(image) == 0 || desktopSum(image) != sha {
-		return "", migrationRecoveryHold
+		return "", m.recoveryObserved("IMAGE_CHANGED", migrationRecoveryHold)
 	}
 	root, e := desktopBase(m.home, m.uid, false)
 	if e != nil {
-		return "", e
+		return "", m.recoveryObserved("IMAGE_CHANGED", e)
 	}
 	dir, e := os.MkdirTemp(root, ".migration-version-")
 	if e != nil {
-		return "", migrationRecoveryHold
+		return "", m.recoveryObserved("IMAGE_CHANGED", migrationRecoveryHold)
 	}
 	defer func() {
 		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
 			// A retained executable is not successful inspection. Preserve any
 			// primary failure and expose only the fixed public HOLD code.
 			version = ""
-			resultErr = errors.Join(resultErr, migrationRecoveryHold)
+			resultErr = errors.Join(resultErr, m.recoveryObserved("CLEANUP_FAILED", migrationRecoveryHold))
 		}
 	}()
 	if _, e = desktopDir(dir, m.uid, true); e != nil {
-		return "", e
+		return "", m.recoveryObserved("IMAGE_CHANGED", e)
 	}
 	path := filepath.Join(dir, "anytls-macos")
 	fd, e := syscall.Open(path, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0700)
 	if e != nil {
-		return "", migrationRecoveryHold
+		return "", m.recoveryObserved("IMAGE_CHANGED", migrationRecoveryHold)
 	}
 	f := os.NewFile(uintptr(fd), path)
 	n, writeErr := f.Write(image)
 	closeErr := f.Close()
 	if writeErr != nil || closeErr != nil || n != len(image) {
-		return "", migrationRecoveryHold
+		return "", m.recoveryObserved("IMAGE_CHANGED", migrationRecoveryHold)
 	}
 	if _, _, e = m.recoveryImage(path, sha); e != nil {
-		return "", e
+		return "", m.recoveryObserved("IMAGE_CHANGED", e)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -894,12 +894,64 @@ func (m desktopMigration) recoveryImageVersion(image []byte, sha string) (versio
 	// reaps the direct child; cancellation kills only that owned direct child.
 	cmd.WaitDelay = 200 * time.Millisecond
 	if e = cmd.Run(); e != nil || ctx.Err() != nil || out.overflow || diagnostic.overflow {
-		return "", migrationRecoveryHold
+		// Classify only after the original rejecting predicate. Overflow itself
+		// cancels the context, so it takes precedence over that cancellation.
+		reason := "START_OR_WAIT"
+		if out.overflow || diagnostic.overflow {
+			reason = "OUTPUT_OVERFLOW"
+		} else if ctx.Err() != nil {
+			reason = "TIMEOUT"
+		}
+		return "", m.recoveryObserved(reason, migrationRecoveryHold)
 	}
 	if _, _, e = m.recoveryImage(path, sha); e != nil {
-		return "", e
+		return "", m.recoveryObserved("IMAGE_CHANGED", e)
 	}
 	return strings.TrimSpace(string(out.b)), nil
+}
+
+// recoveryObserved is deliberately closed: never forward errors, paths, helper
+// fields, child output or any caller-supplied value to the observer. Returning
+// the original error preserves Error/Is and the existing metadata contract.
+func (m desktopMigration) recoveryObserved(reason string, err error) error {
+	if err != nil && m.recoveryDiagnostic != nil {
+		switch reason {
+		case "HISTORY_TERMINAL",
+			"HISTORY_MULTIPLE_AWAITING",
+			"HISTORY_PENDING",
+			"HISTORY_CAPTURE",
+			"HISTORY_SUCCESSOR",
+			"HISTORY_PREVIEW_TOKEN",
+			"HISTORY_STOP_EVIDENCE",
+			"HISTORY_STAGE",
+			"HISTORY_BACKUP",
+			"HISTORY_MEMBERS",
+			"HISTORY_AWAITING_IDENTITY",
+			"HISTORY_AUTHORIZATION",
+			"HISTORY_DISCONNECTED",
+			"HISTORY_CANONICAL_SHA",
+			"HISTORY_AWAITING_HELPER",
+			"HISTORY_CANONICAL_FILE",
+			"HISTORY_CANONICAL_CAPTURE",
+			"HISTORY_HELPER",
+			"HISTORY_CANONICAL_BEFORE_PROBE",
+			"HISTORY_VERSION",
+			"HISTORY_CANONICAL_AFTER_PROBE",
+			"HISTORY_PREFLIGHT",
+			"HISTORY_FINAL_CAPTURE",
+			"START_OR_WAIT",
+			"TIMEOUT",
+			"OUTPUT_OVERFLOW",
+			"IMAGE_CHANGED",
+			"CLEANUP_FAILED",
+			"INSPECT_MULTIPLE_COMMITTED",
+			"INSPECT_COMMITTED_FALLBACK",
+			"INSPECT_PENDING",
+			"INSPECT_PREFLIGHT":
+			m.recoveryDiagnostic(reason)
+		}
+	}
+	return err
 }
 
 // webBoundedOutput was considered but silently discards at 64KiB and cannot

@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "\terr = s.startComponents(adapter.StartStateStart,\n\t\tboxComponent{\"endpoint\", s.endpoint},",
+      "new": "\t// Finish rule initialization before any inbound or endpoint can accept.\n\terr = s.startComponents(adapter.StartStatePostStart,\n\t\tboxComponent{\"router\", s.router},\n\t)\n\tif err != nil {\n\t\treturn err\n\t}\n\terr = s.startComponents(adapter.StartStateStart,\n\t\tboxComponent{\"endpoint\", s.endpoint},"
+    },
+    {
+      "old": "\t\tboxComponent{\"connection\", s.connection},\n\t\tboxComponent{\"router\", s.router},\n\t\tboxComponent{\"endpoint\", s.endpoint},",
+      "new": "\t\tboxComponent{\"connection\", s.connection},\n\t\tboxComponent{\"endpoint\", s.endpoint},"
+    }
+  ]
+}

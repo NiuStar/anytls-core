@@ -343,6 +343,9 @@ def certified_build(stdout, wrapper, source, output):
             if line.startswith("PATCHED_GO_END ")]
     require(len(ends) == 1, "source build missing unique certified END")
     r = ends[0]
+    startup_m, startup_patch = ns["rule_startup_identity"](source)
+    require(r.get("rule_startup") == ns["rule_startup_receipt"](startup_m, startup_patch),
+            "source build rule startup identity mismatch")
     stream_m, stream_patch = ns["dns_stream_identity"](source)
     require(r.get("dns_stream_close") == ns["dns_stream_receipt"](stream_m, stream_patch),
             "source build DNS stream identity mismatch")

@@ -14,6 +14,7 @@ def certified_sources(root,receipt):
  retry,retry_patch=wrapper.retry_identity(root)
  doh,doh_patch=wrapper.doh_identity(root)
  stream,stream_patch=wrapper.dns_stream_identity(root)
+ startup,startup_patch=wrapper.rule_startup_identity(root)
  ack,ack_patch=wrapper.ack_identity(root)
  if not re.search(r'^go 1\.27\.3$',(root/'go.mod').read_text(),re.M):raise ValueError('root module requires Go 1.27.3')
  if receipt.get('go_version','').split()[2:3]!=[wrapper.CURRENT_GO]:raise ValueError('certified toolchain mismatch')
@@ -26,6 +27,7 @@ def certified_sources(root,receipt):
            'transient_retry':wrapper.retry_receipt(retry,retry_patch),
            'doh_deadline_isolation':wrapper.doh_receipt(doh,doh_patch),
            'dns_stream_close':wrapper.dns_stream_receipt(stream,stream_patch),
+           'rule_startup':wrapper.rule_startup_receipt(startup,startup_patch),
            'stream_connect_ack':wrapper.ack_receipt(ack,ack_patch),
            'browser_provenance':wrapper.browser_receipt(wrapper.browser_identity(root))}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
@@ -33,6 +35,7 @@ def certified_sources(root,receipt):
  if receipt.get('original_dns_stream_sources_unchanged') is not True:raise ValueError('certified DNS stream cache invariants missing')
  return ['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json',
          'patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json',
+         'patches/sing-box/rule-startup.identity.json','patches/sing-box/rule-startup.patch.json',
          'patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json',
          'patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json',
          'patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json',

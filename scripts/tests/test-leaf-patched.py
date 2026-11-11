@@ -30,6 +30,7 @@ class LeafPatchTests(unittest.TestCase):
                     transient_retry=w.retry_receipt(*w.retry_identity()),
                     doh_deadline_isolation=w.doh_receipt(*w.doh_identity()),
                     dns_stream_close=w.dns_stream_receipt(*w.dns_stream_identity()),
+                    rule_startup=w.rule_startup_receipt(*w.rule_startup_identity()),
                     original_dns_stream_sources_unchanged=True,
                     stream_connect_ack=w.ack_receipt(*w.ack_identity()),
                     browser_provenance=w.browser_receipt(w.browser_identity()),

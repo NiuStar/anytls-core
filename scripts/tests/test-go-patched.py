@@ -43,6 +43,10 @@ stream_spec = importlib.util.spec_from_file_location("dns_stream_tests", SCRIPT.
 stream_tests = importlib.util.module_from_spec(stream_spec)
 stream_spec.loader.exec_module(stream_tests)
 DNSStreamPatchTests = stream_tests.DNSStreamPatchTests
+startup_spec = importlib.util.spec_from_file_location("rule_startup_tests", SCRIPT.parent / "tests/test-rule-startup-patched.py")
+startup_tests = importlib.util.module_from_spec(startup_spec)
+startup_spec.loader.exec_module(startup_tests)
+RuleStartupPatchTests = startup_tests.RuleStartupPatchTests
 
 
 class ValidationTests(unittest.TestCase):

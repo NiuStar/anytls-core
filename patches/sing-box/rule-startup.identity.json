@@ -1,0 +1,11 @@
+{
+  "module": "github.com/sagernet/sing-box",
+  "version": "v1.14.3",
+  "commit": "7054cac5124465ffdb145870d7c01885566711b1",
+  "file": "box.go",
+  "patch": "rule-startup.patch.json",
+  "patch_sha256": "6ff5edf57545539ea4f5bf89890c39ec9839058660e9b80d88fae76763f412d0",
+  "core_identity_sha256": "7faf6af8e873bb568f15029070f3c8051365af7ba3dd43f343488d78dcaee9e3",
+  "source_sha256": "00f3a0ae747cafea89123aac2f4aff2bc5a04046225a5252d5fc4a3b54c99da0",
+  "result_sha256": "96889c402ab6b6ee9c242e2d022d243b2c4442f5b17f7eee94a0ee07a631c536"
+}

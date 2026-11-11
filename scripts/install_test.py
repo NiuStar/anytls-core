@@ -311,6 +311,7 @@ class InstallerTests(unittest.TestCase):
                        target={'GOOS':'darwin','GOARCH':'arm64','CGO_ENABLED':'0'},
                        doh_deadline_isolation=ns['doh_receipt'](*ns['doh_identity'](source)),
                        dns_stream_close=ns['dns_stream_receipt'](*ns['dns_stream_identity'](source)),
+                       rule_startup=ns['rule_startup_receipt'](*ns['rule_startup_identity'](source)),
                        original_dns_stream_sources_unchanged=True,
                        stream_connect_ack=ns['ack_receipt'](*ns['ack_identity'](source)),
                        browser_provenance=ns['browser_receipt'](ns['browser_identity'](source)))
@@ -326,7 +327,7 @@ class InstallerTests(unittest.TestCase):
             for bad in (b'',good+good):
                 with self.assertRaisesRegex(ValueError,'unique certified END'):i.certified_build(bad,wrapper,root,output)
             r=json.loads(good.decode().split(' ',1)[1])
-            for field in ('dns_stream_close','original_dns_stream_sources_unchanged','browser_provenance','doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
+            for field in ('rule_startup','dns_stream_close','original_dns_stream_sources_unchanged','browser_provenance','doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
                 bad=dict(r);bad.pop(field)
                 with self.assertRaisesRegex(ValueError,'identity|output'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
             import copy

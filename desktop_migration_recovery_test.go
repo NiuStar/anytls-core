@@ -26,6 +26,7 @@ func TestDesktopMigrationRecoveryCommandContract(t *testing.T) {
 func recoveryFixture(t *testing.T) (desktopMigration, *controlHelperResponse, *int, desktopMigrationRecord, map[string][]byte) {
 	t.Helper()
 	m, h, c := migrationIncumbentFixture(t)
+	m.recoveryDiagnostic = func(reason string) { t.Log("RECOVERY_REJECTION", reason) }
 	// The original preview observed running; current recovery observes stopped.
 	h.Loaded = true
 	h.Running = true

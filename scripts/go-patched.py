@@ -306,6 +306,39 @@ def chrome_receipt(m, patch):
             "result_sha256": m["result_sha256"], "toolchain": CURRENT_GO}
 
 
+RULE_STARTUP_IDENTITY_SHA = "2ef5d65cf50a1e25e783424c62f3a5455e1b14662bcf037c9e98b3faddbd2dd5"
+
+
+def rule_startup_identity(root=ROOT):
+    raw = (root / "patches/sing-box/rule-startup.identity.json").read_bytes()
+    require(sha(raw) == RULE_STARTUP_IDENTITY_SHA, "rule startup identity SHA mismatch")
+    m = json.loads(raw)
+    require(m["module"] == MODULE and m["version"] == VERSION and
+            m["core_identity_sha256"] == CORE_IDENTITY_SHA, "rule startup chain mismatch")
+    patch = (root / "patches/sing-box" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "rule startup patch SHA mismatch")
+    return m, patch
+
+
+def transform_rule_startup(source, m, patch):
+    require(sha(source) == m["source_sha256"], "rule startup source SHA mismatch")
+    ops = json.loads(patch)
+    require(set(ops) == {"replacements"} and len(ops["replacements"]) == 2, "invalid rule startup patch")
+    text = source.decode()
+    for op in ops["replacements"]:
+        require(set(op) == {"old", "new"} and op["old"] and text.count(op["old"]) == 1,
+                "rule startup exact replacement mismatch")
+        text = text.replace(op["old"], op["new"], 1)
+    result = text.encode()
+    require(sha(result) == m["result_sha256"], "rule startup result SHA mismatch")
+    return result
+
+
+def rule_startup_receipt(m, patch):
+    return {"identity_sha256": RULE_STARTUP_IDENTITY_SHA, "patch_sha256": sha(patch),
+            "source_sha256": m["source_sha256"], "result_sha256": m["result_sha256"], "file": m["file"]}
+
+
 def core_identity(root=ROOT):
     raw = (root / "patches/sing-box/core-slim.identity.json").read_bytes()
     require(sha(raw) == CORE_IDENTITY_SHA, "core identity SHA mismatch")
@@ -494,6 +527,7 @@ def main(argv):
     go, args, output = arguments(argv, os.environ)
     m, patch = identity()
     core_m, core_patch = core_identity()
+    rule_startup_m, rule_startup_patch = rule_startup_identity()
     chrome_m, chrome_patch = chrome_identity()
     leaf_m, leaf_patch = leaf_identity()
     retry_m, retry_patch = retry_identity()
@@ -591,6 +625,9 @@ def main(argv):
         receipt["core_slim"] = {"identity_sha256": CORE_IDENTITY_SHA,
                                 "patch_sha256": sha(core_patch), "files": core_results}
         receipt["result_sha256_scope"] = "Start cleanup intermediate, not final staged box.go; see core_slim.files"
+        staged_source.write_bytes(transform_rule_startup(staged_source.read_bytes(), rule_startup_m, rule_startup_patch))
+        receipt["rule_startup"] = rule_startup_receipt(rule_startup_m, rule_startup_patch)
+        receipt["result_sha256_scope"] = "Start cleanup and core_slim are intermediates; rule_startup binds final box.go"
         staged_chrome = replacement / chrome_m["file"]
         require(staged_chrome.read_bytes() == original_chrome, "archive/cache AnyTLS outbound mismatch")
         staged_chrome.write_bytes(patched_chrome)
@@ -661,7 +698,8 @@ def main(argv):
         require(all((directory / name).read_bytes() == data for name, data in original_leaf.items()),
                 "module-cache leaf sources changed during command")
         require(all((ROOT / k).read_bytes() == v for k, v in root_inputs.items()), "root module inputs changed")
-        require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
+        require(all(sha((replacement / pin["file"]).read_bytes()) ==
+                    (rule_startup_m["result_sha256"] if pin["file"] == "box.go" else pin["result_sha256"])
                     for pin in core_m["files"]), "final staged core sources changed")
         require(staged_chrome.read_bytes() == patched_retry, "final staged retry source changed")
         require(cache_doh.read_bytes() == original_doh, "module-cache DoH source changed during command")

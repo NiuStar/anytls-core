@@ -69,6 +69,9 @@ type desktopMigration struct {
 	stop         func(context.Context, string) (st.MutationResponse, error)
 	stopRead     func(context.Context, *string) (st.ReadResponse, error)
 	journal      func(string, []byte, os.FileMode) error // fixture fault seam; production uses the fixed atomic writer
+	// Optional private observation only. Call sites supply fixed reason enums;
+	// no public error, metadata or filesystem authority is changed.
+	recoveryDiagnostic func(string)
 }
 
 func desktopMigrationToken(s string) bool {
@@ -204,7 +207,7 @@ func (m desktopMigration) pending(except string) error {
 func (m desktopMigration) inspect() (desktopMigrationMetadata, error) {
 	var p desktopMigrationMetadata
 	if _, e := desktopBase(m.home, m.uid, false); e != nil {
-		return p, e
+		return p, m.recoveryObserved("INSPECT_PENDING", e)
 	}
 	// Inspect committed recovery even after backend terminal admission succeeds:
 	// the App may have lost its own DONE persistence. Exactly one candidate may
@@ -215,7 +218,7 @@ func (m desktopMigration) inspect() (desktopMigrationMetadata, error) {
 		for _, r := range records {
 			if r.Recovery != nil && r.Metadata.Phase == "COMMITTED" {
 				if committed != nil {
-					return p, migrationRecoveryHold
+					return p, m.recoveryObserved("INSPECT_MULTIPLE_COMMITTED", migrationRecoveryHold)
 				}
 				copy := r
 				committed = &copy
@@ -229,7 +232,7 @@ func (m desktopMigration) inspect() (desktopMigrationMetadata, error) {
 				return p, err
 			}
 			if err = m.recoveryPublished(*committed, records); err != nil {
-				return p, err
+				return p, m.recoveryObserved("INSPECT_COMMITTED_FALLBACK", err)
 			}
 			// Preserve dispatcher semantics: HOLD produces nested metadata and
 			// nonzero status; admitted terminal recovery produces flat code0.
@@ -242,24 +245,24 @@ func (m desktopMigration) inspect() (desktopMigrationMetadata, error) {
 		if records, err := m.recoveryRecords(); err == nil {
 			for op, r := range records {
 				if r.Recovery != nil && r.Metadata.Phase == "AWAITING_HELPER" && m.pending(op) == nil {
-					return r.Metadata, e
+					return r.Metadata, m.recoveryObserved("INSPECT_PREFLIGHT", e)
 				}
 			}
 		}
 		// Read-only recovery metadata. No authority to repair/replay a phase.
 		records, readErr := m.recoveryRecords()
 		if readErr != nil {
-			return p, e
+			return p, m.recoveryObserved("INSPECT_PENDING", e)
 		}
 		for _, r := range records {
 			if r.Metadata.Phase != "COMMITTED" {
-				return r.Metadata, e
+				return r.Metadata, m.recoveryObserved("INSPECT_PREFLIGHT", e)
 			}
 		}
-		return p, e
+		return p, m.recoveryObserved("INSPECT_PENDING", e)
 	}
 	r, e := m.preflight()
-	return r.Metadata, e
+	return r.Metadata, m.recoveryObserved("INSPECT_PREFLIGHT", e)
 }
 func (m desktopMigration) lock() (*os.File, error) {
 	root, e := desktopBase(m.home, m.uid, false)

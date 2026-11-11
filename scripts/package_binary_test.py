@@ -49,6 +49,7 @@ class PackagingTests(unittest.TestCase):
    leaf,leaf_patch=w.leaf_identity()
    materials=['scripts/go-patched.py','patches/sing-box/identity.json','patches/sing-box/box-start.patch.json','patches/sing-box/core-slim.identity.json','patches/sing-box/core-slim.patch.json','patches/sing-box/chrome.identity.json','patches/sing-box/chrome.patch.json']
    materials+=['patches/sing-box/leaf.identity.json','patches/sing-box/leaf.patch.json']
+   materials+=['patches/sing-box/rule-startup.identity.json','patches/sing-box/rule-startup.patch.json']
    materials+=['patches/sing-box/retry.identity.json','patches/sing-box/retry.patch.json']
    materials+=['patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
    materials+=['patches/sing-box/dns-stream-close.identity.json','patches/sing-box/dns-stream-close.patch.json','patches/sing-box/dns-stream-close.patch']
@@ -62,6 +63,7 @@ class PackagingTests(unittest.TestCase):
    receipt['transient_retry']=w.retry_receipt(*w.retry_identity())
    receipt['doh_deadline_isolation']=w.doh_receipt(*w.doh_identity())
    receipt['dns_stream_close']=w.dns_stream_receipt(*w.dns_stream_identity())
+   receipt['rule_startup']=w.rule_startup_receipt(*w.rule_startup_identity())
    receipt['original_dns_stream_sources_unchanged']=True
    receipt['stream_connect_ack']=w.ack_receipt(*w.ack_identity())
    receipt['browser_provenance']=w.browser_receipt(w.browser_identity())
