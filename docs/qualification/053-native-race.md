@@ -2,7 +2,7 @@
 
 This independent qualification branch contains the original three performance
 optimizations, the reviewed rules-startup repair, and CI qualification tooling.
-VERSION and App metadata remain at the accepted 0.5.2 identity. It is not a
+VERSION and App metadata now identify 0.5.3 / v2026-11-11-01. It is not a
 release, installation approval, or permission to update main, tags, latest,
 helpers, production apps, or VPN state. Only GitHub-hosted CI is exercised;
 physical Mac Studio and Intel production machines are outside this operation.
@@ -11,7 +11,8 @@ The user explicitly scoped this successor to both Macs: “ubuntu的先不管，
 The required matrix is exactly macos-15 (ARM) and macos-15-intel, with
 strategy.fail-fast: false so that one failed row cannot cancel its sibling.
 Both rows must reach terminal state under the original observation deadline;
-any failed, cancelled, missing, or incomplete required Mac gate remains HOLD.
+any failed, cancelled, missing, or incomplete required Mac gate remains HOLD,
+except the explicitly authorized Intel full-race PASS requirement below.
 Ubuntu is DEFERRED_BY_USER_NOT_PASSED, not a waived Mac check or a Linux PASS.
 
 Historical records are immutable and unresolved: the Mac Studio 3-second
@@ -22,8 +23,7 @@ required for this Mac-only operation. A clean hosted PASS establishes only that
 this exact candidate passed on those hosts; independent parent acceptance is
 required before any later release decision.
 
-Except for the exact matrix and fail-fast delta, all original 20 observed steps
-per Mac (including Actions housekeeping), Go 1.27.3, wrapper/cache policy,
+All original commands and native gates, Go 1.27.3, wrapper/cache policy,
 non-race tests, vet, builds, all five native Swift suites, and safety checks are
 retained. Each Mac row additionally runs exactly once:
 
@@ -42,9 +42,24 @@ annotations retain the existing bounded identifier/count policy; native suite
 failure categories remain fixed enums. Raw child output and arbitrary paths
 are not exposed. Optional native upload still requires its producer-owned path.
 
+For 0.5.3 only, the user separately waived Mac Studio full-race PASS and hosted
+macos-15-intel full-race PASS. ARM full-race PASS and both Macs' non-race, vet,
+build, App, five Swift suites and package checks remain mandatory. Original
+Intel run 43045600467's default 10-minute root-package timeout remains FAIL;
+its post-race checks did not qualify. No historical result is rewritten.
+Intel must still run the exact command and upload nonempty raw JSONL/result
+receipts. Only its continued full_race outcome=failure at VERSION
+v2026-11-11-01 may be labeled INTEL_RACE_FAIL_WAIVED_FOR_0_5_3, never race PASS.
+An always-run final audit checks every other source step's outcome/conclusion,
+including uploads, and validates wrapper BEGIN/END, command, exit and counts.
+Missing, truncated, skipped or inconsistent evidence still blocks. Hosted
+continuation semantics and final original-attempt results need independent
+observation before publication; offline controls are not hosted qualification.
+
 The offline `scripts/ci_race_test.py` contract normalizes only the exact authorized
-dual-Mac/fail-fast delta, the reviewed native-upload guard, and the three added
-qualification steps back to the unchanged original BASE_WORKFLOW_SHA256. It
+dual-Mac/fail-fast delta, reviewed native-upload guard, explicit names/IDs,
+version-scoped Intel exception, strict race upload and exact audit additions,
+and the three qualification steps back to unchanged BASE_WORKFLOW_SHA256. It
 rejects missing Intel, either single-Mac matrix, fail-fast re-enablement, race
 filtering and timeout overrides; runner command, no-timeout, original exit
 status and safe annotations remain covered without compilation, network,

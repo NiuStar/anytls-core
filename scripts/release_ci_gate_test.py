@@ -20,9 +20,21 @@ RUN = {"id": 71, "workflow_id": 42, "name": "CI", "path": gate.WORKFLOW_PATH,
        # Synthetic API metadata, not a recorded GitHub response.
        "repository": {"full_name": "owner/repo"},
        "head_repository": {"full_name": "owner/repo"}}
+# Literal independent two-Mac/source-step fixture, never derived from gate constants.
+STEP_NAMES = ('Checkout', 'Setup Go', 'Pin wrapper toolchain and cache paths',
+    'Real Box patch regression', 'Patched wrapper regressions',
+    'Installer safety and preservation regressions', 'Non-race Go tests',
+    'Offline full-race CI contract regressions', 'Full unfiltered native race qualification',
+    'Preserve full-race evidence on every platform', 'Go vet', 'Prepare dist', 'Build Go core',
+    'Build actual native macOS app and all five Swift fixtures',
+    'Run native Swift suites without production installation or WAN',
+    'Preserve native evidence even on AppKit/GUI or assertion failure',
+    'Audit mandatory gates and scoped Intel race waiver')
 JOBS = [{"id": i, "name": name, "run_id": 71, "head_sha": SHA,
-         "status": "completed", "conclusion": "success"}
-        for i, name in enumerate(sorted(gate.EXPECTED_JOBS), 101)]
+         "status": "completed", "conclusion": "success",
+         "steps": [{"name": name, "number": number, "status": "completed", "conclusion": "success"}
+                   for number, name in enumerate(STEP_NAMES, 1)]}
+        for i, name in enumerate(('test (macos-15)', 'test (macos-15-intel)'), 101)]
 
 
 class FakeClock:
@@ -213,8 +225,8 @@ class GateTests(unittest.TestCase):
                             if seam == "retry":
                                 raise urllib.error.URLError("synthetic offline retry")
                             if seam == "pagination":
-                                batch = JOBS[:2] if job_pages[-1] == 1 else JOBS[2:]
-                                return io.BytesIO(json.dumps({"total_count": 3, "jobs": batch}).encode())
+                                batch = JOBS[:1] if job_pages[-1] == 1 else JOBS[1:]
+                                return io.BytesIO(json.dumps({"total_count": 2, "jobs": batch}).encode())
                     self.http.handler = handle
                     def advance(seconds):
                         FakeClock.sleep(self.clock, seconds)
@@ -275,7 +287,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.clock.now, 5)
 
     def test_no_checks_or_missing_job_never_pass(self):
-        for rows in ([], copy.deepcopy(JOBS[:2])):
+        for rows in ([], copy.deepcopy(JOBS[:1])):
             with self.subTest(count=len(rows)):
                 self.http.jobs = rows
                 self.blocked("missing required jobs")
@@ -340,8 +352,8 @@ class GateTests(unittest.TestCase):
             if path.endswith("/jobs"):
                 page = int(query["page"][0])
                 pages.append(page)
-                batch = JOBS[:2] if page == 1 else JOBS[2:]
-                return io.BytesIO(json.dumps({"total_count": 3, "jobs": batch}).encode())
+                batch = JOBS[:1] if page == 1 else JOBS[1:]
+                return io.BytesIO(json.dumps({"total_count": 2, "jobs": batch}).encode())
         self.http.handler = handle
         self.make().wait()
         self.assertEqual(pages, [1, 2])
@@ -368,8 +380,8 @@ class GateTests(unittest.TestCase):
         def handle(path, query):
             if path.endswith("/jobs"):
                 page = int(query["page"][0])
-                return io.BytesIO(json.dumps({"total_count": 3 if page == 1 else 4,
-                    "jobs": JOBS[:2] if page == 1 else JOBS[2:]}).encode())
+                return io.BytesIO(json.dumps({"total_count": 2 if page == 1 else 3,
+                    "jobs": JOBS[:1] if page == 1 else JOBS[1:]}).encode())
         self.http.handler = handle
         self.blocked("count changed")
 
@@ -465,6 +477,55 @@ class GateTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True), mock.patch("sys.argv", ["gate"]), mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
             self.assertEqual(gate.main(), 1)
         self.assertIn("BLOCKED:", stderr.getvalue())
+
+    def test_literal_two_mac_matrix_and_workflow_steps(self):
+        import re
+        self.assertEqual(gate.EXPECTED_JOBS, {'test (macos-15)', 'test (macos-15-intel)'})
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/ci.yml').read_text()
+        self.assertEqual(tuple(re.findall(r'^      - name: (.+)$', workflow, re.M)), STEP_NAMES)
+        self.assertEqual(gate.REQUIRED_STEPS, STEP_NAMES)
+        self.make().wait()
+
+    def test_every_source_step_must_be_present_terminal_success_on_both_macs(self):
+        for job_index in range(2):
+            for step_index, name in enumerate(STEP_NAMES):
+                for state in ('missing', 'failure', 'skipped', 'cancelled', 'pending'):
+                    with self.subTest(job=job_index, step=name, state=state):
+                        self.clock, self.http, self.logs = FakeClock(), HTTP(), []
+                        if state == 'missing':
+                            self.http.jobs[job_index]['steps'].pop(step_index)
+                        else:
+                            self.http.jobs[job_index]['steps'][step_index].update(
+                                status='in_progress' if state == 'pending' else 'completed',
+                                conclusion=None if state == 'pending' else state)
+                        self.blocked('CI step')
+
+    def test_unknown_duplicate_reordered_steps_and_ubuntu_job_block(self):
+        for mutation in ('unknown', 'duplicate', 'reordered', 'absent', 'ubuntu'):
+            with self.subTest(mutation=mutation):
+                self.clock, self.http, self.logs = FakeClock(), HTTP(), []
+                steps = self.http.jobs[0]['steps']
+                if mutation == 'unknown':
+                    steps[0]['name'] = 'unknown'
+                elif mutation == 'duplicate':
+                    steps.append(dict(steps[0], number=99))
+                elif mutation == 'reordered':
+                    steps[0], steps[1] = steps[1], steps[0]
+                elif mutation == 'absent':
+                    self.http.jobs[0].pop('steps')
+                else:
+                    self.http.jobs.append(dict(JOBS[0], name='test (ubuntu-latest)', id=999))
+                self.blocked()
+
+    def test_housekeeping_success_and_failure(self):
+        names = ('Set up job', *STEP_NAMES, 'Post Setup Go', 'Post Checkout', 'Complete job')
+        for job in self.http.jobs:
+            job['steps'] = [dict(name=name, number=n, status='completed', conclusion='success')
+                            for n, name in enumerate(names, 1)]
+        self.make().wait()
+        self.logs.clear()
+        self.http.jobs[0]['steps'][-2]['conclusion'] = 'failure'
+        self.blocked('CI step non-success')
 
     def test_workflow_gates_publish_and_discovers_this_suite(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/binary-release.yml").read_text()

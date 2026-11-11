@@ -16,21 +16,31 @@ jobs:
       GOWORK: 'off'
       GOFLAGS: ''
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        id: setup_go
+        uses: actions/setup-go@v5
         with:
           go-version: '1.27.3'
           cache: true
       - name: Pin wrapper toolchain and cache paths
+        id: pin_paths
         run: |
           echo "TMPDIR=$HOME/.aq-ci" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.aq-ci"
           echo "GO_BIN=$(command -v go)" >> "$GITHUB_ENV"
           echo "GOMODCACHE=$(go env GOMODCACHE)" >> "$GITHUB_ENV"
+          echo "INTEL_RACE_WAIVER=$(tr -d '\r\n' < VERSION)" >> "$GITHUB_ENV"
       - name: Real Box patch regression
+        id: real_box
         run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -count=1 -v -run=^TestUpstreamStartPreservesCleanupErrors$ ./internal/engine
-      - run: python3 scripts/tests/test-go-patched.py
+      - name: Patched wrapper regressions
+        id: wrapper_tests
+        run: python3 scripts/tests/test-go-patched.py
       - name: Installer safety and preservation regressions
+        id: installer_tests
         run: |
           export TMPDIR="$RUNNER_TEMP/anytls-installer-tests"
           mkdir -p "$TMPDIR"
@@ -50,24 +60,40 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/update_binary_test.py
           bash -n install.sh
           bash -n install-control-helper.sh
-      - run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
+      - name: Non-race Go tests
+        id: go_tests
+        run: python3 scripts/go-patched.py test -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
       - name: Offline full-race CI contract regressions
-        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_race_test.py
+        id: race_contracts
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_race_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_waiver_gate_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_ci_gate_test.py
       - name: Full unfiltered native race qualification
+        id: full_race
+        continue-on-error: ${{ matrix.os == 'macos-15-intel' && env.INTEL_RACE_WAIVER == 'v2026-11-11-01' }}
         env:
           CGO_ENABLED: '1'
         run: python3 scripts/ci-race.py
       - name: Preserve full-race evidence on every platform
+        id: race_upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: full-race-${{ matrix.os }}
           path: ${{ env.RACE_EVIDENCE }}
-          if-no-files-found: warn
-      - run: python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
-      - run: mkdir -p dist
-      - run: python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o dist/anytls-macos .
+          if-no-files-found: error
+      - name: Go vet
+        id: vet
+        run: python3 scripts/go-patched.py vet -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core ./...
+      - name: Prepare dist
+        id: dist
+        run: mkdir -p dist
+      - name: Build Go core
+        id: build
+        run: python3 scripts/go-patched.py build -p=2 -tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core -trimpath -o dist/anytls-macos .
       - name: Build actual native macOS app and all five Swift fixtures
+        id: app_build
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -83,6 +109,7 @@ jobs:
           CORE="$PWD/dist/anytls-macos" bash scripts/build-menubar.sh "$app_arch" "$PWD/build/menubar"
           test "$(shasum -a 256 dist/anytls-macos)" = "$core_before"
       - name: Run native Swift suites without production installation or WAN
+        id: swift_tests
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -92,9 +119,17 @@ jobs:
           echo "MENUBAR_EVIDENCE=$evidence" >> "$GITHUB_ENV"
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/package-menubar.py --run-tests build/menubar/test --evidence "$evidence/native"
       - name: Preserve native evidence even on AppKit/GUI or assertion failure
+        id: native_upload
         if: always() && runner.os == 'macOS' && env.MENUBAR_EVIDENCE != ''
         uses: actions/upload-artifact@v4
         with:
           name: menubar-ci-native-${{ matrix.os }}
           path: ${{ env.MENUBAR_EVIDENCE }}
           if-no-files-found: warn
+      - name: Audit mandatory gates and scoped Intel race waiver
+        id: waiver_audit
+        if: always()
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+          MATRIX_OS: ${{ matrix.os }}
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_waiver_gate.py

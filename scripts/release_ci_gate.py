@@ -14,9 +14,22 @@ import urllib.request
 WORKFLOW_PATH = ".github/workflows/ci.yml"
 WORKFLOW_NAME = "CI"
 EXPECTED_JOBS = frozenset({
-    "test (ubuntu-latest)", "test (macos-15)", "test (macos-15-intel)",
+    "test (macos-15)", "test (macos-15-intel)",
 })
 PENDING = {"queued", "in_progress", "waiting", "requested", "pending"}
+REQUIRED_STEPS = (
+    'Checkout', 'Setup Go', 'Pin wrapper toolchain and cache paths',
+    'Real Box patch regression', 'Patched wrapper regressions',
+    'Installer safety and preservation regressions', 'Non-race Go tests',
+    'Offline full-race CI contract regressions', 'Full unfiltered native race qualification',
+    'Preserve full-race evidence on every platform', 'Go vet', 'Prepare dist', 'Build Go core',
+    'Build actual native macOS app and all five Swift fixtures',
+    'Run native Swift suites without production installation or WAN',
+    'Preserve native evidence even on AppKit/GUI or assertion failure',
+    'Audit mandatory gates and scoped Intel race waiver',
+)
+# Only these GitHub-generated lifecycle steps may surround source-owned steps.
+HOUSEKEEPING = frozenset({'Set up job', 'Post Setup Go', 'Post Checkout', 'Complete job'})
 
 
 class GateError(Exception):
@@ -191,7 +204,10 @@ class Gate:
             if job.get("run_id") != run_id or job.get("head_sha") != self.sha:
                 raise GateError("CI job run/SHA identity mismatch")
             # Do not short-circuit: any failed job is immediately fatal.
-            jobs_done = self.terminal(job, job["name"]) and jobs_done
+            done = self.terminal(job, job["name"])
+            if done:
+                self.verify_steps(job)
+            jobs_done = done and jobs_done
         exact = set(names) == EXPECTED_JOBS
         if run_done and not exact:
             raise GateError("completed CI run missing required jobs (no checks is not success)")
@@ -204,13 +220,35 @@ class Gate:
             return True
         return False
 
+    @staticmethod
+    def verify_steps(job):
+        steps = job.get('steps')
+        if not isinstance(steps, list) or not steps:
+            raise GateError('missing CI step inventory')
+        names, numbers = [], []
+        for step in steps:
+            if not isinstance(step, dict):
+                raise GateError('malformed CI step inventory')
+            name, number = step.get('name'), step.get('number')
+            if not isinstance(name, str) or name not in (*REQUIRED_STEPS, *HOUSEKEEPING):
+                raise GateError('unexpected CI step')
+            if type(number) is not int or number <= 0:
+                raise GateError('malformed CI step number')
+            if step.get('status') != 'completed' or step.get('conclusion') != 'success':
+                raise GateError('required CI step non-success')
+            names.append(name)
+            numbers.append(number)
+        if (len(names) != len(set(names)) or numbers != sorted(set(numbers)) or
+                tuple(name for name in names if name not in HOUSEKEEPING) != REQUIRED_STEPS):
+            raise GateError('incomplete or reordered CI step inventory')
+
     def wait(self):
         while True:
             self.remaining()
             try:
                 if self.observe():
                     self.remaining()
-                    self.log("PASS: exact tag push CI and all three required jobs completed successfully")
+                    self.log("PASS: exact tag push CI and both required Mac jobs with mandatory audit completed successfully; race disposition is separate")
                     return
             except Unavailable as exc:
                 self.log("CI read unavailable; retrying within fixed deadline: " + str(exc))

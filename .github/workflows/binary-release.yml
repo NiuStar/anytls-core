@@ -194,7 +194,7 @@ jobs:
               for name in sorted(merged):
                   sums.write(sha256(out / name) + '  ' + name + '\n')
           PY
-      - name: Require exact tag push CI and all three terminal-success jobs
+      - name: Require exact tag push CI and both terminal-success Mac jobs with scoped Intel race audit
         timeout-minutes: 32
         env:
           GITHUB_TOKEN: ${{ github.token }}

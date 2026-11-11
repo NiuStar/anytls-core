@@ -30,6 +30,47 @@ UPLOAD = '''      - name: Preserve full-race evidence on every platform
 
 
 def validate_workflow(text):
+    # Remove only exact reviewed waiver additions, then authenticate every old byte.
+    from ci_waiver_gate_test import IDS
+    import re
+    ids = re.findall(r'^        id: ([a-z_]+)$', text, re.M)
+    if ids != [*IDS, 'waiver_audit']:
+        raise ValueError('exact source step IDs required')
+    for identifier in (*IDS, 'waiver_audit'):
+        text = text.replace('        id: ' + identifier + '\n', '')
+    exception = "        continue-on-error: ${{ matrix.os == 'macos-15-intel' && env.INTEL_RACE_WAIVER == 'v2026-11-11-01' }}\n"
+    authority = '''          echo "INTEL_RACE_WAIVER=$(tr -d '\\r\\n' < VERSION)" >> "$GITHUB_ENV"
+'''
+    audit = '''      - name: Audit mandatory gates and scoped Intel race waiver
+        if: always()
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+          MATRIX_OS: ${{ matrix.os }}
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_waiver_gate.py
+'''
+    contracts = '''        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_race_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_waiver_gate_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/release_ci_gate_test.py
+'''
+    for block in (exception, authority, audit, contracts):
+        if text.count(block) != 1:
+            raise ValueError('missing/changed scoped waiver contract')
+        text = text.replace(block, '        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_race_test.py\n' if block == contracts else '')
+    replacements = (
+        ('      - name: Checkout\n        uses:', '      - uses:'),
+        ('      - name: Setup Go\n        uses:', '      - uses:'),
+        ('      - name: Patched wrapper regressions\n        run:', '      - run:'),
+        ('      - name: Non-race Go tests\n        run:', '      - run:'),
+        ('      - name: Go vet\n        run:', '      - run:'),
+        ('      - name: Prepare dist\n        run:', '      - run:'),
+        ('      - name: Build Go core\n        run:', '      - run:'),
+        (UPLOAD.replace('if-no-files-found: warn', 'if-no-files-found: error'), UPLOAD),
+    )
+    for before, after in replacements:
+        if text.count(before) != 1:
+            raise ValueError('missing/changed exact source step')
+        text = text.replace(before, after)
     # Normalize only the exact user-authorized dual-Mac/fail-fast delta.
     strategy = '    strategy:\n      fail-fast: false\n      matrix:\n        os: [macos-15, macos-15-intel]\n'
     if text.count(strategy) != 1:
@@ -71,6 +112,32 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn(old, text)
                 with self.assertRaises(ValueError):
                     validate_workflow(text.replace(old, new))
+
+    def test_waiver_cannot_broaden_or_lose_audit_or_upload(self):
+        text = (ROOT / '.github/workflows/ci.yml').read_text()
+        exception = "${{ matrix.os == 'macos-15-intel' && env.INTEL_RACE_WAIVER == 'v2026-11-11-01' }}"
+        mutations = [(exception, '${{ true }}'),
+                     (exception, "${{ matrix.os == 'macos-15' }}"),
+                     (exception, "${{ matrix.os == 'macos-15-intel' }}"),
+                     ('        id: vet\n', '        id: vet\n        continue-on-error: true\n'),
+                     ('        if: always()\n', '        if: failure()\n'),
+                     ('if-no-files-found: error', 'if-no-files-found: warn'),
+                     ('path: ${{ env.RACE_EVIDENCE }}', 'path: missing'),
+                     ('          STEPS_JSON: ${{ toJSON(steps) }}\n', ''),
+                     ('        id: waiver_audit', '        id: unknown'),
+                     ('run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci_waiver_gate.py', 'run: true'),
+                     ('        id: full_race\n', '        id: full_race\n        timeout-minutes: 30\n')]
+        for old, new in mutations:
+            with self.subTest(new=new):
+                self.assertIn(old, text)
+                with self.assertRaises(ValueError):
+                    validate_workflow(text.replace(old, new))
+        # Packaging/publish commands are byte-identical except their gate label.
+        current = (ROOT / '.github/workflows/binary-release.yml').read_text()
+        normalized = current.replace('Require exact tag push CI and both terminal-success Mac jobs with scoped Intel race audit',
+                                     'Require exact tag push CI and all three terminal-success jobs')
+        self.assertEqual(hashlib.sha256(normalized.encode()).hexdigest(),
+                         'fe817a33c33af8818bd6ce191849ffbf535ae3e0ed024ca2b1c6ecf71b255511')
 
     def test_native_upload_requires_owned_evidence(self):
         text = (ROOT / '.github/workflows/ci.yml').read_text()
