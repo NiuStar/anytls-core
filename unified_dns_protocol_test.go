@@ -317,7 +317,34 @@ type unifiedDNSFixture struct {
 	baseline  []int64
 	failure   string
 	shutdown  func()
+	hold      *unifiedDNSHold
 }
+
+// The first resolver request cannot complete until a distinct later request
+// has arrived. This is a fixture-local scheduling witness, never a DNS reply.
+type unifiedDNSHold struct {
+	first, later, release, handlerDone chan struct{}
+	mu sync.Mutex
+	firstName string
+	seen map[string]bool
+	armed bool
+	once sync.Once
+}
+func newUnifiedDNSHold() *unifiedDNSHold {
+	return &unifiedDNSHold{first: make(chan struct{}), later: make(chan struct{}), release: make(chan struct{}), handlerDone: make(chan struct{}), seen: make(map[string]bool)}
+}
+func (h *unifiedDNSHold) arrive(name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.armed { return false }
+	if h.seen[name] { return false }
+	h.seen[name] = true
+	if name == h.firstName { close(h.first); return true }
+	if name != h.firstName { select { case <-h.later: default: close(h.later) } }
+	return false
+}
+func (h *unifiedDNSHold) arm(name string) { h.mu.Lock(); h.firstName = name; h.armed = true; h.mu.Unlock() }
+func (h *unifiedDNSHold) unblock() { h.once.Do(func() { close(h.release) }) }
 
 func unifiedDNSStart(t *testing.T, rules, failure string) *unifiedDNSFixture {
 	t.Helper()
@@ -328,6 +355,10 @@ func unifiedDNSStart(t *testing.T, rules, failure string) *unifiedDNSFixture {
 func unifiedDNSStartPolicy(t *testing.T, rules, failure, policy string) *unifiedDNSFixture {
 	t.Helper()
 	f := &unifiedDNSFixture{failure: failure, questions: make(map[string]int)}
+	if failure == "http503" {
+		f.hold = newUnifiedDNSHold()
+		t.Cleanup(func() { f.hold.unblock() })
+	}
 	// High-port trap is mandatory and calibrated. Low-port trap is supplementary:
 	// SOCKS clients can address :53 without binding it, including on ordinary UID.
 	f.traps = append(f.traps, unifiedDNSStartTrap(t, 0, false))
@@ -357,6 +388,13 @@ func unifiedDNSStartPolicy(t *testing.T, rules, failure, policy string) *unified
 		f.questions[key]++
 		f.mu.Unlock()
 		if failure == "http503" {
+			if f.hold != nil && f.hold.arrive(query.Question[0].Name) {
+				defer close(f.hold.handlerDone)
+				select {
+				case <-f.hold.release:
+				case <-r.Context().Done():
+				}
+			}
 			w.WriteHeader(503)
 			return
 		}
@@ -628,6 +666,9 @@ func (f *unifiedDNSFixture) verify(t *testing.T, wantSuccess bool) {
 	t.Helper()
 	// Drain the exact engine first so a late retry cannot evade final counters.
 	f.shutdown()
+	if !wantSuccess && (f.q.streams.Load() != 0 || f.q.payload.Load() != 0) {
+		t.Fatalf("negative DNS reached business Q: streams=%d payload=%d", f.q.streams.Load(), f.q.payload.Load())
+	}
 	if f.p.denied.Load() != 0 || f.q.denied.Load() != 0 {
 		t.Fatal("unexpected stream/plain DNS destination reached AnyTLS peer")
 	}
@@ -677,6 +718,118 @@ func (f *unifiedDNSFixture) verify(t *testing.T, wantSuccess bool) {
 	t.Logf("ANYTLS_WITNESS P_accepted=%d P_tls=%d P_streams=%d P_payload=%d P_destinations=%v Q_streams=%d Q_destinations=%v http_queries=%d plaintext_query_delta=0 observer=owned_loopback_only", f.p.accepted.Load(), f.p.authenticated.Load(), f.p.streams.Load(), f.p.payload.Load(), pd, f.q.streams.Load(), qd, f.httpCount.Load())
 }
 
+type unifiedDNSNegativeResult struct {
+	dest string
+	typ uint16
+	id uint16
+	err error
+	responseBytes int
+	problem string
+}
+
+// Every worker owns its own query, SOCKS association, and 1500ms read window.
+func (f *unifiedDNSFixture) negativeUDP(dest string, typ uint16, sent chan<- struct{}, gate <-chan struct{}, arm bool, sockets chan<- net.Conn) (r unifiedDNSNegativeResult) {
+	r.dest, r.typ = dest, typ
+	q := unifiedDNSQuery()
+	q.Question[0].Qtype = typ
+	r.id = q.Id
+	if arm { f.hold.arm(q.Question[0].Name) }
+	client := socks.NewClient(recordsSOCKSDialer{}, M.ParseSocksaddr(f.addr), socks.Version5, "", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, err := client.DialContext(ctx, "udp", M.ParseSocksaddr(dest))
+	if err != nil { r.problem = fmt.Sprintf("SOCKS udp setup: %v", err); return }
+	defer c.Close()
+	sockets <- c
+	if e := c.SetDeadline(time.Now().Add(1500*time.Millisecond)); e != nil { r.problem = fmt.Sprintf("UDP deadline: %v", e); return }
+	wire, e := q.Pack()
+	if e != nil { r.problem = fmt.Sprintf("UDP pack: %v", e); return }
+	_, r.err = c.Write(wire)
+	if r.err == nil {
+		close(sent)
+		if gate != nil { <-gate }
+		buf := make([]byte, 65535)
+		var n int
+		var source net.Addr
+		n, source, r.err = c.(net.PacketConn).ReadFrom(buf)
+		if r.err == nil {
+			if source.String() != dest { r.problem = fmt.Sprintf("UDP DNS source %s != %s", source, dest); return }
+			r.responseBytes = n
+			var a dns.Msg
+			if a.Unpack(buf[:n]) != nil || len(a.Answer) != 0 || a.Rcode == dns.RcodeSuccess { r.problem = fmt.Sprintf("failed secure path returned answer/success: %v", a) }
+		}
+	}
+	return
+}
+
+func (f *unifiedDNSFixture) negativeMatrix(t *testing.T) {
+	t.Helper()
+	type job struct { dest string; typ uint16; result chan unifiedDNSNegativeResult }
+	var jobs []job
+	sockets := make(chan net.Conn, 6)
+	firstRead := make(chan struct{})
+	firstFinished := make(chan struct{})
+	var releaseRead sync.Once
+	unblock := func() { releaseRead.Do(func(){ close(firstRead) }); if f.hold != nil { f.hold.unblock() } }
+	joined := make(map[chan unifiedDNSNegativeResult]bool)
+	early := make(map[chan unifiedDNSNegativeResult]unifiedDNSNegativeResult)
+	// Also runs on a synchronous TCP Fatal; Cleanup is LIFO, so this runs
+	// before fixture shutdown and cannot leave workers using closed fixtures.
+	t.Cleanup(func() {
+		unblock()
+		for { select { case c := <-sockets: c.Close(); default: goto closed } }
+	closed:
+		for _, j := range jobs { if !joined[j.result] {
+			select { case <-j.result: case <-time.After(5*time.Second): t.Errorf("UDP worker not joined during cleanup: %s %s", j.dest, dns.TypeToString[j.typ]) }
+		} }
+	})
+	var problems []string
+	for _, dest := range []string{"127.0.0.1:53", "[::1]:53", f.traps[0].tcp.Addr().String()} {
+		for _, network := range []string{"tcp", "udp"} {
+			for _, typ := range []uint16{dns.TypeA, dns.TypeAAAA} {
+				if network == "tcp" { f.exchange(t, network, dest, typ, false); continue }
+				first := len(jobs) == 0
+				gate := (<-chan struct{})(nil)
+				if first && f.hold == nil { gate = firstRead }
+				j := job{dest: dest, typ: typ, result: make(chan unifiedDNSNegativeResult, 1)}
+				sent := make(chan struct{})
+				jobs = append(jobs, j)
+				go func() { j.result <- f.negativeUDP(dest, typ, sent, gate, first && f.hold != nil, sockets); if first { close(firstFinished) } }()
+				if first {
+					select { case <-sent: case r := <-j.result: early[j.result] = r; problems = append(problems, fmt.Sprintf("first UDP never sent: %+v", r)); case <-time.After(4*time.Second): problems = append(problems, "first UDP dispatch timed out") }
+					if f.hold != nil && len(problems) == 0 { select { case <-f.hold.first: case <-time.After(4*time.Second): problems = append(problems, "first UDP never arrived at HTTPS") } }
+				}
+				if len(jobs) == 2 {
+					if f.hold != nil {
+						select { case <-f.hold.later: case <-firstFinished: problems = append(problems, "first UDP caller completed before later HTTPS arrival"); case <-time.After(4*time.Second): problems = append(problems, "later UDP never reached held HTTPS handler") }
+						select { case <-f.hold.handlerDone: problems = append(problems, "first HTTPS handler exited before later arrival"); default: }
+						select { case <-firstFinished: problems = append(problems, "first UDP caller completed before overlap witness"); default: if len(problems)==0 { t.Log("UDP_OVERLAP_WITNESS later distinct HTTPS query arrived while first UDP caller and handler held") } }
+					} else {
+						select { case <-sent: t.Log("UDP_OVERLAP_WITNESS later UDP sent before first reader released"); case r := <-j.result: early[j.result] = r; problems = append(problems, fmt.Sprintf("later UDP never sent: %+v", r)); case <-time.After(4*time.Second): problems = append(problems, "later UDP dispatch timed out") }
+					}
+					unblock()
+				}
+			}
+		}
+	}
+	for _, j := range jobs {
+		if _, ok := early[j.result]; ok { joined[j.result] = true; continue }
+		select {
+		case r := <-j.result:
+			joined[j.result] = true
+			if r.problem != "" { problems = append(problems, fmt.Sprintf("udp %s %s id=%d: %s", j.dest, dns.TypeToString[j.typ], r.id, r.problem)) }
+			t.Logf("FAIL_CLOSED_QUERY network=udp dest=%s type=%s id=%d error=%v response_bytes=%d", r.dest, dns.TypeToString[r.typ], r.id, r.err, r.responseBytes)
+		case <-time.After(5*time.Second):
+			problems = append(problems, fmt.Sprintf("UDP worker not joined: %s %s", j.dest, dns.TypeToString[j.typ]))
+			unblock()
+			for { select { case c := <-sockets: c.Close(); default: goto socketsClosed } }
+			socketsClosed:
+			select { case <-j.result: joined[j.result] = true; case <-time.After(5*time.Second): problems = append(problems, "UDP worker still live after owned socket close") }
+		}
+	}
+	if len(problems) != 0 { t.Fatal(strings.Join(problems, "; ")) }
+}
+
 func TestUnifiedDNSProtocolSuccess(t *testing.T) {
 	for _, tc := range []struct{ name, rules string }{
 		{"no_rules", ""},
@@ -703,13 +856,7 @@ func TestUnifiedDNSProtocolFailureNoFallback(t *testing.T) {
 	for _, failure := range []string{"http503", "doh_ca", "doh_san", "disconnect", "password", "node_ca"} {
 		t.Run(failure, func(t *testing.T) {
 			f := unifiedDNSStart(t, "DOMAIN,unused.invalid,DIRECT\n - MATCH,business", failure)
-			for _, dest := range []string{"127.0.0.1:53", "[::1]:53", f.traps[0].tcp.Addr().String()} {
-				for _, network := range []string{"tcp", "udp"} {
-					for _, typ := range []uint16{dns.TypeA, dns.TypeAAAA} {
-						f.exchange(t, network, dest, typ, false)
-					}
-				}
-			}
+			f.negativeMatrix(t)
 			f.verify(t, false)
 		})
 	}
