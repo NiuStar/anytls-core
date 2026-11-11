@@ -54,6 +54,7 @@ class PackagingTests(unittest.TestCase):
    materials+=['patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json']
    materials+=['patches/sing-box/dns-stream-close.identity.json','patches/sing-box/dns-stream-close.patch.json','patches/sing-box/dns-stream-close.patch']
    materials+=['patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch']
+   materials+=['patches/sing-anytls/die-hook-publication.identity.json','patches/sing-anytls/die-hook-publication.patch.json','patches/sing-anytls/die-hook-publication.patch']
    materials+=['patches/sing-box/browser.identity.json','patches/sing-box/browser-dns.patch.json','patches/sing-box/browser-route.patch.json']
    for name in materials:
     target=root/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes((w.ROOT/name).read_bytes())
@@ -66,6 +67,7 @@ class PackagingTests(unittest.TestCase):
    receipt['rule_startup']=w.rule_startup_receipt(*w.rule_startup_identity())
    receipt['original_dns_stream_sources_unchanged']=True
    receipt['stream_connect_ack']=w.ack_receipt(*w.ack_identity())
+   receipt['stream_die_hook_publication']=w.hook_receipt(*w.hook_identity())
    receipt['browser_provenance']=w.browser_receipt(w.browser_identity())
    receipt.update(original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)
    def output(args,**kwargs):

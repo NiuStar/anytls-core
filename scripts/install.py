@@ -355,6 +355,9 @@ def certified_build(stdout, wrapper, source, output):
     ack_m, ack_patch = ns["ack_identity"](source)
     require(r.get("stream_connect_ack") == ns["ack_receipt"](ack_m, ack_patch),
             "source build ACK identity mismatch")
+    hook_m, hook_patch = ns["hook_identity"](source)
+    require(r.get("stream_die_hook_publication") == ns["hook_receipt"](hook_m, hook_patch),
+            "source build hook identity mismatch")
     require(r.get("browser_provenance") == ns["browser_receipt"](ns["browser_identity"](source)),
             "source build browser identity mismatch")
     require(r.get("rc") == 0 and r.get("ephemeral_cleanup") == "ok"

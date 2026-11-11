@@ -314,6 +314,7 @@ class InstallerTests(unittest.TestCase):
                        rule_startup=ns['rule_startup_receipt'](*ns['rule_startup_identity'](source)),
                        original_dns_stream_sources_unchanged=True,
                        stream_connect_ack=ns['ack_receipt'](*ns['ack_identity'](source)),
+                       stream_die_hook_publication=ns['hook_receipt'](*ns['hook_identity'](source)),
                        browser_provenance=ns['browser_receipt'](ns['browser_identity'](source)))
         return i.subprocess.CompletedProcess([], 0, ('PATCHED_GO_END '+json.dumps(receipt)+'\n').encode(), b'')
 
@@ -327,13 +328,16 @@ class InstallerTests(unittest.TestCase):
             for bad in (b'',good+good):
                 with self.assertRaisesRegex(ValueError,'unique certified END'):i.certified_build(bad,wrapper,root,output)
             r=json.loads(good.decode().split(' ',1)[1])
-            for field in ('rule_startup','dns_stream_close','original_dns_stream_sources_unchanged','browser_provenance','doh_deadline_isolation','stream_connect_ack','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
+            for field in ('rule_startup','dns_stream_close','original_dns_stream_sources_unchanged','browser_provenance','doh_deadline_isolation','stream_connect_ack','stream_die_hook_publication','original_ack_sources_unchanged','original_ack_zip_unchanged','output_sha256','wrapper_sha256','target','original_doh_source_unchanged','argv','go_version'):
                 bad=dict(r);bad.pop(field)
                 with self.assertRaisesRegex(ValueError,'identity|output'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
             import copy
             for field in r['stream_connect_ack']:
                 bad=copy.deepcopy(r);bad['stream_connect_ack'][field]='tampered'
                 with self.subTest(field=field),self.assertRaisesRegex(ValueError,'ACK identity'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
+            for field in r['stream_die_hook_publication']:
+                bad=copy.deepcopy(r);bad['stream_die_hook_publication'][field]='tampered'
+                with self.subTest(field=field),self.assertRaisesRegex(ValueError,'hook identity'):i.certified_build(('PATCHED_GO_END '+json.dumps(bad)).encode(),wrapper,root,output)
             output.write_bytes(b'tampered')
             with self.assertRaisesRegex(ValueError,'output'):i.certified_build(good,wrapper,root,output)
 
@@ -379,6 +383,9 @@ class InstallerTests(unittest.TestCase):
             elif failure == 'ack':
                 r=json.loads(result.stdout.decode().split(' ',1)[1]);r.pop('stream_connect_ack')
                 result.stdout=('PATCHED_GO_END '+json.dumps(r)).encode()
+            elif failure == 'hook':
+                r=json.loads(result.stdout.decode().split(' ',1)[1]);r.pop('stream_die_hook_publication')
+                result.stdout=('PATCHED_GO_END '+json.dumps(r)).encode()
             elif failure == 'digest':Path(command[command.index('-o') + 1]).write_bytes(b'tampered output')
             return result
         version = (b"legacy usage text" if failure == "wrong-version" else tag.encode())
@@ -411,7 +418,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_initial_and_update_failures_never_publish(self):
         for update in (False, True):
-            for failure in ("checksum", "build", "wrong-version", "no-version", "receipt", "dns-stream", "doh", "ack", "digest"):
+            for failure in ("checksum", "build", "wrong-version", "no-version", "receipt", "dns-stream", "doh", "ack", "hook", "digest"):
                 with self.subTest(update=update, failure=failure), self.temp() as tmp:
                     home = Path(tmp); app = home / ".anytls"; app.mkdir()
                     (app / "anytls-macos").write_bytes(b"original executable")

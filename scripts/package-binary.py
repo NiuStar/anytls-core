@@ -16,6 +16,7 @@ def certified_sources(root,receipt):
  stream,stream_patch=wrapper.dns_stream_identity(root)
  startup,startup_patch=wrapper.rule_startup_identity(root)
  ack,ack_patch=wrapper.ack_identity(root)
+ hook,hook_patch=wrapper.hook_identity(root)
  if not re.search(r'^go 1\.27\.3$',(root/'go.mod').read_text(),re.M):raise ValueError('root module requires Go 1.27.3')
  if receipt.get('go_version','').split()[2:3]!=[wrapper.CURRENT_GO]:raise ValueError('certified toolchain mismatch')
  expected={'identity_sha256':wrapper.IDENTITY_SHA,'wrapper_sha256':wrapper.sha((root/'scripts/go-patched.py').read_bytes()),
@@ -29,6 +30,7 @@ def certified_sources(root,receipt):
            'dns_stream_close':wrapper.dns_stream_receipt(stream,stream_patch),
            'rule_startup':wrapper.rule_startup_receipt(startup,startup_patch),
            'stream_connect_ack':wrapper.ack_receipt(ack,ack_patch),
+           'stream_die_hook_publication':wrapper.hook_receipt(hook,hook_patch),
            'browser_provenance':wrapper.browser_receipt(wrapper.browser_identity(root))}
  if any(receipt.get(k)!=v for k,v in expected.items()):raise ValueError('certified source identity mismatch')
  if receipt.get('original_ack_sources_unchanged') is not True or receipt.get('original_ack_zip_unchanged') is not True:raise ValueError('certified ACK cache invariants missing')
@@ -42,6 +44,7 @@ def certified_sources(root,receipt):
          'patches/sing-box/doh-deadline-isolation.identity.json','patches/sing-box/doh-deadline-isolation.patch.json',
          'patches/sing-box/dns-stream-close.identity.json','patches/sing-box/dns-stream-close.patch.json','patches/sing-box/dns-stream-close.patch',
          'patches/sing-anytls/identity.json','patches/sing-anytls/connect-ack.patch.json','patches/sing-anytls/connect-ack.patch',
+         'patches/sing-anytls/die-hook-publication.identity.json','patches/sing-anytls/die-hook-publication.patch.json','patches/sing-anytls/die-hook-publication.patch',
          'patches/sing-box/browser.identity.json','patches/sing-box/browser-dns.patch.json','patches/sing-box/browser-route.patch.json']
 
 

@@ -35,6 +35,8 @@ DOH_IDENTITY_SHA = "7a559dc56e8677875871e0648da04a6732a5fff3eab766cde5b6442fa33c
 ACK_MODULE = "github.com/anytls/sing-anytls"
 ACK_VERSION = "v0.0.11"
 ACK_IDENTITY_SHA = "5e25227ce112c3c6a2f5416a284516430259eb7d16e49f41b217bc35a2987005"
+HOOK_IDENTITY_SHA = "058a15eaf97e6ed92a17342b91b5995190368f25d9cc8eb8e0f907fb2654a1a1"
+HOOK_FILES = ("session/client.go", "session/session.go")
 BROWSER_IDENTITY_SHA = "0b536fea8c8ecc308e52bbe3625da68110affef1ccfbd43a3854fc826e1b1a48"
 
 DNS_STREAM_IDENTITY_SHA = "b615d0ff76c4fbd5861bf645e7bd884f6d41d6c11772c23321b67d93025e9171"
@@ -154,6 +156,47 @@ def apply_ack(replacement, m, patch):
 def ack_receipt(m, patch):
     return dict(identity_sha256=ACK_IDENTITY_SHA, module=ACK_MODULE, version=ACK_VERSION,
                 module_sum=m["module_sum"], go_mod_sum=m["go_mod_sum"],
+                zip_sha256=m["zip_sha256"], patch_sha256=sha(patch),
+                upstream_diff_sha256=m["upstream_diff_sha256"], files=m["files"],
+                toolchain=CURRENT_GO, review_status=m["review_status"])
+
+
+def hook_identity(root=ROOT):
+    raw = (root / "patches/sing-anytls/die-hook-publication.identity.json").read_bytes()
+    require(sha(raw) == HOOK_IDENTITY_SHA, "hook identity SHA mismatch")
+    m = json.loads(raw)
+    ack, _ = ack_identity(root)
+    require(m["module"] == ACK_MODULE and m["version"] == ACK_VERSION and
+            m["module_sum"] == ack["module_sum"] and m["zip_sha256"] == ack["zip_sha256"] and
+            m["toolchain"] == CURRENT_GO and m["ack_identity_sha256"] == ACK_IDENTITY_SHA and
+            tuple(p["file"] for p in m["files"]) == HOOK_FILES and
+            m["files"][1]["source_sha256"] == ack["files"][0]["result_sha256"],
+            "hook predecessor mismatch")
+    patch = (root / "patches/sing-anytls" / m["patch"]).read_bytes()
+    require(sha(patch) == m["patch_sha256"], "hook patch SHA mismatch")
+    require(sha((root / "patches/sing-anytls" / m["upstream_diff"]).read_bytes()) ==
+            m["upstream_diff_sha256"], "hook diff SHA mismatch")
+    return m, patch
+
+
+def apply_hook(replacement, m, patch):
+    ops = json.loads(patch)
+    require(set(ops) == {"files"} and tuple(e["file"] for e in ops["files"]) == HOOK_FILES,
+            "invalid hook file set")
+    for entry, pin in zip(ops["files"], m["files"]):
+        require(set(entry) == {"file", "old", "new"}, "invalid hook operation")
+        source = (replacement / pin["file"]).read_bytes()
+        require(sha(source) == pin["source_sha256"] and source == entry["old"].encode(),
+                "hook source SHA/exact mismatch")
+        result = entry["new"].encode()
+        require(sha(result) == pin["result_sha256"], "hook result SHA mismatch")
+        (replacement / pin["file"]).write_bytes(result)
+    return m["files"]
+
+
+def hook_receipt(m, patch):
+    return dict(identity_sha256=HOOK_IDENTITY_SHA, ack_identity_sha256=ACK_IDENTITY_SHA,
+                module=ACK_MODULE, version=ACK_VERSION, module_sum=m["module_sum"],
                 zip_sha256=m["zip_sha256"], patch_sha256=sha(patch),
                 upstream_diff_sha256=m["upstream_diff_sha256"], files=m["files"],
                 toolchain=CURRENT_GO, review_status=m["review_status"])
@@ -533,6 +576,7 @@ def main(argv):
     retry_m, retry_patch = retry_identity()
     doh_m, doh_patch = doh_identity()
     ack_m, ack_patch = ack_identity()
+    hook_m, hook_patch = hook_identity()
     browser_m = browser_identity()
     dns_stream_m, dns_stream_patch = dns_stream_identity()
     require(all(retry_m[k] == m[k] for k in ("commit", "module_sum", "go_mod_sum"))
@@ -597,8 +641,12 @@ def main(argv):
             "selected ACK module Dir mismatch")
     ack_original = {pin["file"]: ((ack_directory / pin["file"]).read_bytes()
                     if (ack_directory / pin["file"]).exists() else None) for pin in ack_m["files"]}
+    ack_original.update({pin["file"]: (ack_directory / pin["file"]).read_bytes()
+                         for pin in hook_m["files"] if pin["file"] not in ack_original})
     require(all((sha(ack_original[pin["file"]]) if ack_original[pin["file"]] is not None else None)
                 == pin["source_sha256"] for pin in ack_m["files"]), "ACK cache source SHA mismatch")
+    require(sha(ack_original["session/client.go"]) == hook_m["files"][0]["source_sha256"],
+            "hook cache client source SHA mismatch")
     # Snapshot root inputs: only private copies are ever passed to go mod edit.
     root_inputs = {name: (ROOT / name).read_bytes() for name in ("go.mod", "go.sum")}
     base = Path(os.environ.get("TMPDIR") or Path.home() / ".hermes/cache/scratch")
@@ -656,6 +704,9 @@ def main(argv):
         require(receipt["ack_archive"]["zip_sha256"] == ack_m["zip_sha256"], "ACK ZIP changed before staging")
         apply_ack(ack_replacement, ack_m, ack_patch)
         receipt["stream_connect_ack"] = ack_receipt(ack_m, ack_patch)
+        apply_hook(ack_replacement, hook_m, hook_patch)
+        receipt["stream_die_hook_publication"] = hook_receipt(hook_m, hook_patch)
+        receipt["ack_result_sha256_scope"] = "ACK session.go intermediate; hook successor binds final session.go"
         modfile = work / "build.mod"
         modfile.write_bytes(root_inputs["go.mod"])
         modfile.with_suffix(".sum").write_bytes(root_inputs["go.sum"])
@@ -713,7 +764,9 @@ def main(argv):
         require(all(sha((replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
                     for pin in leaf_m["files"]), "final staged leaf sources changed")
         require(all(sha((ack_replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
-                    for pin in ack_m["files"]), "final staged ACK sources changed")
+                    for pin in ack_m["files"] if pin["file"] not in HOOK_FILES) and
+                all(sha((ack_replacement / pin["file"]).read_bytes()) == pin["result_sha256"]
+                    for pin in hook_m["files"]), "final staged ACK/hook sources changed")
         require(sha(ack_zip.read_bytes()) == ack_m["zip_sha256"], "ACK module-cache ZIP changed before publication")
         require(all(((ack_directory / name).read_bytes() if (ack_directory / name).exists() else None) == data
                     for name, data in ack_original.items()), "ACK module-cache sources changed before publication")

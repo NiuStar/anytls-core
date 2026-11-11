@@ -1,0 +1,48 @@
+--- a/session/client.go
++++ b/session/client.go
+@@ -89,13 +89,7 @@
+ 	if session == nil {
+ 		return nil, fmt.Errorf("failed to create session: %w", err)
+ 	}
+-	stream, err = session.OpenStream()
+-	if err != nil {
+-		session.Close()
+-		return nil, fmt.Errorf("failed to create stream: %w", err)
+-	}
+-
+-	stream.dieHook = func() {
++	stream, err = session.openStream(func() {
+ 		// If Session is not closed, put this Stream to pool
+ 		if !session.IsClosed() {
+ 			select {
+@@ -109,6 +103,10 @@
+ 				c.idleSessionLock.Unlock()
+ 			}
+ 		}
++	})
++	if err != nil {
++		session.Close()
++		return nil, fmt.Errorf("failed to create stream: %w", err)
+ 	}
+ 
+ 	return stream, nil
+--- a/session/session.go
++++ b/session/session.go
+@@ -137,12 +137,17 @@
+ 
+ // OpenStream is used to create a new stream for CLIENT
+ func (s *Session) OpenStream() (*Stream, error) {
++	return s.openStream(nil)
++}
++
++func (s *Session) openStream(onClose func()) (*Stream, error) {
+ 	if s.IsClosed() {
+ 		return nil, io.ErrClosedPipe
+ 	}
+ 
+ 	sid := s.streamId.Add(1)
+ 	stream := newStream(sid, s)
++	stream.dieHook = onClose
+ 
+ 	if sid >= 2 && s.peerVersion.Load() >= 2 {
+ 		s.synDoneLock.Lock()

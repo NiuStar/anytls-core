@@ -1,0 +1,25 @@
+{
+  "module": "github.com/anytls/sing-anytls",
+  "version": "v0.0.11",
+  "module_sum": "h1:w8e9Uj1oP3m4zxkyZDewPk0EcQbvVxb7Nn+rapEx4fc=",
+  "zip_sha256": "5b588f1a803956f48efa5ee3b0bc7bd95df894ebb647e383e3ed4660b83589d2",
+  "toolchain": "go1.27.3",
+  "ack_identity_sha256": "5e25227ce112c3c6a2f5416a284516430259eb7d16e49f41b217bc35a2987005",
+  "patch": "die-hook-publication.patch.json",
+  "patch_sha256": "f11be86fc8afef5835743cc79fa0748e99c2de975f03364b198d5984fb625774",
+  "upstream_diff": "die-hook-publication.patch",
+  "upstream_diff_sha256": "da972880df6089c0dfa6f991d9dac58b5cf50bd1189b8700770830560e374e37",
+  "review_status": "PRERELEASE_BLOCKED_PENDING_INDEPENDENT_REVIEW",
+  "files": [
+    {
+      "file": "session/client.go",
+      "source_sha256": "6ece60c575b6b654ae29dada879f4d273dc4befa7b88ae07bdf204d1e8a9d740",
+      "result_sha256": "68341025a30ecae3039cb5e0ba4f00fda170b66be9e03226d07b32d49e6020ea"
+    },
+    {
+      "file": "session/session.go",
+      "source_sha256": "75e9de403e31897c5c57b138705824cb4bd6520dbef7bee384f06378e83ce909",
+      "result_sha256": "be12683443439ded81471adaa0e6e287b0a98b90e31ab8d3fada8912283c57b6"
+    }
+  ]
+}

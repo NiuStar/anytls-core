@@ -48,6 +48,7 @@ class ACKTests(unittest.TestCase):
                 self.assertEqual(archive.extractfile(prefix+'/modules/'+w.ACK_MODULE+'@'+w.ACK_VERSION+'.zip').read(),(ROOT/'scripts/tests/fixtures/sing-anytls-v0.0.11.zip').read_bytes())
                 identity=json.load(archive.extractfile(prefix+'/BUILD-IDENTITY.json'))
                 self.assertEqual(identity['certified_build']['stream_connect_ack'],w.ack_receipt(*w.ack_identity()))
+                self.assertEqual(identity['certified_build']['stream_die_hook_publication'],w.hook_receipt(*w.hook_identity()))
             for field in receipt['stream_connect_ack']:
                 bad=copy.deepcopy(receipt);bad['stream_connect_ack'][field]='tampered'
                 with self.subTest(field=field),self.assertRaisesRegex(ValueError,'source identity'):p.certified_sources(root,bad)
@@ -78,6 +79,7 @@ class ACKTests(unittest.TestCase):
                 synthetic_h1='h1:'+base64.b64encode(hashlib.sha256(summary).digest()).decode()
                 ack=root/'cache-ack';ack.mkdir();ackzip=ROOT/'scripts/tests/fixtures/sing-anytls-v0.0.11.zip'
                 am,ap=w.ack_identity();w.stage_archive(ackzip,ack,am['module_sum'],w.ACK_MODULE,w.ACK_VERSION)
+                self.assertEqual(w.sha((ack/'session/client.go').read_bytes()),w.hook_identity()[0]['files'][0]['source_sha256'])
                 originals={str(f):f.read_bytes() for base in (box,ack) for f in base.rglob('*') if f.is_file()}
                 replacements={};workpaths=[];stage=w.stage_archive
                 def inspect(cmd,**kw):
@@ -122,6 +124,7 @@ class ACKTests(unittest.TestCase):
                 self.assertTrue(end['original_dns_stream_sources_unchanged'])
                 self.assertEqual(end['dns_stream_close'],w.dns_stream_receipt(*w.dns_stream_identity()))
                 self.assertEqual(end['stream_connect_ack'],w.ack_receipt(am,ap))
+                self.assertEqual(end['stream_die_hook_publication'],w.hook_receipt(*w.hook_identity()))
                 self.assertTrue(all(not path.exists() for path in workpaths))
                 self.assertEqual(originals,{name:Path(name).read_bytes() for name in originals})
     def test_authenticated_archive_and_exact_files(self):

@@ -33,6 +33,7 @@ class LeafPatchTests(unittest.TestCase):
                     rule_startup=w.rule_startup_receipt(*w.rule_startup_identity()),
                     original_dns_stream_sources_unchanged=True,
                     stream_connect_ack=w.ack_receipt(*w.ack_identity()),
+                    stream_die_hook_publication=w.hook_receipt(*w.hook_identity()),
                     browser_provenance=w.browser_receipt(w.browser_identity()),
                     original_ack_sources_unchanged=True,original_ack_zip_unchanged=True)
 
