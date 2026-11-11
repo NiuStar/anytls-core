@@ -1,5 +1,17 @@
 # anytls-core
 
+## App 0.5.3 / build 0.5.3.20261111.1（最终版本身份冻结，尚未发布）
+
+核心 `v2026-11-11-01`，macOS 13+，Apple Silicon／Intel 独立原生包。
+- 菜单自适应轮询、规则 YAML 单次解析和运行选项预分配减少隔离场景的请求／分配成本；实测边界及数值见本版说明，不承诺 RSS、CPU、功耗或真实网络改善。
+- 修复规则集初始化前实际入站尚未登记的启动时序；保留 `LOCAL_READY / INTERNET_UNVERIFIED` 及 0.5.2 热切／恢复语义。
+- 历史 Mac Studio race 子进程 3 秒版本超时和 CI 认证 SHA 的 0.557 秒失败原因仍未知；后续双 Mac 通过不清除历史失败。生产失败关闭与 3s／256／200 边界不变。
+- 最终提交须另经原生／CI／双架构附件资格；Ubuntu 与已关机的物理 Intel 手测由用户延后，均非 PASS。ad-hoc 签名、未公证；发布不安装、不更新生产组件或启停 VPN。
+
+详见[0.5.3 发布说明与验收边界](docs/releases/v2026-11-11-01.md)。正式发布后按芯片下载 `anytls-core-v2026-11-11-01-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-11-01-menubar-darwin-amd64.zip`；当前名称不证明附件已发布。
+
+以下为历史源码冻结时的记录，不代表当前发行状态。
+
 ## App 0.5.2 / build 0.5.2.20261110.1（发行候选，资格验证中）
 
 核心 `v2026-11-10-01`，macOS 13+，Apple Silicon／Intel 独立原生包。
