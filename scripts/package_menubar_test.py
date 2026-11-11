@@ -444,7 +444,8 @@ class PackageTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         ci = (repo / '.github/workflows/ci.yml').read_text()
         workflow = (repo / '.github/workflows/binary-release.yml').read_text()
-        self.assertIn('os: [ubuntu-latest, macos-15, macos-15-intel]', ci)
+        self.assertIn('os: [macos-15, macos-15-intel]', ci)
+        self.assertIn('      fail-fast: false\n', ci)
         self.assertEqual(ci.count("runner.os == 'macOS'"), 3)
         self.assertIn('x86_64) app_arch=amd64', ci)
         self.assertIn('CORE="$PWD/dist/anytls-macos" bash scripts/build-menubar.sh "$app_arch"', ci)

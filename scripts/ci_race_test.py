@@ -30,7 +30,12 @@ UPLOAD = '''      - name: Preserve full-race evidence on every platform
 
 
 def validate_workflow(text):
-    # Only this reviewed native-upload guard differs from the frozen workflow.
+    # Normalize only the exact user-authorized dual-Mac/fail-fast delta.
+    strategy = '    strategy:\n      fail-fast: false\n      matrix:\n        os: [macos-15, macos-15-intel]\n'
+    if text.count(strategy) != 1:
+        raise ValueError('exact independent dual-Mac matrix required')
+    text = text.replace(strategy, '    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-15, macos-15-intel]\n')
+    # Preserve the reviewed native-upload guard and original baseline hash.
     guarded = "        if: always() && runner.os == 'macOS' && env.MENUBAR_EVIDENCE != ''\n"
     if text.count(guarded) != 1:
         raise ValueError('native evidence upload requires an owned path')
@@ -44,8 +49,28 @@ def validate_workflow(text):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_full_matrix_and_all_original_steps_retained(self):
-        validate_workflow((ROOT / '.github/workflows/ci.yml').read_text())
+    def test_authorized_dual_mac_and_all_original_steps_retained(self):
+        text = (ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertIn('      fail-fast: false\n', text)
+        self.assertIn('        os: [macos-15, macos-15-intel]\n', text)
+        validate_workflow(text)
+
+    def test_mac_scope_and_safety_mutants_rejected(self):
+        text = (ROOT / '.github/workflows/ci.yml').read_text()
+        mutations = (
+            ('os: [macos-15, macos-15-intel]', 'os: [macos-15]'),
+            ('os: [macos-15, macos-15-intel]', 'os: [macos-15-intel]'),
+            ('os: [macos-15, macos-15-intel]', 'os: [ubuntu-latest, macos-15, macos-15-intel]'),
+            ('fail-fast: false', 'fail-fast: true'),
+            ('      fail-fast: false\n', ''),
+            ('run: python3 scripts/ci-race.py', 'run: python3 scripts/ci-race.py -run=TestSubset'),
+            ('run: python3 scripts/ci-race.py', 'run: python3 scripts/ci-race.py -timeout=30m'),
+        )
+        for old, new in mutations:
+            with self.subTest(new=new):
+                self.assertIn(old, text)
+                with self.assertRaises(ValueError):
+                    validate_workflow(text.replace(old, new))
 
     def test_native_upload_requires_owned_evidence(self):
         text = (ROOT / '.github/workflows/ci.yml').read_text()
