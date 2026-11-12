@@ -71,8 +71,14 @@ func (r *configEscapesReader) Read(p []byte) (int, error) {
 		n = int(r.remaining)
 	}
 	const escape = `\u0020`
-	for i := 0; i < n; i++ {
-		p[i] = escape[(r.offset+int64(i))%6]
+	// Seed the current phase, then double the initialized prefix. The final
+	// copy is bounded by n so a short terminal read leaves p[n:] untouched.
+	filled := copy(p[:n], escape[r.offset%6:])
+	if filled < n {
+		filled += copy(p[filled:n], escape[:r.offset%6])
+	}
+	for filled < n {
+		filled += copy(p[filled:n], p[:filled])
 	}
 	r.remaining -= int64(n)
 	r.offset += int64(n)
