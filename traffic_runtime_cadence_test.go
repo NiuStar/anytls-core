@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,75 +217,223 @@ func TestTrafficFullHistoryMeasuredCost(t *testing.T) {
 	t.Logf("full-history sample+validate+encode: %s %s", r.String(), r.MemString())
 }
 
+// writeOwnedTraffic is a test-owned sink, not a copy of the privileged store
+// contract. Success follows real write, file sync, close, rename and directory
+// sync. The caller observes completion only after every required operation.
+func writeOwnedTraffic(dir string, s ts.Snapshot) error {
+	data, err := ts.Encode(s)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "traffic-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(f.Name(), filepath.Join(dir, "traffic.json")); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	closeErr := d.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+func joinTrafficReporter(t *testing.T, p *runTrafficReporter) {
+	t.Helper()
+	select {
+	case <-p.done:
+	case <-time.After(3 * time.Second): // Existing reporter-fixture join bound, not a disk throughput target.
+		t.Error("reporter did not terminate after fixture release")
+	}
+}
+
 func TestRunTrafficOwnedDurableSink(t *testing.T) {
+	// Cadence/max-rate belongs to the deterministic policy tests above; disk
+	// latency is not a minimum-writes SLA. Keep the original 1.2s watchdog for
+	// one actual durable publication, then stop and inspect its terminal bytes.
 	dir := t.TempDir()
 	p := newRunTrafficReporter()
 	p.running.Store(true)
-	var writes atomic.Int64
-	go p.report(ts.New(p.counter, cadenceHeader()), time.Now, func(s ts.Snapshot) error {
-		data, e := ts.Encode(s)
-		if e != nil {
-			return e
+	p.counter.Upload(4096)
+	p.counter.Download(8192)
+	header := cadenceHeader()
+	published := make(chan ts.Snapshot, 1)
+	var calls atomic.Int64
+	go p.report(ts.New(p.counter, header), time.Now, func(s ts.Snapshot) error {
+		calls.Add(1)
+		if err := writeOwnedTraffic(dir, s); err != nil {
+			return err
 		}
-		f, e := os.CreateTemp(dir, "traffic-")
-		if e != nil {
-			return e
-		}
-		defer os.Remove(f.Name())
-		if _, e = f.Write(data); e != nil {
-			f.Close()
-			return e
-		}
-		if e = f.Sync(); e != nil {
-			f.Close()
-			return e
-		}
-		if e = f.Close(); e != nil {
-			return e
-		}
-		if e = os.Rename(f.Name(), filepath.Join(dir, "traffic.json")); e != nil {
-			return e
-		}
-		d, e := os.Open(dir)
-		if e != nil {
-			return e
-		}
-		e = d.Sync()
-		d.Close()
-		if e == nil {
-			writes.Add(1)
-		}
-		return e
+		// A terminal sequence witness, not an assumed count in a time window.
+		p.once.Do(func() { close(p.stop) })
+		published <- s
+		return nil
 	})
-	defer p.close()
-	producer := time.NewTicker(5 * time.Millisecond)
-	defer producer.Stop()
-	end := time.NewTimer(1200 * time.Millisecond)
-	defer end.Stop()
-loop:
-	for {
+	defer func() { p.close(); joinTrafficReporter(t, p) }()
+	deadline := time.NewTimer(1200 * time.Millisecond)
+	defer deadline.Stop()
+	var emitted ts.Snapshot
+	select {
+	case emitted = <-published:
+	case <-p.done:
+		// Publication and done may both already be ready.
 		select {
-		case <-producer.C:
-			p.counter.Download(100)
-		case <-end.C:
-			break loop
+		case emitted = <-published:
+		default:
+			t.Fatal("reporter exited without a durable publication")
 		}
+	case <-deadline.C:
+		t.Fatal("no durable publication within original 1.2s watchdog")
 	}
-	p.close()
-	n := writes.Load()
-	if n < 3 || n > 5 {
-		t.Fatalf("durable publication bound: %d writes/1.2s", n)
+	select {
+	case <-p.done:
+	case <-deadline.C:
+		t.Fatal("reporter did not terminate within original 1.2s watchdog")
 	}
-	data, e := os.ReadFile(filepath.Join(dir, "traffic.json"))
-	if e != nil {
-		t.Fatal(e)
+	if calls.Load() != 1 {
+		t.Fatalf("terminal sink invoked %d times", calls.Load())
 	}
-	var s ts.Snapshot
-	if e = ts.Decode(data, &s); e != nil {
-		t.Fatal(e)
+	data, err := os.ReadFile(filepath.Join(dir, "traffic.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if s.Download == "0" {
-		t.Fatal("real atomic counters not in durable payload")
+	var stored ts.Snapshot
+	if err = ts.Decode(data, &stored); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("owned durable sink: %d publications/1.2s; final bytes=%d download=%s", n, len(data), s.Download)
+	want, err := ts.Encode(emitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, want) || stored.Header != header || stored.State != "RUNNING" || stored.Upload != "4096" || stored.Download != "8192" {
+		t.Fatalf("durable content differs from actual sampler publication: %+v", stored)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "traffic.json" {
+		t.Fatalf("temporary publication not cleaned: entries=%v err=%v", entries, err)
+	}
+	t.Logf("durable terminal publication: calls=%d bytes=%d upload=%s download=%s", calls.Load(), len(data), stored.Upload, stored.Download)
+}
+
+func TestRunTrafficOwnedSinkErrorStopsReporter(t *testing.T) {
+	// An actual CreateTemp error, not a synthetic codec error or callback error.
+	// No directory is created: failure must terminate the real reporter once.
+	dir := filepath.Join(t.TempDir(), "missing")
+	p := newRunTrafficReporter()
+	p.counter.Upload(1)
+	var calls atomic.Int64
+	errorsSeen := make(chan error, 1)
+	go p.report(ts.New(p.counter, cadenceHeader()), time.Now, func(s ts.Snapshot) error {
+		calls.Add(1)
+		err := writeOwnedTraffic(dir, s)
+		select {
+		case errorsSeen <- err:
+		default:
+		}
+		return err
+	})
+	defer func() { p.close(); joinTrafficReporter(t, p) }()
+	select {
+	case <-p.done:
+	case <-time.After(1200 * time.Millisecond):
+		t.Fatal("sink failure did not terminate reporter")
+	}
+	select {
+	case err := <-errorsSeen:
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) || !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("underlying filesystem error not propagated: %v", err)
+		}
+	default:
+		t.Fatal("reporter skipped actual owned writer")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("failed sink retried: calls=%d", calls.Load())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "traffic.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed publication left a payload: %v", err)
+	}
+}
+
+func TestRunTrafficBlockedSinkCountersAndClose(t *testing.T) {
+	p := newRunTrafficReporter()
+	p.running.Store(true)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	var calls atomic.Int64
+	go p.report(ts.New(p.counter, cadenceHeader()), time.Now, func(ts.Snapshot) error {
+		if calls.Add(1) == 1 {
+			close(entered)
+		}
+		<-release
+		return nil
+	})
+	// Release even on Fatal, then exercise the unchanged production close and
+	// join bound. No blocked reporter may outlive this fixture's cleanup.
+	defer func() { p.once.Do(func() { close(p.stop) }); unblock(); p.close(); joinTrafficReporter(t, p) }()
+	select {
+	case <-entered:
+	case <-time.After(1200 * time.Millisecond):
+		t.Fatal("reporter did not enter held sink")
+	}
+	counted := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			p.counter.Upload(1)
+			p.counter.Download(2)
+		}
+		close(counted)
+	}()
+	select {
+	case <-counted:
+	case <-time.After(1200 * time.Millisecond):
+		t.Fatal("counter callbacks blocked behind owned sink")
+	}
+	if up, down, saturated := p.counter.Totals(); up != 1000 || down != 2000 || saturated {
+		t.Fatalf("atomic counter ownership lost: up=%d down=%d saturated=%v", up, down, saturated)
+	}
+	closed := make(chan struct{})
+	go func() { p.close(); close(closed) }()
+	select {
+	case <-p.stop:
+	case <-time.After(1200 * time.Millisecond):
+		t.Fatal("close did not invalidate reporter while sink held")
+	}
+	select {
+	case <-p.done:
+		t.Fatal("reporter claimed completion while sink still held")
+	default:
+	}
+	// Stop is established before releasing IO, so no second publish is legal.
+	// Do not hold for the production 1s timeout merely to test this join path.
+	unblock()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("close failed to return after sink release")
+	}
+	joinTrafficReporter(t, p)
+	if calls.Load() != 1 {
+		t.Fatalf("shutdown retried held sink: calls=%d", calls.Load())
+	}
 }

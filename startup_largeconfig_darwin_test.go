@@ -27,7 +27,7 @@ func TestStartupLargeConfigPlistBinding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw = append(raw, []byte("#"+strings.Repeat("x", size-len(raw)-2)+"\n")...)
+			raw = startupConfigPadding(raw, size)
 			if len(raw) != size {
 				t.Fatal("fixture size")
 			}
