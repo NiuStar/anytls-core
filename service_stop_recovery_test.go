@@ -18,6 +18,9 @@ func TestStopRecoveryRestart(t *testing.T) {
 			if err := d.start(b, c, k, true); err != nil {
 				t.Fatal(err)
 			}
+			if mode == "server_changed" {
+				writeLegacyBaseline(t, d, 1)
+			}
 			route, dns := d.route, d.dns
 			baseline := filepath.Join(d.root, serviceBaselineName)
 			switch mode {

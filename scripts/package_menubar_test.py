@@ -23,9 +23,9 @@ TAG = 'v2026-11-07-02'
 class ReleaseMetadataTests(unittest.TestCase):
     def test_builder_and_packager_ast_share_final_identity(self):
         repo = Path(__file__).resolve().parents[1]
-        self.assertEqual((repo / 'VERSION').read_text().strip(), 'v2026-11-11-01')
+        self.assertEqual((repo / 'VERSION').read_text().strip(), 'v2026-11-12-01')
         builder = (repo / 'scripts/build-menubar.sh').read_text().split("python3 -c '", 1)[1].split("' \"$APP\"", 1)[0]
-        expected = {'CFBundleShortVersionString': '0.5.3', 'CFBundleVersion': '0.5.3.20261111.1'}
+        expected = {'CFBundleShortVersionString': '0.5.4', 'CFBundleVersion': '0.5.4.20261112.1'}
         def dictionaries(source):
             return [{kw.arg: ast.literal_eval(kw.value) for kw in node.keywords
                      if kw.arg in expected or kw.arg in ('app_version', 'app_build')}
@@ -35,13 +35,20 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn(expected, dictionaries(builder))
         packaged = dictionaries((repo / 'scripts/package-menubar.py').read_text())
         self.assertIn(expected, packaged)
-        self.assertIn({'app_version': '0.5.3', 'app_build': '0.5.3.20261111.1'}, packaged)
-        self.assertEqual(sum(p.SUITES.values()), 1177)
+        self.assertIn({'app_version': '0.5.4', 'app_build': '0.5.4.20261112.1'}, packaged)
+        self.assertEqual(sum(p.SUITES.values()), 1180)
         for name in ('README.md', 'CHANGELOG.md', 'docs/macos-menubar.md'):
             current = (repo / name).read_text().split('以下为历史源码冻结时的记录', 1)[0]
-            for value in ('0.5.3.20261111.1', 'v2026-11-11-01-menubar-darwin-arm64.zip',
-                          'v2026-11-11-01-menubar-darwin-amd64.zip'):
+            for value in ('0.5.4.20261112.1', 'v2026-11-12-01-menubar-darwin-arm64.zip',
+                          'v2026-11-12-01-menubar-darwin-amd64.zip'):
                 self.assertIn(value, current)
+            link = ('releases/' if name.startswith('docs/') else 'docs/releases/') + 'v2026-11-12-01.md'
+            self.assertIn('](' + link + ')', current)
+            self.assertTrue(((repo / name).parent / link).is_file())
+        notes = (repo / 'docs/releases/v2026-11-12-01.md').read_text()
+        for value in ('0.5.4.20261112.1', 'v2026-11-12-01', 'DEFERRED_BY_USER_NOT_PASSED',
+                      'INTERNET_UNVERIFIED', 'UNAVAILABLE'):
+            self.assertIn(value, notes)
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -167,8 +174,8 @@ class PackageTests(unittest.TestCase):
             path.write_bytes(b'fixture executable, NOT a native binary')
             path.chmod(0o755)
         self.info = dict(CFBundleIdentifier='org.anytls.menubar.candidate', CFBundleExecutable='AnyTLSMenuBar',
-                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.5.3',
-                         CFBundleVersion='0.5.3.20261111.1', AnyTLSCoreVersion=TAG,
+                         CFBundlePackageType='APPL', CFBundleShortVersionString='0.5.4',
+                         CFBundleVersion='0.5.4.20261112.1', AnyTLSCoreVersion=TAG,
                          LSMinimumSystemVersion='13.0', LSUIElement=True)
         self.write_info()
         self.runtime = self.app / 'Contents/Resources/runtime/anytls-macos'
@@ -267,8 +274,8 @@ class PackageTests(unittest.TestCase):
         with zipfile.ZipFile(self.out / result['asset']) as archive:
             info = json.loads(archive.read('BUILD-INFO.json'))
             self.assertEqual(info['architecture'], 'amd64')
-            self.assertEqual(info['app_version'], '0.5.3')
-            self.assertEqual(info['app_build'], '0.5.3.20261111.1')
+            self.assertEqual(info['app_version'], '0.5.4')
+            self.assertEqual(info['app_build'], '0.5.4.20261112.1')
             self.assertEqual(info['corresponding_source'], self.prefix + '-darwin-amd64-corresponding-source.tar.gz')
             self.assertIn(b'Intel x86_64 ONLY', archive.read('README.txt'))
 
@@ -456,9 +463,9 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(annotations.getvalue(), '')
         self.assertEqual(captured.getvalue(), ''.join((evidence / (name + '.stdout')).read_text() for name in p.SUITES))
         self.assertEqual(p.SUITES, {'AnyTLSMenuBarTests': 529, 'QuitTests': 250,
-                                    'ConnectivityTests': 61, 'FocusTests': 125,
+                                    'ConnectivityTests': 61, 'FocusTests': 128,
                                     'DesktopRuntimeTests': 212})
-        self.assertEqual(sum(p.SUITES.values()), 1177)
+        self.assertEqual(sum(p.SUITES.values()), 1180)
         self.assertEqual([Path(args[0]).name for args in calls], list(p.SUITES))
         self.assertEqual([len(args) for args in calls], [1, 1, 1, 2, 2])
         self.assertTrue((evidence / 'native-suites.json').is_file())

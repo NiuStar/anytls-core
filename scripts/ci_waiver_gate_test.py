@@ -65,14 +65,28 @@ class AuditTests(unittest.TestCase):
                               cwd=ROOT, env=env, capture_output=True, text=True, timeout=10)
 
     def test_actual_cli_positive_matrix(self):
-        for matrix, code, label in [('macos-15-intel', 1, 'INTEL_RACE_FAIL_WAIVED_FOR_0_5_3'),
-                                    ('macos-15-intel', 0, 'FULL_RACE_PASS'),
+        for matrix, code, label in [('macos-15-intel', 0, 'FULL_RACE_PASS'),
                                     ('macos-15', 0, 'FULL_RACE_PASS')]:
             with self.subTest(matrix=matrix, code=code), tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
                 steps, _ = fixture(Path(td), code)
                 result = self.cli(steps, td, matrix)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), label)
+
+    def test_current_release_rejects_legacy_intel_waiver_through_actual_cli(self):
+        current = (ROOT / 'VERSION').read_text().strip()
+        self.assertEqual(current, 'v2026-11-12-01')
+        self.assertEqual(self.audit.VERSION, 'v2026-11-11-01')
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
+            root = Path(td)
+            steps, _ = fixture(root, 1)
+            for matrix in ('macos-15', 'macos-15-intel'):
+                with self.subTest(matrix=matrix):
+                    result = self.cli(steps, root, matrix)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertNotIn('WAIVED', result.stdout)
+                    with self.assertRaises(ValueError):
+                        self.audit.validate(steps, matrix, root, current)
 
     def test_every_required_step_failure_skip_pending_cancelled_blocks(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:

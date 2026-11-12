@@ -119,14 +119,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch model.connectivity {
         case .checking: network="正在检查网络连接…"
         case .online: network="网络已连接"
-        case .offline: network="网络连接失败，请检查节点或网络"
+        case .offline: network="网络连接失败，建议切换节点，若仍失败请检查本地网络"
         case .idle: network="VPN 运行中"
         }
         let state = !model.api.authenticated ? connectionMessage : model.uncertain ? "操作结果未知" : model.status.map { $0.running ? network : ($0.loaded ? "VPN 已加载 · 未运行" : "VPN 未启动") } ?? "状态未知"
         item.button?.toolTip="AnyTLS · \(state)\n↑ \(up)  ↓ \(down)"
         item.button?.setAccessibilityLabel("AnyTLS，\(state)，上传 \(up)，下载 \(down)")
         speedView.icon.contentTintColor = model.connectivity == .offline ? .systemRed : .labelColor
-        speedView.icon.setAccessibilityLabel(model.connectivity == .offline ? "AnyTLS，网络连接失败，请检查节点或网络" : "AnyTLS，\(state)")
+        speedView.icon.setAccessibilityLabel(model.connectivity == .offline ? "AnyTLS，网络连接失败，建议切换节点，若仍失败请检查本地网络" : "AnyTLS，\(state)")
         if !connectionMessage.isEmpty { item.button?.toolTip?.append("\n"+connectionMessage) }
         if let desktop=desktop { item.button?.toolTip?.append("\n"+desktop.message) }
         if !quitCoordinator.message.isEmpty { item.button?.toolTip?.append("\n"+quitCoordinator.message) }

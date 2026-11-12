@@ -25,25 +25,25 @@ func TestLifecycleReadinessElapsedDeadline(t *testing.T) {
 		wantElapsed                         time.Duration
 		wantReason                          string
 	}{
-		{name: "immediate", wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 0},
-		{name: "ready_at_59s", readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 0, wantElapsed: 59 * time.Second},
-		{name: "ready_at_exactly_60s_rejected", readyAfter: 60 * time.Second, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
-		{name: "never_ready_rollback_cleanup", neverReady: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
-		{name: "loaded_not_running", notRunning: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "PROCESS_NOT_RUNNING"},
-		{name: "tools_consume_window", neverReady: true, publicCost: 19 * time.Second, wantPauses: 3, wantStates: 3, wantPublic: 3, wantServers: 6, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
+		{name: "immediate", wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 0, wantHTTPS: 0},
+		{name: "ready_at_59s", readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 0, wantHTTPS: 0, wantElapsed: 59 * time.Second},
+		{name: "ready_at_exactly_60s_rejected", readyAfter: 60 * time.Second, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 0, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
+		{name: "never_ready_rollback_cleanup", neverReady: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 0, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
+		{name: "loaded_not_running", notRunning: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 0, wantElapsed: 60 * time.Second, wantReason: "PROCESS_NOT_RUNNING"},
+		{name: "tools_consume_window", neverReady: true, publicCost: 19 * time.Second, wantPauses: 3, wantStates: 3, wantPublic: 3, wantServers: 0, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
 		{name: "state_consumes_entire_window_without_pause", stateCost: 60 * time.Second, wantStates: 1, wantElapsed: 60 * time.Second, wantReason: "READINESS_UNKNOWN"},
-		{name: "public_read_just_before_deadline", publicCost: 60*time.Second - time.Nanosecond, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 0, wantElapsed: 60*time.Second - time.Nanosecond},
+		{name: "public_read_just_before_deadline", publicCost: 60*time.Second - time.Nanosecond, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 0, wantHTTPS: 0, wantElapsed: 60*time.Second - time.Nanosecond},
 		{name: "public_read_at_exact_deadline", publicCost: 60 * time.Second, wantStates: 1, wantPublic: 1, wantElapsed: 60 * time.Second, wantReason: "READINESS_UNKNOWN"},
 		{name: "public_read_crosses_deadline", publicCost: 61 * time.Second, wantStates: 1, wantPublic: 1, wantElapsed: 61 * time.Second, wantReason: "READINESS_UNKNOWN"},
-		{name: "server_routes_cross_deadline", serverCost: 31 * time.Second, wantStates: 1, wantPublic: 1, wantServers: 2, wantElapsed: 62 * time.Second, wantReason: "READINESS_UNKNOWN"},
+		{name: "node_route_cost_not_on_start_path", serverCost: 31 * time.Second, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 0},
 		{name: "round_begin_crosses_deadline", beginExpiry: true, wantElapsed: 60 * time.Second, wantReason: "READINESS_UNKNOWN"},
-		{name: "late_wakeup_starts_no_round", neverReady: true, pauseStep: 61 * time.Second, wantPauses: 1, wantStates: 1, wantPublic: 1, wantServers: 2, wantElapsed: 61 * time.Second, wantReason: "TUN_NOT_READY"},
-		{name: "preflight_and_bootstrap_do_not_consume_observation", preflight: 2 * time.Minute, readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 0, wantElapsed: 59 * time.Second},
-		{name: "blocked_external_probe_not_on_path", readyAfter: 59 * time.Second, httpsCost: 12 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 120, wantHTTPS: 0, wantElapsed: 59 * time.Second},
+		{name: "late_wakeup_starts_no_round", neverReady: true, pauseStep: 61 * time.Second, wantPauses: 1, wantStates: 1, wantPublic: 1, wantServers: 0, wantElapsed: 61 * time.Second, wantReason: "TUN_NOT_READY"},
+		{name: "preflight_and_bootstrap_do_not_consume_observation", preflight: 2 * time.Minute, readyAfter: 59 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 0, wantHTTPS: 0, wantElapsed: 59 * time.Second},
+		{name: "blocked_external_probe_not_on_path", readyAfter: 59 * time.Second, httpsCost: 12 * time.Second, wantSuccess: true, wantPauses: 59, wantStates: 60, wantPublic: 60, wantServers: 0, wantHTTPS: 0, wantElapsed: 59 * time.Second},
 		{name: "route_error_fails_immediately", routeError: true, wantStates: 1, wantPublic: 1, wantReason: "READINESS_ROUTE_UNAVAILABLE"},
 		{name: "late_route_error_keeps_cause", routeError: true, publicCost: 61 * time.Second, wantStates: 1, wantPublic: 1, wantElapsed: 61 * time.Second, wantReason: "READINESS_ROUTE_UNAVAILABLE"},
-		{name: "https_not_required", failHTTPS: true, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 2, wantHTTPS: 0},
-		{name: "timeout_cleanup_error_keeps_cause", neverReady: true, failCleanup: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 120, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
+		{name: "https_not_required", failHTTPS: true, wantSuccess: true, wantStates: 1, wantPublic: 1, wantServers: 0, wantHTTPS: 0},
+		{name: "timeout_cleanup_error_keeps_cause", neverReady: true, failCleanup: true, wantPauses: 60, wantStates: 60, wantPublic: 60, wantServers: 0, wantElapsed: 60 * time.Second, wantReason: "TUN_NOT_READY"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, binary, config, core, loaded, _ := lifecycleFixture(t)

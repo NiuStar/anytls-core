@@ -28,6 +28,8 @@ func explicitHTTPSFixture(t *testing.T, d serviceLifecycle, b, c, k string) erro
 	if err := d.start(b, c, k, true); err != nil {
 		return err
 	}
+	// The standalone legacy diagnostic retains historical all-server retry checks.
+	writeLegacyBaseline(t, d, 1)
 	baseline, servers, err := d.baseline()
 	if err != nil {
 		return err

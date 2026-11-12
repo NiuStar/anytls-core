@@ -115,28 +115,26 @@ func TestServiceStatusDisabledNotAbsent(t *testing.T) {
 	}
 }
 
+// Historical v1 restoration still checks every actual routed server.
 func TestLifecycleAllRoutedServers(t *testing.T) {
-	d, b, c, k, loaded, calls := lifecycleFixture(t)
+	d, b, c, k, loaded, _ := lifecycleFixture(t)
+	if err := d.start(b, c, k, true); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyBaseline(t, d, 1)
+	*loaded = false
 	original := d.route
 	d.route = func(ip string) (string, error) {
-		if *loaded && ip == "203.0.113.2" {
+		if ip == "203.0.113.2" {
 			return "utun9", nil
 		}
 		return original(ip)
 	}
-	err := d.start(b, c, k, true)
-	if err == nil {
-		t.Fatal("secondary routed server entered TUN but start succeeded")
-	}
-	if *loaded {
-		t.Fatal("failed readiness did not bootout")
-	}
-	for _, call := range *calls {
-		if call == "route:203.0.113.99" {
-			t.Fatal("unused node route queried")
-		}
+	if _, err := d.status(); err == nil {
+		t.Fatal("legacy secondary route change accepted")
 	}
 }
+
 func TestLifecycleUnloadedMissingBaseline(t *testing.T) {
 	d, _, _, _, _, _ := lifecycleFixture(t)
 	if err := os.Mkdir(d.root, 0700); err != nil {
@@ -237,8 +235,8 @@ func TestLifecycleBaselineAllServers(t *testing.T) {
 	if err := json.Unmarshal(raw, &baseline); err != nil {
 		t.Fatal(err)
 	}
-	if baseline.Version != 1 || len(baseline.Servers) != 2 || baseline.Servers["203.0.113.2"] != "en0" {
-		t.Fatalf("all actual servers not captured: %s", raw)
+	if baseline.Version != 2 || len(baseline.Servers) != 0 {
+		t.Fatalf("local baseline contains server authority: %s", raw)
 	}
 }
 
@@ -259,6 +257,7 @@ func TestLifecycleStopTransitions(t *testing.T) {
 			if err := d.start(b, c, k, true); err != nil {
 				t.Fatal(err)
 			}
+			writeLegacyBaseline(t, d, 1) // Freeze the historical STOP contract independently of START.
 			*calls = nil
 			sentinel := errors.New("transition sentinel")
 			wantErr := false
@@ -350,7 +349,7 @@ func TestLifecycleStopTransitions(t *testing.T) {
 	}
 }
 func TestLifecycleStartProbeTransitions(t *testing.T) {
-	for _, mode := range []string{"state", "public", "secondary", "dns", "timeout", "bootstrap", "staging_cleanup_state"} {
+	for _, mode := range []string{"state", "public", "dns", "timeout", "bootstrap", "staging_cleanup_state"} {
 		t.Run(mode, func(t *testing.T) {
 			d, b, c, k, loaded, _ := lifecycleFixture(t)
 			sentinel := errors.New("private upstream SECRET")
@@ -518,7 +517,7 @@ func TestLifecycleHTTPSExactUTUN(t *testing.T) {
 				if !errors.Is(err, sentinel) || !errors.Is(statErr, os.ErrNotExist) || strings.Contains(output, "restoration verified") {
 					t.Fatalf("rollback error/evidence lost: output=%q err=%v stat=%v", output, err, statErr)
 				}
-			} else if !errors.Is(statErr, os.ErrNotExist) || !strings.Contains(output, "all server/public routes and DNS restoration verified") {
+			} else if !errors.Is(statErr, os.ErrNotExist) || !strings.Contains(output, "local public interface and DNS restoration verified") {
 				t.Fatalf("restoration not proved: output=%q stat=%v", output, statErr)
 			}
 		})
@@ -557,11 +556,12 @@ func TestLifecycleDNSBaselineAddresses(t *testing.T) {
 			if err := json.Unmarshal(raw, &baseline); err != nil {
 				t.Fatal(err)
 			}
-			if baseline.Version != 1 || !slices.Equal(baseline.DNS, want) {
+			if baseline.Version != 2 || !slices.Equal(baseline.DNS, want) {
 				t.Fatalf("DNS strings/order/zone changed: %s", raw)
 			}
 			if mode == "scoped_legacy_v0" {
-				baseline.Version, baseline.Servers = 0, nil
+				baseline.Version, baseline.Scope, baseline.Servers = 0, "", nil
+				baseline.Server, baseline.ServerInterface = "203.0.113.1", "en0"
 				raw, err = json.Marshal(baseline)
 				if err != nil {
 					t.Fatal(err)

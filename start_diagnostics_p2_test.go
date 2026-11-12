@@ -40,6 +40,9 @@ func TestDiagnosticsP2Recovery(t *testing.T) {
 			if err := d.start(b, c, k, true); err != nil {
 				t.Fatal(err)
 			}
+			if strings.HasPrefix(mode, "server_") {
+				writeLegacyBaseline(t, d, 1)
+			}
 			secret := errors.New("PRIVATE_P2_RECOVERY")
 			want := "UNKNOWN"
 			cleanup := "UNKNOWN"

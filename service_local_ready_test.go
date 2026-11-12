@@ -38,7 +38,7 @@ func TestStartLocalReadyDoesNotWaitForInternet(t *testing.T) {
 		t.Fatal("local readiness did not finish")
 	}
 	v, _ := readDiagnostic(t, d.root)
-	if v["readiness"] != "LOCAL_READY" || v["https"] != "NOT_EXECUTED" || v["internet_verification"] != "NOT_RUN" || v["schema_version"] != float64(2) {
+	if v["readiness"] != "LOCAL_READY" || v["https"] != "NOT_EXECUTED" || v["internet_verification"] != "NOT_RUN" || v["schema_version"] != float64(3) {
 		t.Fatalf("false internet success: %v", v)
 	}
 	if d.receipt != nil {

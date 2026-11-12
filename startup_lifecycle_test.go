@@ -66,6 +66,13 @@ func TestStartupReloadSegmentsReceiptsAndStopFailure(t *testing.T) {
 			if e := d.start(b, c, k, true); e != nil {
 				t.Fatal(e)
 			}
+			route := d.route
+			d.route = func(address string) (string, error) {
+				if address != "1.1.1.1" {
+					t.Fatal("v2 RELOAD inspected a node route")
+				}
+				return route(address)
+			}
 			s := unitControlServer()
 			s.registration.Config = c
 			s.state = d.state

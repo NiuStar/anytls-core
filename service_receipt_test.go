@@ -36,7 +36,7 @@ func readDiagnostic(t *testing.T, root string) (map[string]any, string) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if v["trust"] != "UNTRUSTED_DIAGNOSTIC" || (v["schema_version"] != float64(1) && !(v["schema_version"] == float64(2) && v["readiness"] == "LOCAL_READY" && v["internet_verification"] == "NOT_RUN" && v["https"] == "NOT_EXECUTED")) {
+	if v["trust"] != "UNTRUSTED_DIAGNOSTIC" || (v["schema_version"] != float64(1) && !(v["schema_version"] == float64(3) && v["node_route_verification"] == "NOT_RUN" && v["restoration_scope"] == "LOCAL_INTERFACE_DNS") && !(v["schema_version"] == float64(2) && v["readiness"] == "LOCAL_READY" && v["internet_verification"] == "NOT_RUN" && v["https"] == "NOT_EXECUTED")) {
 		t.Fatal("receipt trust/schema")
 	}
 	for _, secret := range []string{root, "fixture", "SECRET", "BEGIN CERTIFICATE", "runtime.json", "password", "203.0.113.", "192.0.2.53"} {
@@ -333,7 +333,7 @@ func TestReceiptStopBranches(t *testing.T) {
 	}
 }
 func TestReceiptPhaseEvidence(t *testing.T) {
-	for _, mode := range []string{"timeout", "secondary", "final_changed"} {
+	for _, mode := range []string{"timeout", "final_dns", "final_changed"} {
 		t.Run(mode, func(t *testing.T) {
 			d, b, c, k, loaded, _ := lifecycleFixture(t)
 			route, tool := d.route, d.tool
@@ -363,6 +363,15 @@ func TestReceiptPhaseEvidence(t *testing.T) {
 				}
 				return route(ip)
 			}
+			if mode == "final_dns" {
+				dns := d.dns
+				d.dns = func() ([]string, error) {
+					if *loaded {
+						return nil, errors.New("final DNS unavailable")
+					}
+					return dns()
+				}
+			}
 			if err := d.start(b, c, k, true); err == nil {
 				t.Fatal("failure branch accepted")
 			}
@@ -378,7 +387,7 @@ func TestReceiptPhaseEvidence(t *testing.T) {
 				t.Fatal("unexecuted HTTPS claimed success")
 			}
 			servers := v["servers"].([]any)
-			if servers[0].(map[string]any)["baseline"] != "CAPTURED_PHYSICAL" || servers[1].(map[string]any)["restoration"] != "VERIFIED" {
+			if servers[0].(map[string]any)["baseline"] != "NOT_EXECUTED" || servers[1].(map[string]any)["restoration"] != "NOT_EXECUTED" {
 				t.Fatal("phase observations not retained")
 			}
 			if mode == "secondary" && servers[1].(map[string]any)["readiness"] != "FAILED" {

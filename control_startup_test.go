@@ -253,7 +253,7 @@ func TestStartupLifecycleRollbackRetainsActualEvents(t *testing.T) {
 	for _, event := range response.Trace.Streams[0].Events {
 		seen[event.Stage] = true
 	}
-	for _, stage := range []string{"SNAPSHOT_STAGE", "CONFIG_OUTBOUNDS_COMPILE", "BOOTSTRAP", "READINESS_ROUND", "FINAL_DNS", "BOOTOUT", "RESTORE_SERVER_ROUTES", "SNAPSHOT_REMOVE", "RECEIPT_WRITE", "HELPER_FINISH"} {
+	for _, stage := range []string{"SNAPSHOT_STAGE", "CONFIG_OUTBOUNDS_COMPILE", "BOOTSTRAP", "READINESS_ROUND", "FINAL_DNS", "BOOTOUT", "RESTORE_PUBLIC_ROUTE", "SNAPSHOT_REMOVE", "RECEIPT_WRITE", "HELPER_FINISH"} {
 		if !seen[stage] {
 			t.Errorf("actual %s absent after rollback", stage)
 		}

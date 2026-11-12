@@ -37,6 +37,7 @@ func servicePlistPath() (string, error) {
 
 type networkBaseline struct {
 	Version         int               `json:",omitempty"`
+	Scope           string            `json:",omitempty"`
 	Servers         map[string]string `json:",omitempty"`
 	Server          string
 	ServerInterface string

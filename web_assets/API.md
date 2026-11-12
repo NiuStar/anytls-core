@@ -183,6 +183,10 @@ Local evidence: `/workspace/anytls-rule-delete-evidence/ui_vm_test.cjs` exercise
 
 本次证据 `/workspace/anytls-rule-list-ux-evidence/ui_navigation_test.cjs` 使用真实 app.js 的 Node VM + 最小 DOM/合成传输。先在基线观察 91,983 行全部渲染（要求最多 100 行）的业务 RED，再观察候选仅创建 100 li / 100 删除按钮的 GREEN；导航和跳转另有观察到的业务 RED/GREEN，额外安全边界为 test-after。该计数不是浏览器性能计时、真实 HTTP 或 Mac/helper/VPN/生产验收；父任务负责真实浏览器验证。旧删除/新增 VM 回归单独运行。
 
+## 启动的本地就绪边界
+
+START/RELOAD 成功仅表示 `LOCAL_READY / INTERNET_UNVERIFIED`，不逐节点查询路由或等待外网检测，节点／warm／规则出口不删除。固定 11 字段 invocation diagnostics 仍为 schema 1；其 restoration 表示本次快照所声明范围。新 baseline v2 为 `LOCAL_INTERFACE_DNS`，仅公共物理接口与原始 DNS；磁盘非权威诊断 schema_version 3 显式记录 `node_route_verification: NOT_RUN`、`restoration_scope: LOCAL_INTERFACE_DNS`，逐服务器证据为 `NOT_EXECUTED`。历史 v0/v1 快照按旧服务器范围停止，不能升级旧证据。installer／desktop 的 receipt_schema=2 是独立协议，未改变；它们不读取磁盘 service-diagnostic.json。独立连通性观察不回填此次启动证明，不解除 UNKNOWN，不自动切换或重连。
+
 ## 验证
 
 ### ST1 页面启动日志（独立候选）

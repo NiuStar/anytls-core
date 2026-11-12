@@ -124,7 +124,13 @@ func validBaseline(b networkBaseline) error {
 			return errors.New("restoration DNS baseline invalid")
 		}
 	}
-	if b.Version != 0 && b.Version != 1 {
+	if b.Version == 2 {
+		if b.Scope != "LOCAL_INTERFACE_DNS" || b.Server != "" || b.ServerInterface != "" || b.Servers != nil {
+			return errors.New("local restoration baseline scope inconsistent")
+		}
+		return nil
+	}
+	if (b.Version != 0 && b.Version != 1) || b.Scope != "" {
 		return errors.New("restoration baseline version unsupported")
 	}
 	if net.ParseIP(b.Server) == nil || !physicalInterface(b.ServerInterface) {
@@ -150,11 +156,14 @@ func (d serviceLifecycle) baseline() (networkBaseline, []string, error) {
 	if err != nil {
 		return b, nil, lifecycleFailure("restoration baseline unavailable", err)
 	}
-	if err := json.Unmarshal(raw, &b); err != nil {
+	if err := decodeBaseline(raw, &b); err != nil {
 		return b, nil, lifecycleFailure("restoration baseline invalid", err)
 	}
 	if err := validBaseline(b); err != nil {
 		return b, nil, err
+	}
+	if b.Version == 2 {
+		return b, nil, nil
 	}
 	servers, _, err := d.traceOutbounds(filepath.Join(d.root, "config.yaml"), true)
 	if err != nil {
@@ -177,6 +186,10 @@ func (d serviceLifecycle) baseline() (networkBaseline, []string, error) {
 	return b, servers, nil
 }
 func (d serviceLifecycle) serverRoutes(b networkBaseline, servers []string) (result error) {
+	// Local-only baselines contain no node-route authority. Legacy scope is unchanged.
+	if b.Version == 2 {
+		return validBaseline(b)
+	}
 	stage := d.startupRoutes
 	if stage == "" {
 		stage = "READINESS_SERVER_ROUTES"
@@ -425,28 +438,10 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 		}
 		return d.failure("PROXY", reason, lifecycleFailure("system proxy preflight failed", err))
 	}
-	baseline := networkBaseline{Version: 1, Servers: map[string]string{}, Server: servers[0]}
+	baseline := networkBaseline{Version: 2, Scope: "LOCAL_INTERFACE_DNS"}
+	r.localScope()
 	r.serverScope(len(servers), "NOT_EXECUTED")
-	r.Baseline.Servers = "FAILED"
-	span = d.traceBegin("BASELINE_SERVER_ROUTES")
-	for i, server := range servers {
-		r.server(i, "FAILED")
-		iface, err := d.route(server)
-		if err != nil {
-			d.traceRouteAggregateEnd(span, i, err)
-			return d.failure("SERVER_ROUTE", "SERVER_ROUTE_UNAVAILABLE", lifecycleFailure("server route preflight failed", err))
-		}
-		if !physicalInterface(iface) {
-			d.traceRouteAggregateEnd(span, i, errors.New("not physical"))
-			return d.failure("SERVER_ROUTE", "SERVER_ROUTE_NOT_PHYSICAL", errors.New("server route is not on physical interface"))
-		}
-		baseline.Servers[server] = iface
-		r.server(i, "CAPTURED_PHYSICAL")
-	}
-	d.traceRouteAggregateEnd(span, len(servers), nil)
-	r.Baseline.Servers = "CAPTURED_PHYSICAL"
 	r.Baseline.Public = "FAILED"
-	baseline.ServerInterface = baseline.Servers[baseline.Server]
 	baseline.PublicInterface, err = d.traceRoute("BASELINE_PUBLIC_ROUTE", "1.1.1.1")
 	if err != nil {
 		return d.failure("PUBLIC_ROUTE", "PUBLIC_ROUTE_UNAVAILABLE", lifecycleFailure("public route preflight failed", err))
@@ -474,7 +469,7 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 	if err := baselineWriteErr; err != nil {
 		return d.failure("BASELINE", "BASELINE_WRITE_FAILED", lifecycleFailure("baseline write failed", err))
 	}
-	// Recompile the staged bytes, not user config: confirm actual launch scope.
+	// Validate persisted local scope; actual staged inputs were compiled above.
 	span = d.traceBegin("BASELINE_REVALIDATE")
 	_, _, baselineErr := d.baseline()
 	d.traceEnd(span, baselineErr)
@@ -576,10 +571,6 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 				r.BeforeHTTPS.Public = "TUN"
 				d.diagnostic.Tun = "TUN"
 			}
-			d.startupRoutes = "READINESS_SERVER_ROUTES"
-			if err := d.serverRoutes(baseline, servers); err != nil {
-				return true, err
-			}
 			if expired() {
 				return true, timeout()
 			}
@@ -616,10 +607,6 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 					return true, d.failure("READINESS", "READINESS_CHANGED", errors.New("readiness changed during local verification"))
 				}
 				r.AfterHTTPS.Public = "VERIFIED_SAME_TUN"
-				d.startupRoutes = "FINAL_SERVER_ROUTES"
-				if err := d.serverRoutes(baseline, servers); err != nil {
-					return true, err
-				}
 				r.AfterHTTPS.DNS = "FAILED"
 				dns, err := d.traceDNS("FINAL_DNS")
 				if err != nil {
@@ -630,10 +617,9 @@ func (d serviceLifecycle) start(binary, config, core string, allowInsecure bool)
 				}
 				r.AfterHTTPS.DNS = "OBSERVED_NONEMPTY"
 				r.Readiness = "LOCAL_READY"
-				r.Schema = 2
 				r.InternetVerification = "NOT_RUN"
 				d.diagnostic.Stage, d.diagnostic.Reason = "LOCAL_READY", "INTERNET_UNVERIFIED"
-				fmt.Printf("AnyTLS TUN local ready; all server routes preserved; internet unverified (not probed); TLS policy %s\n", map[bool]string{true: "unverified (one or more routed outbounds)", false: "configured CA verification required"}[insecure])
+				fmt.Printf("AnyTLS TUN local ready; node routes and internet unverified (not probed); TLS policy %s\n", map[bool]string{true: "unverified (one or more routed outbounds)", false: "configured CA verification required"}[insecure])
 				return true, nil
 			}
 			return false, nil
@@ -843,9 +829,15 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 		baseline, servers, readErr = d.baseline()
 	}
 	d.traceEnd(span, readErr)
+	if readErr == nil && baseline.Version == 2 {
+		r.localScope()
+	}
 	if r.Operation == "STOP" && readErr == nil {
-		r.serverScope(len(servers), "STORED_NOT_OBSERVED")
-		r.Baseline = diagnosticEvidence{"UNKNOWN", "STORED_NOT_OBSERVED", "STORED_NOT_OBSERVED", "STORED_NOT_OBSERVED"}
+		r.Baseline = diagnosticEvidence{"UNKNOWN", "STORED_NOT_OBSERVED", "NOT_EXECUTED", "STORED_NOT_OBSERVED"}
+		if baseline.Version != 2 {
+			r.serverScope(len(servers), "STORED_NOT_OBSERVED")
+			r.Baseline.Servers = "STORED_NOT_OBSERVED"
+		}
 	}
 	if loaded || running {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -903,7 +895,11 @@ func (d serviceLifecycle) stopObserved(r *serviceDiagnostic) error {
 					if r.diagnostic != nil {
 						r.diagnostic.Cleanup = "VERIFIED"
 					}
-					fmt.Println("AnyTLS TUN stopped; all server/public routes and DNS restoration verified")
+					if baseline.Version == 2 {
+						fmt.Println("AnyTLS TUN stopped; local public interface and DNS restoration verified; node routes not checked")
+					} else {
+						fmt.Println("AnyTLS TUN stopped; all server/public routes and DNS restoration verified")
+					}
 					return true, nil
 				}
 			} else {
@@ -976,6 +972,9 @@ func (d serviceLifecycle) status() (string, error) {
 		if err := d.restored(baseline, servers); err != nil {
 			return "AnyTLS TUN stopped; restoration_failed; snapshot retained (will be archived on next start)", err
 		}
+		if baseline.Version == 2 {
+			return "AnyTLS TUN stopped; local public interface and DNS restoration verified; node routes not checked; snapshot retained", nil
+		}
 		return "AnyTLS TUN stopped; restoration verified; snapshot retained", nil
 	}
 	if !running {
@@ -998,7 +997,5 @@ func (d serviceLifecycle) status() (string, error) {
 	if !strings.HasPrefix(iface, "utun") {
 		return "AnyTLS TUN running; network not ready; HTTPS not_verified", nil
 	}
-	// No unauthenticated on-disk ready receipt: only start's in-memory HTTPS
-	// evidence can establish full ready. A later status proves network scope only.
-	return "AnyTLS TUN running; network ready; HTTPS not_verified (no retained authoritative evidence)", nil
+	return "AnyTLS TUN running; network ready; HTTPS not_verified (local readiness only; node routes and internet unverified)", nil
 }

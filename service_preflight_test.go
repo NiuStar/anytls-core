@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -249,7 +250,8 @@ func TestServiceStagedVersionDrivesBaseline(t *testing.T) {
 	if err := json.Unmarshal(raw, &baseline); err != nil {
 		t.Fatal(err)
 	}
-	if baseline.Servers["203.0.113.7"] != "en0" || baseline.Servers["203.0.113.2"] != "" {
+	servers, _, compileErr := serviceOutbounds(filepath.Join(d.root, "config.yaml"), true)
+	if compileErr != nil || !slices.Contains(servers, "203.0.113.7") || slices.Contains(servers, "203.0.113.2") || baseline.Version != 2 {
 		t.Fatal("baseline came from pre-stage source")
 	}
 	for _, call := range *calls {

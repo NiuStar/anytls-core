@@ -76,12 +76,31 @@ private final class FocusHTTP: URLProtocol {
     }
     override func stopLoading() {}
 }
+extension NSStatusBar {
+    @objc func focus_statusItem(withLength length: CGFloat)->NSStatusItem {
+        let before=Set(NSApp.windows.map { ObjectIdentifier($0) })
+        // This swizzled call is only the real AppKit status-item factory. Pump
+        // before returning to production, so no delegate UI runs in this scope.
+        let item=focus_statusItem(withLength:length)
+        let button=item.button // Force lazy AppKit host creation inside this scope.
+        let host=button?.window
+        RunLoop.main.run(until:Date().addingTimeInterval(0.5))
+        let created=NSApp.windows.filter { !before.contains(ObjectIdentifier($0)) }
+        guard created.allSatisfy({ NSStringFromClass(type(of:$0)) == "NSStatusBarWindow" && !$0.isKeyWindow }),
+              let host=host,
+              (created+FocusTests.calibratedHosts).contains(where:{ $0 === host }) else {
+            fatalError("status-item factory did not establish exact owned hosts")
+        }
+        FocusTests.calibratedHosts.append(contentsOf:created)
+        return item
+    }
+}
 @main struct FocusTests {
     static var checks=[String](), delegates=[AppDelegate](), children=[Process]()
     static func check(_ ok: @autoclosure ()->Bool,_ name: String) { guard ok() else { print("FAIL: "+name); for child in children where child.isRunning { child.terminate(); child.waitUntilExit() }; exit(1) }; checks.append(name); print("PASS: "+name) }
-    static func pump(_ duration: Double=0.12) { RunLoop.main.run(until:Date().addingTimeInterval(duration)) }
-    static func wait(_ name: String,_ ready: ()->Bool) {
-        let end=Date().addingTimeInterval(5); while !ready() && Date()<end { pump(0.02) }
+    @MainActor static func pump(_ duration: Double=0.12) async { try! await Task.sleep(nanoseconds:UInt64(duration * 1_000_000_000)) }
+    @MainActor static func wait(_ name: String,_ ready: ()->Bool) async {
+        let end=Date().addingTimeInterval(5); while !ready() && Date()<end { await pump(0.02) }
         if !ready() {
             let rows=delegates.map { ["connection":$0.connectionMessage,"runtime":$0.desktop?.message ?? "nil","busy":String($0.desktop?.busy ?? false),"initializing":String($0.model.initializingConnection),"model":$0.model.message,"auth":String($0.model.api.authenticated)] }
             try? JSONSerialization.data(withJSONObject:["wait":name,"delegates":rows,"requests":FocusHTTP.requests,"timeline":FocusHTTP.timeline],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("wait-failure.json"))
@@ -122,14 +141,43 @@ private final class FocusHTTP: URLProtocol {
         runtime.launchConsole={ let p=Process(); p.executableURL=URL(fileURLWithPath:"/bin/sleep"); p.arguments=["60"]; child=p; children.append(p); return p }
         let model=MenuModel(api:APIClient(endpoint:try! LocalEndpoint("http://127.0.0.1:49173"),configuration:Self.config),connectivityMonitor:ConnectivityMonitor(configuration:Self.config))
         let ui=AppDelegate(model:model); ui.desktop=runtime; ui.now={tick}; delegates.append(ui)
-        ui.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification)); return ui
+        ui.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification))
+        hostsReused = hostsReused && (ui.item?.button?.window.map { window in calibratedHosts.contains { $0 === window } } ?? false)
+        return ui
     }
+    // Test-only factory attribution: retain the exact windows made by each
+    // real status-item call, before any subsequent production UI can run.
+    static var statusCalibration: NSStatusItem?
+    static var calibratedHosts=[NSWindow]()
+    static var hostsReused=true
     static var baselineWindows=Set<Int>()
+    static func calibrateStatusHosts() {
+        autoreleasepool {
+            let hidden=NSWindow(contentRect:NSRect(x:0,y:0,width:80,height:40),styleMask:.borderless,backing:.buffered,defer:false)
+            hidden.isReleasedWhenClosed=false; hidden.level = .statusBar
+            statusCalibration=NSStatusBar.system.statusItem(withLength:1)
+            RunLoop.main.run(until:Date().addingTimeInterval(0.12))
+            guard contentWindows().contains(where:{ $0 === hidden }) else {
+                fatalError("status-item attribution swallowed preexisting hidden content window")
+            }
+            hidden.close()
+        }
+        guard !calibratedHosts.isEmpty,
+              calibratedHosts.allSatisfy({ NSStringFromClass(type(of:$0)) == "NSStatusBarWindow" && !$0.isKeyWindow }),
+              calibratedHosts.contains(where:{ $0 === statusCalibration?.button?.window }) else {
+            fatalError("status-item calibration did not establish exact owned hosts")
+        }
+        recordOwnedWindows("status-item calibration before production UI")
+    }
+    static func ownedStatusHost(_ window: NSWindow)->Bool {
+        let original=delegates.contains { window === $0.item?.button?.window }
+        let calibrated=calibratedHosts.contains { $0 === window }
+        let restore=ProcessInfo.processInfo.environment["FOCUS_RESTORE_BUTTON_ONLY_HOST"] == "1"
+        return (restore ? original : calibrated) && NSStringFromClass(type(of:window)) == "NSStatusBarWindow" && !window.isKeyWindow
+    }
     static func contentWindows()->[NSWindow] {
         NSApp.windows.filter { window in
-            !baselineWindows.contains(window.windowNumber) && !delegates.contains { ui in
-                window === ui.item?.button?.window && NSStringFromClass(type(of:window)) == "NSStatusBarWindow" && !window.isKeyWindow
-            }
+            !baselineWindows.contains(window.windowNumber) && !ownedStatusHost(window)
         }
     }
     static func recordOwnedWindows(_ phase: String) {
@@ -144,6 +192,7 @@ private final class FocusHTTP: URLProtocol {
                     "level":window.level.rawValue,"style":window.styleMask.rawValue,
                     "baselineNumberMatch":baselineWindows.contains(window.windowNumber),"ownedButtonWindowMatch":owned,
                     "exactClassMatch":exactClass,"nonKey":!window.isKeyWindow,
+                    "calibratedHostIdentity":calibratedHosts.contains { $0 === window },
                     "includedAsContent":contentWindows().contains { $0 === window }]
         }
         let owners: [[String:Any]]=delegates.map { ui in
@@ -158,12 +207,28 @@ private final class FocusHTTP: URLProtocol {
             try? (bytes+Data([10])).write(to:root.appendingPathComponent("owned-windows.jsonl"))
         }
     }
-    static func quiet(_ ui: AppDelegate,_ name: String) {
-        pump(); recordOwnedWindows(name)
+    @MainActor static func quiet(_ ui: AppDelegate,_ name: String) async {
+        await pump()
+        hostsReused = hostsReused && NSApp.windows.filter { NSStringFromClass(type(of:$0)) == "NSStatusBarWindow" }.allSatisfy { window in calibratedHosts.contains { $0 === window } }
+        hostsReused = hostsReused && delegates.allSatisfy { ui in ui.item?.button?.window.map { window in calibratedHosts.contains { $0 === window } } ?? false }
+        recordOwnedWindows(name)
         check(PresentationProbe.counts == [0,0,0,0],name+" zero activation/front/sheet/modal")
         check(contentWindows().isEmpty,name+" zero application content windows (owned framework status host excluded)")
     }
-    static func main() throws {
+    // AppKit menu teardown can stop the main run loop while the fixture task
+    // is suspended. Own that loop until the task finishes rather than letting
+    // async-main's drain routine mistake a run-loop return for completion.
+    @MainActor static func main() {
+        var outcome: Int32?
+        Task { @MainActor in
+            do { try await run(); outcome=0 }
+            catch { fputs("FAIL: Focus fixture threw\n",stderr); outcome=1 }
+            CFRunLoopStop(CFRunLoopGetMain())
+        }
+        while outcome == nil { CFRunLoopRun() }
+        exit(outcome!)
+    }
+    @MainActor static func run() async throws {
         root=URL(fileURLWithPath:CommandLine.arguments[1]); try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         let app=NSApplication.shared; app.setActivationPolicy(.accessory); app.finishLaunching()
         baselineWindows=Set(app.windows.map { $0.windowNumber })
@@ -171,57 +236,59 @@ private final class FocusHTTP: URLProtocol {
         PresentationProbe.install(NSWindow.self,#selector(NSWindow.makeKeyAndOrderFront(_:)),#selector(NSWindow.focus_makeKeyAndOrderFront(_:)))
         PresentationProbe.install(NSAlert.self,#selector(NSAlert.beginSheetModal(for:completionHandler:)),#selector(NSAlert.focus_beginSheetModal(for:completionHandler:)))
         PresentationProbe.install(NSAlert.self,#selector(NSAlert.runModal),#selector(NSAlert.focus_runModal))
-        let fresh=launch(missing:true); quiet(fresh,"uninitialized startup")
+        PresentationProbe.install(NSStatusBar.self,#selector(NSStatusBar.statusItem(withLength:)),#selector(NSStatusBar.focus_statusItem(withLength:)))
+        calibrateStatusHosts()
+        let fresh=launch(missing:true); await quiet(fresh,"uninitialized startup")
         autoreleasepool {
             let hidden=NSWindow(contentRect:NSRect(x:0,y:0,width:570,height:410),styleMask:[.titled,.closable],backing:.buffered,defer:false)
             hidden.isReleasedWhenClosed=false
             check(contentWindows().contains { $0 === hidden },"negative control detects even a hidden ordinary NSWindow")
             hidden.close()
         }
-        quiet(fresh,"after hidden-window negative control")
+        await quiet(fresh,"after hidden-window negative control")
         check(fresh.item.button!.toolTip!.contains("组件待初始化"),"fresh menu explains explicit native installation")
         check(!fresh.item.menu!.items.contains { $0.title.contains("登录") || $0.title.contains("连接设置") || $0.title.contains("记住") },"manual app login menu removed rather than hidden")
-        let saved=launch(); wait("private pipe automatic startup authenticates") {saved.model.api.authenticated && saved.desktop?.busy==false}
+        let saved=launch(); await wait("private pipe automatic startup authenticates") {saved.model.api.authenticated && saved.desktop?.busy==false}
         check(!saved.model.initializingConnection && saved.connectionMessage.contains("初始化完成"),"startup composition completes only after fresh HTTP and runtime proof")
         check(!FocusHTTP.requests.contains { $0.contains("/service/") },"startup initialization never starts or installs VPN")
-        wait("offline connectivity verdict retained") {saved.model.connectivity == .offline}; quiet(saved,"authenticated offline startup")
+        await wait("offline connectivity verdict retained") {saved.model.connectivity == .offline}; await quiet(saved,"authenticated offline startup")
         check(saved.speedView.icon.contentTintColor == NSColor.systemRed,"offline indication stays red")
         check(saved.item.button!.toolTip!.contains("网络连接失败"),"offline menu stays actionable")
-        for _ in 0..<4 {saved.model.tick(); saved.model.connectivityMonitor!.check(force:true); pump()}; quiet(saved,"background ticks")
+        for _ in 0..<4 {saved.model.tick(); saved.model.connectivityMonitor!.check(force:true); await pump()}; await quiet(saved,"background ticks")
         FocusHTTP.online=true; saved.model.connectivityMonitor!.check(force:true)
-        wait("connectivity recovers") {saved.model.connectivity == .online}; quiet(saved,"network recovery")
-        saved.model.environmentChanged(sleeping:true); quiet(saved,"sleep")
-        saved.model.environmentChanged(); quiet(saved,"wake")
-        saved.model.environmentChanged(); quiet(saved,"path change")
-        check(!saved.applicationShouldHandleReopen(app,hasVisibleWindows:false),"Finder reopen never requests a window"); quiet(saved,"reopen")
+        await wait("connectivity recovers") {saved.model.connectivity == .online}; await quiet(saved,"network recovery")
+        saved.model.environmentChanged(sleeping:true); await quiet(saved,"sleep")
+        saved.model.environmentChanged(); await quiet(saved,"wake")
+        saved.model.environmentChanged(); await quiet(saved,"path change")
+        check(!saved.applicationShouldHandleReopen(app,hasVisibleWindows:false),"Finder reopen never requests a window"); await quiet(saved,"reopen")
         tick=tick.addingTimeInterval(16); FocusHTTP.serviceStatus=401; saved.model.refresh()
-        wait("401 expires session") {!saved.model.api.authenticated}
-        wait("401 during initialization releases actual runtime and model owners") {saved.desktop?.busy==false && !saved.model.initializingConnection}
-        pump(0.4); quiet(saved,"expiry")
+        await wait("401 expires session") {!saved.model.api.authenticated}
+        await wait("401 during initialization releases actual runtime and model owners") {saved.desktop?.busy==false && !saved.model.initializingConnection}
+        await pump(0.4); await quiet(saved,"expiry")
         let failedCount=FocusHTTP.logins
-        for _ in 0..<20 {saved.model.tick(); saved.sessionExpired()}; pump(0.3)
+        for _ in 0..<20 {saved.model.tick(); saved.sessionExpired()}; await pump(0.3)
         check(FocusHTTP.logins==failedCount,"expiry failure never becomes 250ms login loop")
         FocusHTTP.serviceStatus=200
         for status in [401,429] {
-            FocusHTTP.loginStatus=status; let ui=launch(); wait("HTTP \(status) failure completed") {ui.desktop?.busy==false}
-            let count=FocusHTTP.logins; for _ in 0..<10 {ui.model.tick(); ui.sessionExpired(); ui.connectRuntime()}; pump(0.3)
-            check(FocusHTTP.logins==count,"HTTP \(status) cooldown and singleflight"); quiet(ui,"HTTP \(status) failure")
+            FocusHTTP.loginStatus=status; let ui=launch(); await wait("HTTP \(status) failure completed") {ui.desktop?.busy==false}
+            let count=FocusHTTP.logins; for _ in 0..<10 {ui.model.tick(); ui.sessionExpired(); ui.connectRuntime()}; await pump(0.3)
+            check(FocusHTTP.logins==count,"HTTP \(status) cooldown and singleflight"); await quiet(ui,"HTTP \(status) failure")
         }
         FocusHTTP.loginStatus=200
         FocusHTTP.loginOffline=true; let disconnected=launch()
-        wait("offline app session failure completes") { disconnected.desktop?.busy==false }
-        quiet(disconnected,"transport offline"); let offlineCount=FocusHTTP.logins
-        for _ in 0..<12 { disconnected.model.tick(); disconnected.connectRuntime() }; pump(0.2)
+        await wait("offline app session failure completes") { disconnected.desktop?.busy==false }
+        await quiet(disconnected,"transport offline"); let offlineCount=FocusHTTP.logins
+        for _ in 0..<12 { disconnected.model.tick(); disconnected.connectRuntime() }; await pump(0.2)
         check(FocusHTTP.logins==offlineCount,"offline transport never loops application authentication")
         FocusHTTP.loginOffline=false
         tick=tick.addingTimeInterval(16); saved.refresh()
-        wait("explicit refresh reconnects verified runtime") {saved.model.api.authenticated && saved.desktop?.busy==false}; quiet(saved,"reconnection")
+        await wait("explicit refresh reconnects verified runtime") {saved.model.api.authenticated && saved.desktop?.busy==false}; await quiet(saved,"reconnection")
         // Exact production delayed migration callback is now status-only, even
         // when called after fresh authenticated stopped status becomes available.
-        saved.desktop?.onMigrationResume?(); pump(0.5)
-        check(saved.pendingMigrationResume,"late migration records pending user action"); quiet(saved,"late migration completion")
+        saved.desktop?.onMigrationResume?(); await pump(0.5)
+        check(saved.pendingMigrationResume,"late migration records pending user action"); await quiet(saved,"late migration completion")
         check(saved.item.menu!.items.contains {$0.title=="恢复 VPN…"},"pending resume appears in status menu")
-        saved.desktop?.onMigrationResume?(); saved.model.tick(); pump(0.3); quiet(saved,"repeated stale migration callback")
+        saved.desktop?.onMigrationResume?(); saved.model.tick(); await pump(0.3); await quiet(saved,"repeated stale migration callback")
         check(!FocusHTTP.requests.contains {$0.contains("/service/") || $0.contains("/selection")},"all background paths send zero VPN mutations")
         // Real production menu action: explicit Continue, then held asynchronous
         // admission failure. Swizzles suppress the physical modal/activation.
@@ -246,35 +313,35 @@ private final class FocusHTTP: URLProtocol {
         check(installRuntime.message.contains("旧重载事务尚未完成或回执无法验证（CORE_RELOAD_PENDING）") && !installRuntime.busy,"Continue failure exposes allowlisted migration reason")
         check(installUI.item.button!.toolTip!.contains(installRuntime.message) && installUI.item.menu!.items.contains {$0.title==installRuntime.message},"installation failure retained in menu and tooltip")
         check(!installRuntime.message.contains("PRIVATE_SENTINEL") && installCommands == [["desktop","prepare"],["desktop","migration-inspect"]],"installation refusal reveals no raw output and sends zero STOP authorization or credentials")
-        quiet(installUI,"asynchronous installation refusal")
+        await quiet(installUI,"asynchronous installation refusal")
         // Prove a real read-owner collision separately from the pending contract.
         // The APIClient completion barrier below owns no production state: each
         // sentinel must be admitted and completed through the actual transport.
         func savedInstallRow()->NSMenuItem { saved.item.menu!.items.first {$0.action == #selector(AppDelegate.initializeDesktop)}! }
-        func settled(_ ready: ()->Bool) -> Bool {
+        @MainActor func settled(_ ready: ()->Bool) async -> Bool {
             let end=Date().addingTimeInterval(5)
-            while !ready() && Date()<end { pump(0.02) }
+            while !ready() && Date()<end { await pump(0.02) }
             return ready()
         }
         func heldResponse()->(() -> Void)? {
             FocusHTTP.gate.lock(); defer { FocusHTTP.gate.unlock() }; return FocusHTTP.held
         }
-        func drainReads()->Bool {
+        @MainActor func drainReads() async -> Bool {
             let paths=["/status","/helper/status","/nodes","/traffic"]
             var sent=Set<String>(), completed=Set<String>()
-            return settled {
+            return await settled {
                 for path in paths where !sent.contains(path) {
                     if saved.model.api.request(path,completion:{ _ in completed.insert(path) }) { sent.insert(path) }
                 }
                 return completed.count == paths.count
             }
         }
-        let initiallyDrained=drainReads()
+        let initiallyDrained=await drainReads()
         guard initiallyDrained else { check(false,"fixture prior owned reads drain"); return }
         let context=saved.model.quitContext!
         FocusHTTP.gate.lock(); FocusHTTP.holdStatus=true; FocusHTTP.held=nil; FocusHTTP.gate.unlock()
         saved.model.refresh()
-        guard settled({ heldResponse() != nil }) else { check(false,"fixture refresh status held"); return }
+        guard await settled({ heldResponse() != nil }) else { check(false,"fixture refresh status held"); return }
         var collisionOutcomes=[QuitOutcome]()
         FocusHTTP.event("collision before pending=\(saved.model.pending) row=\(savedInstallRow().isEnabled)")
         saved.model.beginQuit(context:context) { collisionOutcomes.append($0) }
@@ -287,7 +354,7 @@ private final class FocusHTTP: URLProtocol {
         if !restoreCollision {
             FocusHTTP.gate.lock(); FocusHTTP.holdStatus=false; let release=FocusHTTP.held; FocusHTTP.held=nil; FocusHTTP.gate.unlock()
             release?()
-            priorReadsDrained=drainReads()
+            priorReadsDrained=await drainReads()
             guard priorReadsDrained else { check(false,"fixture all prior owned reads drain"); return }
         }
         FocusHTTP.gate.lock(); FocusHTTP.holdStatus=true; FocusHTTP.gate.unlock()
@@ -300,18 +367,18 @@ private final class FocusHTTP: URLProtocol {
         saved.reinitializeConnection()
         check(PresentationProbe.counts == [0,0,0,0] && saved.model.pending,"pending quit refuses connection initialization before confirmation")
         check(saved.connectionMessage.contains("当前操作进行中") && PresentationProbe.counts == [0,0,0,0],"stale pending install action explains refusal without dispatch")
-        let quitResponseHeld=settled { heldResponse() != nil }
+        let quitResponseHeld=await settled { heldResponse() != nil }
         saved.model.abandonQuit(context:context)
         let requestsBeforeLate=FocusHTTP.requests.count
         FocusHTTP.gate.lock(); FocusHTTP.holdStatus=false; FocusHTTP.gate.unlock()
         let lateResponse=heldResponse(); lateResponse?()
-        let lateOwnerDrained=drainReads()
+        let lateOwnerDrained=await drainReads()
         let lateFenced=quitOutcomes.isEmpty && saved.model.uncertain && !saved.model.pending
         FocusHTTP.event("late response fenced=\(lateFenced) drained=\(lateOwnerDrained)")
         check(saved.model.uncertain && !savedInstallRow().isEnabled,"unknown result disables installation menu")
         saved.initializeDesktop()
         check(saved.connectionMessage.contains("当前操作结果未知") && saved.connectionMessage.contains("未开始安装") && PresentationProbe.counts == [0,0,0,0],"stale unknown install action explains refusal without retry")
-        quiet(saved,"pending and unknown installation refusal")
+        await quiet(saved,"pending and unknown installation refusal")
         for ui in delegates {ui.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification)); NSStatusBar.system.removeStatusItem(ui.item)}
         for child in children where child.isRunning {child.terminate(); child.waitUntilExit()}
         check(children.allSatisfy {!$0.isRunning},"all owned fixture children reaped")
@@ -347,7 +414,7 @@ private final class FocusHTTP: URLProtocol {
         check(recoveryCommands.count==1 && PresentationProbe.counts == [0,0,0,0] && !recoveryRow().isEnabled,"repeated busy recovery click cannot prompt or dispatch a second STOP")
         recoveryDone?(DesktopCommandResult(code:1,data:Data("{\"error\":\"PRIVATE_SENTINEL\"}".utf8),timedOut:false))
         check(!recovery.busy && recovery.message.contains("未停止 VPN") && !recovery.message.contains("PRIVATE_SENTINEL") && recoveryCommands.count==1,"delayed recovery inspection refusal is bounded nonsecret and mutation free")
-        quiet(recoveryUI,"delayed recovery refusal")
+        await quiet(recoveryUI,"delayed recovery refusal")
         check(recoveryUI.item.button!.toolTip!.contains(recovery.message) && recoveryUI.item.menu!.items.contains {$0.title==recovery.message},"recovery failure persists in actual menu and tooltip")
         let savedRecovery=saved.item.menu!.items.first {$0.action==selector}!
         check(!savedRecovery.isEnabled,"model UNKNOWN disables recovery despite runtime setup eligibility")
@@ -380,7 +447,7 @@ private final class FocusHTTP: URLProtocol {
         uiCommitDone?(DesktopCommandResult(code:1,data:Data(),timedOut:true))
         recoveryUI.recoverDesktop()
         check(uiSTOPs==1 && !uiRuntime.intents.present && (try? uiRuntime.intents.loadRecovery())?.state=="RECOVERY_UNKNOWN","actual production timeout keeps recovery UNKNOWN and zero authorization")
-        quiet(recoveryUI,"delayed recovery STOP timeout")
+        await quiet(recoveryUI,"delayed recovery STOP timeout")
         // New connection initialization composes the shipping delegate, runtime,
         // URLProtocol session and persistent store; no standalone model shortcut.
         let blocked=recoveryUI.desktop!, durableBefore=try Data(contentsOf:URL(fileURLWithPath:durableUIRoot).appendingPathComponent("recovery.json"))
@@ -402,10 +469,10 @@ private final class FocusHTTP: URLProtocol {
         PresentationProbe.activations=0; PresentationProbe.modals=0
         saved.reinitializeConnection()
         check(PresentationProbe.counts == [0,0,0,0],"in-flight initialization refuses repeated confirmation")
-        wait("explicit reinitialization composes fresh runtime login and observations") { !saved.model.initializingConnection && saved.desktop?.busy == false }
+        await wait("explicit reinitialization composes fresh runtime login and observations") { !saved.model.initializingConnection && saved.desktop?.busy == false }
         check(saved.model.api.authenticated && !saved.model.uncertain && saved.model.message.contains("不追认"),"fresh composition clears only transient UNKNOWN without historical success")
         check(FocusHTTP.logins==loginBefore+1 && !FocusHTTP.requests.contains {$0.contains("/service/") || $0.contains("/selection")},"explicit reinitialization sends one login and zero lifecycle or selection mutations")
-        quiet(saved,"completed explicit reinitialization")
+        await quiet(saved,"completed explicit reinitialization")
         holdInspection=true
         let raced=launch(), oldInspection=heldInspection!, oldResult=lastInspectResult!
         oldInspection(DesktopCommandResult(code:1,data:Data(),timedOut:false))
@@ -416,8 +483,8 @@ private final class FocusHTTP: URLProtocol {
         oldInspection(oldResult)
         check(raced.model.initializingConnection && raced.desktop?.busy == true && launchCommands.count==commands,"obsolete runtime inspect callback cannot reopen or finish newer initialization")
         holdInspection=false; newInspection(newResult)
-        wait("new initialization succeeds after obsolete callback rejection") {raced.model.api.authenticated && !raced.model.initializingConnection && raced.desktop?.busy==false}
-        quiet(raced,"late callback fenced initialization")
+        await wait("new initialization succeeds after obsolete callback rejection") {raced.model.api.authenticated && !raced.model.initializingConnection && raced.desktop?.busy==false}
+        await quiet(raced,"late callback fenced initialization")
         raced.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification))
         if let child=raced.desktop?.console, child.isRunning { child.terminate(); child.waitUntilExit() }
         check(!launchCommands.contains {$0.contains("prepare") || $0.contains("helper-install-root") || $0.contains("migration-commit")} && !FocusHTTP.requests.contains {$0.contains("/service/")},"new initialization composition never installs authorizes or starts VPN")
@@ -425,7 +492,7 @@ private final class FocusHTTP: URLProtocol {
         if let child=saved.desktop?.console, child.isRunning { child.terminate(); child.waitUntilExit() }
         recoveryUI.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification)); NSStatusBar.system.removeStatusItem(recoveryUI.item)
         FocusHTTP.nodeNames=["UI node","UI other"]
-        let live=launch(); wait("live probe fixture authenticated") { live.model.canProbe }
+        let live=launch(); await wait("live probe fixture authenticated") { live.model.canProbe }
         live.render()
         let rootMenu=live.item.menu!
         live.menuWillOpen(rootMenu)
@@ -435,13 +502,13 @@ private final class FocusHTTP: URLProtocol {
         live.menuWillOpen(nodesMenu)
         let button=probeItem.view!.subviews.first as! NSButton
         button.performClick(nil)
-        wait("live probe client holds two simultaneous requests") { FocusHTTP.gate.lock();defer { FocusHTTP.gate.unlock() };return FocusHTTP.heldProbes.count==2 }
+        await wait("live probe client holds two simultaneous requests") { FocusHTTP.gate.lock();defer { FocusHTTP.gate.unlock() };return FocusHTTP.heldProbes.count==2 }
         check(rootMenu.items.first { $0.title == "启动节点" }?.submenu === nodesMenu && nodesMenu.items[0] === probeItem,"root and submenu item identities stable while tracking")
         check(!button.isEnabled && button.title.contains("0/2") && nodesMenu.items[3].title.contains("测试中"),"same native rows show progress and testing without reopening")
         FocusHTTP.gate.lock();let finishes=FocusHTTP.heldProbes;FocusHTTP.heldProbes=[];FocusHTTP.gate.unlock()
-        finishes[1]();wait("out of order result appears during tracking") { nodesMenu.items[4].title.contains("不可用") }
+        finishes[1]();await wait("out of order result appears during tracking") { nodesMenu.items[4].title.contains("不可用") }
         check(nodesMenu.items[3].title.contains("测试中") && button.title.contains("1/2"),"partial live progress changes only completed row")
-        finishes[0]();wait("live batch finishes without menu rebuild") { !live.model.probing }
+        finishes[0]();await wait("live batch finishes without menu rebuild") { !live.model.probing }
         check(button.isEnabled && nodesMenu.items[0] === probeItem && nodesMenu.items[3].title.contains("上次"),"same probe button reenabled and completed result retained in place")
         live.menuDidClose(nodesMenu);live.menuDidClose(rootMenu)
         // Exercise actual AppKit tracking, not only delegate callback simulation.
@@ -475,17 +542,35 @@ private final class FocusHTTP: URLProtocol {
             timer.invalidate(); popup.cancelTrackingWithoutAnimation()
         }
         RunLoop.main.add(nativeTimer,forMode:.eventTracking)
-        popup.popUp(positioning:nil,at:NSPoint(x:30,y:30),in:nil)
+        // Suspend the enclosing main-actor task before entering AppKit's own
+        // event-tracking loop. A nested popup inside that task starves GCD.
+        await withCheckedContinuation { (continuation:CheckedContinuation<Void,Never>) in
+            let entry=Timer(timeInterval:0,repeats:false) { _ in
+                popup.popUp(positioning:nil,at:NSPoint(x:30,y:30),in:nil)
+                continuation.resume()
+            }
+            RunLoop.main.add(entry,forMode:.default)
+        }
         nativeTimer.invalidate()
         try JSONSerialization.data(withJSONObject:["counts":admissionCounts,"splitObserved":splitObserved,"clicked":clicked,"stayed":stayed,"delivered":delivered,"probing":live.model.probing],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("popup-admission.json"))
         check(clicked && stayed,"actual AppKit popUp tracking remains presented after native probe button click")
         check(delivered && !live.model.probing && popup.items[3].title.contains("上次"),"real event-tracking run loop delivers client results and updates existing native rows")
         FocusHTTP.gate.lock(); FocusHTTP.splitProbeAdmission=false;let closing=FocusHTTP.heldProbes;FocusHTTP.heldProbes=[];FocusHTTP.gate.unlock()
         live.model.stopPolling();for finish in closing { finish() }
-        pump()
+        await pump()
         check(popupButton.window == nil,"explicit menu close is respected and late completion never reopens it")
         check(splitObserved && admissionCounts.prefix(2).elementsEqual([1,2]),"native fixture preserves first completion owner across split transport admission")
         live.model.stopPolling(); live.model.api.reset()
+        // Append after the complete original 125-check inventory.
+        check(!calibratedHosts.isEmpty && calibratedHosts.contains { $0 === statusCalibration?.button?.window },"controlled status-item creation establishes exact framework host identities before production UI")
+        check(hostsReused,"production status-item factory scopes attribute every exact host object throughout quiet scenarios")
+        autoreleasepool {
+            let hidden=NSWindow(contentRect:NSRect(x:0,y:0,width:80,height:40),styleMask:.borderless,backing:.buffered,defer:false)
+            hidden.isReleasedWhenClosed=false; hidden.level = .statusBar
+            check(!hidden.isVisible && !hidden.isKeyWindow && contentWindows().contains { $0 === hidden },"hidden nonkey ordinary window at status-bar level remains content despite calibrated hosts")
+            hidden.close()
+        }
+        NSStatusBar.system.removeStatusItem(statusCalibration!)
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"presentationCounts":PresentationProbe.counts,"realNetworkRequests":0,"productionKeychainAccessed":false,"osPollingObserversDisabledInFixture":true],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("focus-checks.json"))
         print("FOCUS_TESTS_OK checks=\(checks.count)")
     }

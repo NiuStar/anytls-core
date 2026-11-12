@@ -12,10 +12,10 @@ anytls command (Go)
 ```
 
 - 用户入口解引用符号链接后寻找同目录 config.yaml、sing-box。
-- start 先解析配置、核对引用节点物理路由、拒绝已加载服务，生成当次服务快照。
+- start 先解析配置／TLS 策略、捕获公共物理接口与原始 DNS、拒绝已加载服务，生成当次服务快照。
 - service/ 复制程序、核心、YAML、选中状态、SHA 校验过的规则文件；路径改写到快照。
 - root 快照与用户目录更新隔离；改配置需要显式 stop/start，不自动热切换。
-- 不以进程存在代替启动成功：检查公网 TUN 路由、服务器旁路与 HTTPS 响应。
+- 不以进程存在代替启动成功：核验本地配置／TLS 策略、运行进程、同一公网 TUN 路由、非空 DNS 和回执；不逐节点查路由或同步探测 HTTPS，保留所有出口静态 host exclusions 与 auto_detect_interface。
 - stop 仅卸载固定 label 的本工具任务，并对比路由与 DNS 基线。恢复核对失败须人工检查。
 
 ## 分流转换
