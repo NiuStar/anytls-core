@@ -228,6 +228,101 @@ extension NSStatusBar {
         while outcome == nil { CFRunLoopRun() }
         exit(outcome!)
     }
+
+    @MainActor static func closedMenuComparison() async throws {
+        let api=APIClient(endpoint:try! LocalEndpoint("http://127.0.0.1:49173"),configuration:Self.config)
+        let model=MenuModel(api:api,connectivityMonitor:nil)
+        var logged=false; api.login(password:"OWNED_SYNTHETIC_ONLY") { logged=$0 }
+        await wait("closed fixture real API login") { logged }
+        let ui=AppDelegate(model:model); ui.desktop=nil; delegates.append(ui)
+        ui.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification))
+        var results=[[String:Any]]()
+        func rows(_ menu:NSMenu)->[String] {
+            var out=[String]()
+            for row in menu.items {
+                let snap=row.representedObject as? [String:Any] ?? [:]
+                let button=row.view?.subviews.first as? NSButton
+                out.append([row.title,String(row.isEnabled),String(row.state.rawValue),row.toolTip ?? "",row.action.map { NSStringFromSelector($0) } ?? "",String(describing:snap["name"] ?? ""),String(describing:snap["etag"] ?? ""),String(describing:snap["generation"] ?? ""),button?.title ?? "",String(button?.isEnabled ?? false)].joined(separator:"|"))
+                if let sub=row.submenu { out += rows(sub) }
+            }; return out
+        }
+        func oracle(_ name:String) {
+            let actual=rows(ui.item.menu!); ui.fixtureForceRebuild()
+            check(actual == rows(ui.item.menu!),"closed fresh-build oracle "+name)
+        }
+        func objects(_ menu:NSMenu)->[NSMenuItem] { menu.items.flatMap { row in [row]+(row.submenu.map { objects($0) } ?? []) } }
+        for count in [1,20,200] {
+            model.fixtureSeed(count:count);ui.render()
+            let kept=objects(ui.item.menu!)
+            let initial=ui.fixtureRebuilds
+            var elapsed=[Double]()
+            let original=model.onChange;var callbacks=0
+            model.onChange={ callbacks += 1; original?() }
+            let startRequests=FocusHTTP.requests.count
+            for i in 1...60 {
+                let start=DispatchTime.now().uptimeNanoseconds
+                model.fixtureTraffic(i)
+                elapsed.append(Double(DispatchTime.now().uptimeNanoseconds-start))
+            }
+            let rebuilt=ui.fixtureRebuilds-initial
+            let retained=kept.count==objects(ui.item.menu!).count && zip(kept,objects(ui.item.menu!)).allSatisfy { $0 === $1 }
+            let trafficCallbacks=callbacks
+            // Independent equal-input virtual-clock window: real installed Timer
+            // and actual URLProtocol/API owners, not inferred request budgets.
+            model.startPolling();model.pollingTimer!.fireDate = .distantFuture
+            for _ in 1...60 {
+                model.fixtureClockAdvance();model.pollingTimer!.fire()
+                await waitSilent { model.api.requestsInFlight == 0 }
+            }
+            model.stopPolling();model.onChange=original
+            results.append(["nodes":count,"trafficRenders":60,"rebuilds":rebuilt,"retainedRootItems":retained,"trafficCallbacks":trafficCallbacks,"timerCallbacks":callbacks-trafficCallbacks,"requests":Array(FocusHTTP.requests.dropFirst(startRequests)),"elapsedNs":elapsed])
+            let baseline=ProcessInfo.processInfo.environment["CLOSED_BASELINE"] == "1"
+            if !baseline { check(rebuilt == 0 && retained,"closed traffic-only retains all menu objects \(count) nodes") }
+            else { check(rebuilt >= 60 && !retained,"baseline witnesses traffic menu reconstruction \(count) nodes") }
+            oracle("traffic \(count)")
+        }
+        // Keep the recorded baseline even though the new performance contract is RED.
+        try JSONSerialization.data(withJSONObject:results,options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("closed-comparison.json"))
+        if ProcessInfo.processInfo.environment["CLOSED_BASELINE"] == "1" {
+            check(results.allSatisfy { ($0["rebuilds"] as! Int)==0 },"closed traffic-only contract RED on accepted Stage1")
+        }
+        for field in ["order","selected","skipVerify","needsSync","selectable","name","etag","generation"] {
+            model.fixtureSeed(count:20);ui.render();let previous=ui.item.menu!.items
+            model.fixtureStructure(field);ui.render()
+            check(!zip(previous,ui.item.menu!.items).allSatisfy { $0 === $1 },"closed structural invalidation "+field)
+            oracle(field)
+        }
+        var relogged=false;api.login(password:"OWNED_SYNTHETIC_ONLY") { relogged=$0 }
+        await wait("closed safety fixture reauthenticated") { relogged }
+        model.fixtureSeed(count:20);ui.render()
+        model.fixtureLatency(1_700_000_000);ui.render()
+        let latencyItem=ui.item.menu!.items.first {$0.title=="启动节点"}!.submenu!.items[3]
+        let oldTooltip=latencyItem.toolTip, oldTitle=latencyItem.title
+        model.fixtureLatency(1_700_000_060);ui.render()
+        check(latencyItem.title==oldTitle && latencyItem.toolTip != oldTooltip,"same latency label updates checkedAt tooltip without replacing node")
+        oracle("latency checkedAt")
+        let beforeFeedback=objects(ui.item.menu!)
+        model.fixtureFeedback();ui.render()
+        check(zip(beforeFeedback,objects(ui.item.menu!)).allSatisfy {$0 === $1} && ui.item.menu!.items.contains {$0.title==model.message} && ui.item.menu!.items.contains {$0.title==model.failureDiagnostic?.explanation},"diagnostic and model feedback update without rebuilding")
+        oracle("diagnostic feedback")
+        for state in ["expiry","recovered","helperOff","helperOn","pending","free","unknown","free","sleep","wake","noauth"] {
+            model.fixtureSafety(state);ui.render();oracle(state)
+        }
+        model.fixtureSeed(count:20);ui.render()
+        let root=ui.item.menu!, held=root.items
+        ui.menuWillOpen(root);model.fixtureStructure("etag");ui.render()
+        check(zip(held,root.items).allSatisfy { $0 === $1 },"open structural change retains menu identities")
+        check(root.items.first {$0.title=="启动节点"}!.submenu!.items.dropFirst(3).allSatisfy {!$0.isEnabled},"open obsolete node representations stay disabled")
+        ui.menuDidClose(root);oracle("closed after open stale structure")
+        check(PresentationProbe.counts == [0,0,0,0],"closed incremental path zero focus presentation calls")
+        ui.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification));NSStatusBar.system.removeStatusItem(ui.item)
+    }
+    @MainActor static func waitSilent(_ ready:()->Bool) async {
+        let end=Date().addingTimeInterval(5)
+        while !ready() && Date()<end { await pump(0.005) }
+        guard ready() else { fatalError("closed fixture owner drain timeout") }
+    }
+
     @MainActor static func run() async throws {
         root=URL(fileURLWithPath:CommandLine.arguments[1]); try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         let app=NSApplication.shared; app.setActivationPolicy(.accessory); app.finishLaunching()
@@ -238,6 +333,7 @@ extension NSStatusBar {
         PresentationProbe.install(NSAlert.self,#selector(NSAlert.runModal),#selector(NSAlert.focus_runModal))
         PresentationProbe.install(NSStatusBar.self,#selector(NSStatusBar.statusItem(withLength:)),#selector(NSStatusBar.focus_statusItem(withLength:)))
         calibrateStatusHosts()
+        if ProcessInfo.processInfo.environment["CLOSED_ONLY"] == "1" { try await closedMenuComparison(); return }
         let fresh=launch(missing:true); await quiet(fresh,"uninitialized startup")
         autoreleasepool {
             let hidden=NSWindow(contentRect:NSRect(x:0,y:0,width:570,height:410),styleMask:[.titled,.closable],backing:.buffered,defer:false)
@@ -253,7 +349,7 @@ extension NSStatusBar {
         check(!FocusHTTP.requests.contains { $0.contains("/service/") },"startup initialization never starts or installs VPN")
         await wait("offline connectivity verdict retained") {saved.model.connectivity == .offline}; await quiet(saved,"authenticated offline startup")
         check(saved.speedView.icon.contentTintColor == NSColor.systemRed,"offline indication stays red")
-        check(saved.item.button!.toolTip!.contains("网络连接失败"),"offline menu stays actionable")
+        check(saved.item.button!.toolTip!.contains("联网检测未通过"),"offline menu stays actionable")
         for _ in 0..<4 {saved.model.tick(); saved.model.connectivityMonitor!.check(force:true); await pump()}; await quiet(saved,"background ticks")
         FocusHTTP.online=true; saved.model.connectivityMonitor!.check(force:true)
         await wait("connectivity recovers") {saved.model.connectivity == .online}; await quiet(saved,"network recovery")
@@ -570,6 +666,50 @@ extension NSStatusBar {
             check(!hidden.isVisible && !hidden.isKeyWindow && contentWindows().contains { $0 === hidden },"hidden nonkey ordinary window at status-bar level remains content despite calibrated hosts")
             hidden.close()
         }
+        // UX regressions run after the complete predecessor inventory.
+        let feedback=launch(); await wait("feedback fixture authenticated") { feedback.model.canMutate }
+        feedback.render()
+        let feedbackMenu=feedback.item.menu!
+        var identities=[ObjectIdentifier](), fixedChanged=false, controlsDisabled=false, stable=false
+        let feedbackTimer=Timer(timeInterval:0.15,repeats:false) { _ in
+            identities=feedbackMenu.items.map { ObjectIdentifier($0) }
+            feedback.model.environmentChanged(sleeping:true)
+            feedback.render()
+            stable=identities == feedbackMenu.items.map { ObjectIdentifier($0) }
+            fixedChanged=feedbackMenu.items[0].title.contains("状态未知") && feedbackMenu.items.contains { $0.title == feedback.model.message }
+            controlsDisabled=feedbackMenu.items.filter { ["启动 VPN","停止 VPN","重新连接…"].contains($0.title) }.allSatisfy { !$0.isEnabled }
+            feedbackMenu.cancelTrackingWithoutAnimation()
+        }
+        RunLoop.main.add(feedbackTimer,forMode:.eventTracking)
+        await withCheckedContinuation { (continuation:CheckedContinuation<Void,Never>) in
+            let entry=Timer(timeInterval:0,repeats:false) { _ in
+                feedbackMenu.popUp(positioning:nil,at:NSPoint(x:30,y:30),in:nil); continuation.resume()
+            };RunLoop.main.add(entry,forMode:.default)
+        }
+        check(stable,"actual root popup updates fixed rows without insertion removal or identity replacement")
+        check(fixedChanged,"actual root popup immediately updates status and model feedback")
+        check(controlsDisabled,"actual root popup disables stale service controls")
+        feedback.model.environmentChanged(); await wait("feedback fixture revalidated") { feedback.model.canMutate }
+        feedback.menuWillOpen(feedbackMenu)
+        feedback.model.api.reset();feedback.render()
+        check(feedbackMenu.items.filter { ["启动 VPN","停止 VPN","重新连接…","安装／更新组件…"].contains($0.title) }.allSatisfy { !$0.isEnabled },"old menu generation never re-enables stale actions")
+        feedback.menuDidClose(feedbackMenu)
+        let privatePasteboard=NSPasteboard(name:NSPasteboard.Name("AnyTLS-UX-"+UUID().uuidString))
+        privatePasteboard.setString("OWNED_SENTINEL",forType:.string)
+        feedback.copyFailureDiagnostic(to:privatePasteboard)
+        check(privatePasteboard.string(forType:.string) == "OWNED_SENTINEL","missing diagnostic leaves private clipboard unchanged")
+        feedback.connectRuntime(userInitiated:true); await wait("diagnostic fixture revalidated") { feedback.model.canMutate }
+        feedback.model.mutate(path:"/service/stop",consent:false)
+        await wait("unknown diagnostic callback retained") { !feedback.model.pending && feedback.model.failureDiagnostic != nil }
+        feedback.copyFailureDiagnostic(to:privatePasteboard)
+        let copied=privatePasteboard.string(forType:.string) ?? ""
+        check(copied.contains("未验证／未知") && copied.contains("不追认"),"private clipboard copies fixed unknown summary without claiming ACK")
+        check(!copied.contains("fixture") && !copied.contains("127.0.0.1") && !copied.contains("UI node"),"private diagnostic excludes runtime body endpoint and nodes")
+        check(feedback.model.uncertain && !feedback.model.canMutate,"diagnostic copy never unlocks UNKNOWN or retries")
+        privatePasteboard.releaseGlobally()
+        feedback.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification));NSStatusBar.system.removeStatusItem(feedback.item)
+        if let child=feedback.desktop?.console, child.isRunning {child.terminate();child.waitUntilExit()}
+        try await closedMenuComparison()
         NSStatusBar.system.removeStatusItem(statusCalibration!)
         try JSONSerialization.data(withJSONObject:["checks":checks,"count":checks.count,"presentationCounts":PresentationProbe.counts,"realNetworkRequests":0,"productionKeychainAccessed":false,"osPollingObserversDisabledInFixture":true],options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("focus-checks.json"))
         print("FOCUS_TESTS_OK checks=\(checks.count)")

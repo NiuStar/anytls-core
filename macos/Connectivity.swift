@@ -4,6 +4,11 @@ import FoundationNetworking
 #endif
 
 enum ConnectivityState: Equatable { case idle, checking, online, offline }
+enum ConnectivityReason: String { case empty204 = "EMPTY_204", checksFailed = "CHECKS_FAILED" }
+struct ConnectivityObservation: Equatable {
+    let finishedAt: TimeInterval
+    let reason: ConnectivityReason
+}
 
 // Main-queue owned. This checks OS-routed HTTPS, not a particular node/exit.
 // Call check() while authenticated/running; cancel() on service/session changes.
@@ -28,6 +33,7 @@ final class ConnectivityMonitor {
     private var session: URLSession?
     private var delegate: ConnectivityDelegate?
     private var lastFinished: TimeInterval?
+    private(set) var observation: ConnectivityObservation?
     private var retryInterval: TimeInterval = 30
     private var deadline: TimeInterval = 0
     private var remaining = 0
@@ -95,7 +101,7 @@ final class ConnectivityMonitor {
         generation &+= 1
         expiry?.cancel(); expiry = nil
         session?.invalidateAndCancel(); session = nil; delegate = nil
-        remaining = 0; lastFinished = nil
+        remaining = 0; lastFinished = nil; observation = nil
         setState(.idle)
     }
 
@@ -107,6 +113,7 @@ final class ConnectivityMonitor {
         remaining = 0
         let finished = now()
         lastFinished = finished
+        observation = ConnectivityObservation(finishedAt:finished,reason:result == .online ? .empty204 : .checksFailed)
         validUntil = result == .online ? finished + 45 : nil
         retryInterval = result == .offline ? 15 : 30
         if result == .online {

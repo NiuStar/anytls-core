@@ -214,6 +214,15 @@ private final class ConnectivityFixture: URLProtocol {
         expect(boundary.state == .idle, "new generation proof expires at its own exact deadline")
         expect(proofRequests == 2 && ConnectivityFixture.count == 2, "monotonic expiry does not auto-mutate or retry")
         boundary.cancel()
+        expect(boundary.observation == nil,"cancel clears recent result and reason")
+        ConnectivityFixture.prepare([.empty,.empty]); clock=2000
+        boundary.check(); wait(boundary)
+        let observed=boundary.observation
+        expect(observed?.finishedAt == 2000 && observed?.reason == .empty204,"recent observation records actual finish clock and bounded reason")
+        clock=2045
+        expect(boundary.state == .idle && boundary.observation == observed,"expired proof retains historical observation without refreshing its time")
+        boundary.cancel()
+        expect(boundary.observation == nil,"replacement generation cannot inherit historical observation")
         print("CONNECTIVITY_TESTS_PASS assertions=\(assertions) elapsed=\(ProcessInfo.processInfo.systemUptime - started)")
     }
 }

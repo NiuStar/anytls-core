@@ -42,6 +42,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var pendingMigrationResume=false
     private var menu: NSMenu!
     private var trackingMenus=Set<ObjectIdentifier>()
+    private var fixedRows=[String:NSMenuItem]()
+    // Ordered structural projection: changes replace closed-menu snapshots only.
+    private struct NodeStructure: Equatable {
+        let name: String
+        let selected, selectable, skipVerify, needsSync: Bool
+        init(_ node: Node) { name=node.name; selected=node.selected; selectable=node.selectable; skipVerify=node.skipVerify; needsSync=node.needsSync }
+    }
+    private var menuNodes=[NodeStructure]()
+    private var nodePresentation=[String:[String]]()
+    #if FOCUS_TESTS
+    var fixtureRebuilds=0
+    private var fixtureState=""
+    func fixtureForceRebuild() { rebuildMenu(state:fixtureState) }
+    #endif
+    private var menuGeneration = -1
+    private var menuETag=""
     private var probeItem: NSMenuItem?
     private var probeButton: NSButton?
     private var latencyRows=[String:(NSMenuItem,String)]()
@@ -118,21 +134,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let network: String
         switch model.connectivity {
         case .checking: network="正在检查网络连接…"
-        case .online: network="网络已连接"
-        case .offline: network="网络连接失败，建议切换节点，若仍失败请检查本地网络"
-        case .idle: network="VPN 运行中"
+        case .online: network="VPN 本地运行 · 联网检测通过"
+        case .offline: network="VPN 本地运行，联网检测未通过（不等于节点失效）；可手动切换节点或检查网络"
+        case .idle: network="VPN 本地运行 · 尚未检测或已过期"
         }
         let state = !model.api.authenticated ? connectionMessage : model.uncertain ? "操作结果未知" : model.status.map { $0.running ? network : ($0.loaded ? "VPN 已加载 · 未运行" : "VPN 未启动") } ?? "状态未知"
         item.button?.toolTip="AnyTLS · \(state)\n↑ \(up)  ↓ \(down)"
         item.button?.setAccessibilityLabel("AnyTLS，\(state)，上传 \(up)，下载 \(down)")
         speedView.icon.contentTintColor = model.connectivity == .offline ? .systemRed : .labelColor
-        speedView.icon.setAccessibilityLabel(model.connectivity == .offline ? "AnyTLS，网络连接失败，建议切换节点，若仍失败请检查本地网络" : "AnyTLS，\(state)")
+        speedView.icon.setAccessibilityLabel("AnyTLS，\(state)")
         if !connectionMessage.isEmpty { item.button?.toolTip?.append("\n"+connectionMessage) }
         if let desktop=desktop { item.button?.toolTip?.append("\n"+desktop.message) }
         if !quitCoordinator.message.isEmpty { item.button?.toolTip?.append("\n"+quitCoordinator.message) }
         if let rate=rate { item.button?.toolTip?.append("\n本实例累计上传 \(rate.totalUpload) bytes，下载 \(rate.totalDownload) bytes") }
-        // Never rebuild an open menu under the pointer. Refresh its contents on open.
-        if !menuIsOpen { rebuildMenu(state:state) } else { updateProbeRows() }
+        #if FOCUS_TESTS
+        fixtureState=state
+        #endif
+        // Traffic and feedback change presentation, not menu structure. Bundle
+        // versions are immutable for this process and are allocated on first build.
+        let structural = menuGeneration != model.api.generation || menuETag != model.etag || menuNodes != model.nodes.map { NodeStructure($0) }
+        if !menuIsOpen && structural { rebuildMenu(state:state) }
+        else { updateFixedRows(state:state); updateProbeRows() }
     }
     private var menuIsOpen=false
     func menuWillOpen(_ opening: NSMenu) {
@@ -152,35 +174,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fresh=snapshot?["etag"] as? String == model.etag && snapshot?["generation"] as? Int == model.api.generation
         probe.isEnabled=fresh && model.canProbe && !model.probing && desktop?.blocksQuit != true && !terminationPending
         probeButton?.isEnabled=probe.isEnabled
-        for (name,(row,title)) in latencyRows {
-            row.title=title+"\t"+model.latencyLabel(name)
-            let paragraph=NSMutableParagraphStyle(); paragraph.tabStops=[NSTextTab(textAlignment:.right,location:520,options:[:])]
-            row.attributedTitle=NSAttributedString(string:row.title,attributes:[.paragraphStyle:paragraph])
-            row.toolTip=model.latencyTooltip(name)
-            if !fresh { row.isEnabled=false }
+        let structureCurrent=menuNodes == model.nodes.map { NodeStructure($0) }
+        let canSelect=model.canMutate && desktop?.blocksQuit != true && !terminationPending && !model.etag.isEmpty
+        for node in menuNodes {
+            let name=node.name
+            guard let (row,title)=latencyRows[name] else { continue }
+            let label=model.latencyLabel(name), tooltip=model.latencyTooltip(name)
+            let presentation=[label,tooltip ?? ""]
+            if nodePresentation[name] != presentation {
+                row.title=title+"\t"+label
+                let paragraph=NSMutableParagraphStyle(); paragraph.tabStops=[NSTextTab(textAlignment:.right,location:520,options:[:])]
+                row.attributedTitle=NSAttributedString(string:row.title,attributes:[.paragraphStyle:paragraph])
+                row.toolTip=tooltip; nodePresentation[name]=presentation
+            }
+            let snapshot=row.representedObject as? [String:Any]
+            let own=snapshot?["name"] as? String == name && snapshot?["etag"] as? String == model.etag && snapshot?["generation"] as? Int == model.api.generation
+            // Restore only our current representation; old tracking snapshots
+            // cannot inherit authorization from a newly observed configuration.
+            row.isEnabled=own && structureCurrent && canSelect && node.selectable && (!node.selected || node.needsSync)
         }
     }
     @objc private func probeButtonClicked(_ sender: NSButton) { if let probe=probeItem { probeNodes(probe) } }
+    private func updateFixedRows(state: String) {
+        fixedRows["state"]?.title="AnyTLS · \(state)"
+        fixedRows["message"]?.title=model.api.authenticated ? model.message : "本机控制台尚未连接"
+        fixedRows["desktop"]?.title=desktop?.message ?? "组件状态尚未读取"
+        fixedRows["quitMessage"]?.title=quitCoordinator.message.isEmpty ? "退出时将核实停止 VPN" : quitCoordinator.message
+        fixedRows["connection"]?.title=connectionMessage.isEmpty ? "连接初始化无待处理消息" : connectionMessage
+        fixedRows["blocked"]?.title=model.pending || model.uncertain ? model.message+"；暂不能安装／更新组件，请先在完整控制台核实" : "组件操作仍须明确确认"
+        if let observation=model.connectivityObservation {
+            fixedRows["networkObservation"]?.title="最近联网检测："+observation.reason.rawValue+" · 完成于本次开机第 \(Int(observation.finishedAt)) 秒（OS 路由 HTTPS）"
+        } else { fixedRows["networkObservation"]?.title="最近联网检测：尚无当前会话结果" }
+        fixedRows["helper"]?.title=model.api.authenticated && !model.helperAvailable ? "助手不可用：请在完整控制台检查" : "助手状态以当前读取为准"
+        fixedRows["diagnostic"]?.title=model.failureDiagnostic?.explanation ?? "暂无已验证失败原因；未知结果仍须核实"
+        let fresh=menuGeneration == model.api.generation && menuETag == model.etag
+        let free = !terminationPending && !model.pending && !model.uncertain
+        let can=fresh && model.canMutate && desktop?.blocksQuit != true && !terminationPending
+        let status=model.status
+        let controls: [String:Bool] = [
+            "install":fresh && desktop?.busy == false && free,
+            "reinit":fresh && desktop?.blocksQuit == false && !terminationPending && !model.pending && !attaching && !model.initializingConnection,
+            "recover":fresh && desktop?.recoveryAllowed == true && free,
+            "complete":fresh && desktop?.recoveryCompletionAllowed == true && free,
+            "retry":fresh && desktop?.authorizationRetryAllowed == true && free,
+            "resume":pendingMigrationResume && can && status?.running == false && status?.loaded == false,
+            "start":can && status?.running == false && status?.loaded == false,
+            "stop":can && (status?.running == true || status?.loaded == true),
+            "reload":can && status?.running == true,
+            "refresh":!terminationPending && !attaching,
+            "copy":model.failureDiagnostic != nil,
+            "quit":!terminationPending && !model.pending && desktop?.blocksQuit != true]
+        for (key,enabled) in controls { fixedRows[key]?.isEnabled=enabled }
+        // Never revive stale selection snapshots under the pointer.
+        if !can { for (_,entry) in latencyRows { entry.0.isEnabled=false } }
+    }
+    func copyFailureDiagnostic(to pasteboard: NSPasteboard) {
+        guard let diagnostic=model.failureDiagnostic else { return }
+        pasteboard.clearContents(); pasteboard.setString(diagnostic.summary,forType:.string)
+    }
+    @objc private func copyDiagnostic() { copyFailureDiagnostic(to:.general) }
     private func rebuildMenu(state: String) {
+        #if FOCUS_TESTS
+        fixtureRebuilds += 1
+        #endif
+        menuNodes=model.nodes.map { NodeStructure($0) }; nodePresentation=[:]
         menu.removeAllItems()
-        latencyRows=[:]; probeItem=nil; probeButton=nil
-        add("AnyTLS · \(state)",enabled:false)
-        if model.api.authenticated { add(model.message,enabled:false) }
-        add("安装／更新组件…",#selector(initializeDesktop),enabled:desktop?.busy == false && !terminationPending && !model.pending && !model.uncertain)
-        add("重新初始化连接…",#selector(reinitializeConnection),enabled:desktop?.blocksQuit == false && !terminationPending && !model.pending && !attaching && !model.initializingConnection)
-        add("恢复未完成的组件更新…",#selector(recoverDesktop),enabled:desktop?.recoveryAllowed == true && !terminationPending && !model.pending && !model.uncertain)
-        if desktop?.recoveryCompletionAllowed == true { add("继续已确认停止的组件更新…",#selector(completeDesktopRecovery),enabled:!terminationPending && !model.pending && !model.uncertain) }
-        if model.pending || model.uncertain { add(model.message+"；暂不能安装／更新组件，请先在完整控制台核实",enabled:false) }
-        if let desktop=desktop { add(desktop.message,enabled:false); if desktop.authorizationRetryAllowed { add("重试已取消的授权…",#selector(retryDesktopAuthorization)) } }
-        if !quitCoordinator.message.isEmpty { add(quitCoordinator.message,enabled:false) }
-        if !connectionMessage.isEmpty { add(connectionMessage,enabled:false) }
-        if model.api.authenticated && !model.helperAvailable { add("助手不可用：请在完整控制台检查",enabled:false) }
+        latencyRows=[:]; probeItem=nil; probeButton=nil; fixedRows=[:]
+        menuGeneration=model.api.generation; menuETag=model.etag
+        fixedRows["state"]=add("AnyTLS · \(state)",enabled:false)
+        fixedRows["message"]=add(model.message,enabled:false)
+        fixedRows["install"]=add("安装／更新组件…",#selector(initializeDesktop),enabled:desktop?.busy == false && !terminationPending && !model.pending && !model.uncertain)
+        fixedRows["reinit"]=add("重新初始化连接…",#selector(reinitializeConnection),enabled:desktop?.blocksQuit == false && !terminationPending && !model.pending && !attaching && !model.initializingConnection)
+        fixedRows["recover"]=add("恢复未完成的组件更新…",#selector(recoverDesktop),enabled:desktop?.recoveryAllowed == true && !terminationPending && !model.pending && !model.uncertain)
+        fixedRows["complete"]=add("继续已确认停止的组件更新…",#selector(completeDesktopRecovery),enabled:false)
+        fixedRows["blocked"]=add("组件操作仍须明确确认",enabled:false)
+        fixedRows["desktop"]=add("组件状态尚未读取",enabled:false)
+        fixedRows["retry"]=add("重试已取消的授权…",#selector(retryDesktopAuthorization),enabled:false)
+        fixedRows["quitMessage"]=add("退出时将核实停止 VPN",enabled:false)
+        fixedRows["connection"]=add("连接初始化无待处理消息",enabled:false)
+        fixedRows["helper"]=add("助手状态以当前读取为准",enabled:false)
+        fixedRows["networkObservation"]=add("最近联网检测：尚无当前会话结果",enabled:false)
+        fixedRows["diagnostic"]=add("暂无已验证失败原因；未知结果仍须核实",enabled:false)
+        fixedRows["copy"]=add("复制安全失败诊断",#selector(copyDiagnostic),enabled:false)
         menu.addItem(.separator())
         let can=model.canMutate && desktop?.blocksQuit != true && !terminationPending, status=model.status
-        if pendingMigrationResume { add("恢复 VPN…",#selector(resumeMigration),enabled:can && status?.running == false && status?.loaded == false) }
-        add("启动 VPN",#selector(start),enabled:can && status?.running == false && status?.loaded == false)
-        add("停止 VPN",#selector(stop),enabled:can && (status?.running == true || status?.loaded == true))
-        add("重新连接…",#selector(reload),enabled:can && status?.running == true)
+        fixedRows["resume"]=add("恢复 VPN…",#selector(resumeMigration),enabled:pendingMigrationResume && can && status?.running == false && status?.loaded == false)
+        fixedRows["start"]=add("启动 VPN",#selector(start),enabled:can && status?.running == false && status?.loaded == false)
+        fixedRows["stop"]=add("停止 VPN",#selector(stop),enabled:can && (status?.running == true || status?.loaded == true))
+        fixedRows["reload"]=add("重新连接…",#selector(reload),enabled:can && status?.running == true)
         let nodeMenu=NSMenu(); nodeMenu.autoenablesItems=false; nodeMenu.delegate=self
         let probe=NSMenuItem(title:model.probing ? "TCP 延迟测试中…" : "TCP 延迟测试（全部节点）",action:#selector(probeNodes),keyEquivalent:"")
         probe.target=self; probe.isEnabled=model.canProbe && !model.probing && desktop?.blocksQuit != true && !terminationPending
@@ -212,12 +293,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add("启动节点").submenu=nodeMenu
         menu.addItem(.separator())
         add("打开完整控制台",#selector(openConsole))
-        add("刷新状态",#selector(refresh),enabled:!terminationPending && !attaching)
+        fixedRows["refresh"]=add("刷新状态",#selector(refresh),enabled:!terminationPending && !attaching)
         let version=Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "0.4.0 candidate"
         add("AnyTLS 菜单栏 \(version)",enabled:false)
         add("核心："+(Bundle.main.object(forInfoDictionaryKey:"AnyTLSCoreVersion") as? String ?? "unknown"),enabled:false)
         menu.addItem(.separator())
-        let quit=add("退出并停止 VPN",#selector(quit)); quit.keyEquivalent="q"
+        let quit=add("退出并停止 VPN",#selector(quit)); quit.keyEquivalent="q"; fixedRows["quit"]=quit
+        updateFixedRows(state:state)
         updateProbeRows()
     }
     private func confirm(_ title: String, risk: Bool = true) -> Bool {

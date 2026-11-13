@@ -16,7 +16,7 @@ LEGACY_COMMAND = ['python3', 'scripts/go-patched.py', 'test', '-p=2',
 COMMAND = LEGACY_COMMAND[:-2] + ['-timeout=20m', *LEGACY_COMMAND[-2:]]
 # Explicit identities only: neither historical waivers nor budgets extend forward.
 COMMAND_BY_VERSION = {VERSION: LEGACY_COMMAND, 'v2026-11-12-01': LEGACY_COMMAND,
-                      'v2026-11-12-02': COMMAND}
+                      'v2026-11-12-02': COMMAND, 'v2026-11-13-01': COMMAND}
 
 
 def require(condition):

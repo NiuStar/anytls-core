@@ -57,7 +57,7 @@ class AuditTests(unittest.TestCase):
             root = Path(td)
             for version, command in [('v2026-11-11-01', COMMAND),
                                      ('v2026-11-12-01', COMMAND),
-                                     ('v2026-11-12-02', new)]:
+                                     ('v2026-11-12-02', new), ('v2026-11-13-01', new)]:
                 steps, _ = fixture(root, command=command)
                 for matrix in ('macos-15', 'macos-15-intel'):
                     self.assertEqual(self.audit.validate(steps, matrix, root, version), 'FULL_RACE_PASS')
@@ -85,8 +85,9 @@ class AuditTests(unittest.TestCase):
                         if seam == 'raw':
                             result['command'] = new
                             (root / 'result.json').write_text(json.dumps(result))
-                        with self.assertRaises(ValueError):
-                            self.audit.validate(steps, 'macos-15', root, 'v2026-11-12-02')
+                        for version in ('v2026-11-12-02', 'v2026-11-13-01'):
+                            with self.subTest(version=version), self.assertRaises(ValueError):
+                                self.audit.validate(steps, 'macos-15', root, version)
             for version, command in [('v2026-11-11-01', new), ('v2026-11-12-01', new)]:
                 steps, _ = fixture(root, command=command)
                 with self.assertRaises(ValueError):
@@ -95,6 +96,8 @@ class AuditTests(unittest.TestCase):
             for matrix in ('macos-15', 'macos-15-intel'):
                 with self.assertRaises(ValueError):
                     self.audit.validate(steps, matrix, root, 'v2026-11-12-02')
+                with self.assertRaises(ValueError):
+                    self.audit.validate(steps, matrix, root, 'v2026-11-13-01')
 
     def test_intel_failure_is_waived_not_pass_and_raw_unchanged(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
@@ -122,7 +125,7 @@ class AuditTests(unittest.TestCase):
 
     def test_current_release_rejects_legacy_intel_waiver_through_actual_cli(self):
         current = (ROOT / 'VERSION').read_text().strip()
-        self.assertEqual(current, 'v2026-11-12-02')
+        self.assertEqual(current, 'v2026-11-13-01')
         self.assertEqual(self.audit.VERSION, 'v2026-11-11-01')
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)

@@ -29,7 +29,15 @@ final class MockProtocol: URLProtocol {
             Self.recordedCalls.append(self.request); handler?(self.request,self)
         }
     }
-    override func stopLoading() {}
+    // Cancellation observation is not the dataTask completion/drain barrier.
+    // URLSession owns that callback; successor admission below observes its effect.
+    var onStop: (() -> Void)?
+    override func stopLoading() { DispatchQueue.main.async { self.onStop?() } }
+    func rawReply(_ response: URLResponse, _ data: Data) {
+        dispatchPrecondition(condition:.onQueue(.main))
+        client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
+        client?.urlProtocol(self,didLoad:data); client?.urlProtocolDidFinishLoading(self)
+    }
     func reply(_ status: Int, _ body: [String: Any], headers: [String:String] = [:]) {
         dispatchPrecondition(condition:.onQueue(.main))
         client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:headers)!,cacheStoragePolicy:.notAllowed)
@@ -562,6 +570,202 @@ final class MockProtocol: URLProtocol {
         model.stopPolling(); api.reset(); MockProtocol.handler=nil
         check(violations.isEmpty,"adaptive count contracts: \(violations)")
     }
+    static func trafficWorker() {
+        let api=mockClient(); authenticate(api)
+        let now=Date(), dto=fixture(now:Date())
+        var completions=0, rate:TrafficRate?
+        MockProtocol.handler={ req,p in
+            check(req.httpMethod == "GET" && req.value(forHTTPHeaderField:"X-AnyTLS-Origin") == api.endpoint.origin && req.value(forHTTPHeaderField:"Sec-Fetch-Site") == "same-origin","typed traffic preserves authenticated read headers")
+            p.reply(200,dto)
+        }
+        check(api.requestTraffic(now:{now}) { result in
+            check(Thread.isMainThread,"typed traffic completion is physical main")
+            if case .success(let value)=result { rate=value }; completions += 1
+        },"typed traffic admitted")
+        check(!api.requestTraffic(now:{now}) { _ in completions += 100 },"typed traffic coalesces same owner")
+        check(!api.request("/traffic") { _ in completions += 100 },"legacy traffic shares typed owner")
+        pumpUntil { completions == 1 }
+        check(rate?.totalUpload == UInt64.max && rate?.totalDownload == 9007199254740993,"typed traffic preserves exact uint64 totals")
+        check(api.requestsInFlight == 0,"typed traffic releases owner once")
+        var poison=dto;var snapshot=poison["snapshot"] as! [String:Any];snapshot["history"]=[[:]];poison["snapshot"]=snapshot
+        MockProtocol.handler={ _,p in p.reply(200,poison) }
+        api.requestTraffic(now:{now}) { result in
+            if case .success(let value)=result { rate=value } else { rate=nil }; completions += 1
+        }
+        pumpUntil { completions == 2 }
+        check(rate == nil,"typed traffic rejects poisoned full history")
+        api.reset();var refused=false
+        check(!api.requestTraffic(now:{now}) { _ in refused=true },"typed traffic unauthenticated refused")
+        check(refused && api.requestsInFlight == 0,"typed traffic refusal has no owner or egress")
+        MockProtocol.handler=nil
+    }
+    // Post-implementation regressions: exercise the real URLSession transport,
+    // without worker hooks, private API responses, or a second fake client.
+    static func trafficTransportRegressions() {
+        let api=mockClient(); authenticate(api)
+        let now=Date(), dto=fixture(now:Date())
+        var expired=0
+        api.onExpired={ expired += 1 }
+        func positive(_ label: String) {
+            MockProtocol.handler={ _,p in p.reply(200,dto) }
+            var done=0, accepted=false
+            // A refusal has no callback for an occupied slot. A later admission
+            // is the observable barrier for URLSession's physical completion.
+            pumpUntil {
+                if !accepted { accepted=api.requestTraffic(now:{now}) { result in
+                    guard case .success(let rate)=result, let rate=rate,
+                          rate.totalUpload == UInt64.max, rate.totalDownload == 9007199254740993,
+                          Thread.isMainThread else { check(false,"\(label) valid same-route result"); return }
+                    done += 1
+                } }
+                return done == 1
+            }
+            check(accepted && done == 1 && api.requestsInFlight == 0,"\(label) successor succeeds and releases slot")
+        }
+        positive("transport initial precision control")
+        var held:MockProtocol?, stops=0, oldCallbacks=0
+        MockProtocol.handler={ _,p in held=p; p.onStop={ stops += 1 } }
+        check(api.requestTraffic(now:{now}) { _ in oldCallbacks += 1 },"reset transport request admitted")
+        pumpUntil { held != nil }
+        check(api.requestsInFlight == 1 && held != nil,"reset barrier reached URLProtocol before completion, not worker")
+        let oldGeneration=api.generation
+        api.reset()
+        check(api.requestsInFlight == 0 && api.generation > oldGeneration,"reset cancels held transport logical owner")
+        authenticate(api)
+        pumpUntil { stops == 1 }
+        positive("reset transport cancel callback drain")
+        check(oldCallbacks == 0 && expired == 0 && api.authenticated,"cancelled old transport cannot callback or expire new login")
+        held=nil
+
+        var deadlineCallbacks=0, deadlineTransport=false, earlySuccessor=false
+        var cancellationAtCallback=false
+        stops=0
+        MockProtocol.handler={ _,p in
+            held=p; p.onStop={ stops += 1 }
+            // URLSession's six-second idle transport timeout is distinct from
+            // the client's seven-second total deadline. Deliver bounded body
+            // progress but never finish, so the total deadline is exercised.
+            DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak p] in
+                guard let p=p, stops == 0 else { return }
+                p.client?.urlProtocol(p,didReceive:HTTPURLResponse(url:p.request.url!,statusCode:200,httpVersion:"HTTP/1.1",headerFields:nil)!,cacheStoragePolicy:.notAllowed)
+                p.client?.urlProtocol(p,didLoad:Data("{}".utf8))
+            }
+            DispatchQueue.main.asyncAfter(deadline:.now()+5) { [weak p] in
+                guard let p=p, stops == 0 else { return }
+                p.client?.urlProtocol(p,didLoad:Data([0x20]))
+            }
+        }
+        let started=ProcessInfo.processInfo.systemUptime
+        check(api.requestTraffic(now:{now}) { result in
+            cancellationAtCallback=api.requestsInFlight == 0
+            if case .failure(let error)=result, case ClientError.transport=error { deadlineTransport=true }
+            deadlineCallbacks += 1
+            // The deadline removes only the logical owner; physical completion
+            // is queued later, so no successor may be admitted synchronously.
+            earlySuccessor=api.requestTraffic(now:{now}) { _ in deadlineCallbacks += 100 }
+        },"deadline transport request admitted")
+        pumpUntil { held != nil }
+        check(api.requestsInFlight == 1,"deadline barrier reached held transport before worker")
+        pumpUntil { deadlineCallbacks != 0 }
+        let elapsed=ProcessInfo.processInfo.systemUptime-started
+        fputs("TRANSPORT_DEADLINE elapsed=\(elapsed) callbacks=\(deadlineCallbacks) transport=\(deadlineTransport) earlySuccessor=\(earlySuccessor) stops=\(stops)\n",stderr)
+        check(deadlineCallbacks == 1 && deadlineTransport && elapsed >= 7 && elapsed < 10,"real seven-second held-transport deadline returns transport once")
+        check(cancellationAtCallback && !earlySuccessor,"deadline does not release transport slot before physical callback")
+        pumpUntil { stops == 1 }
+        positive("deadline transport cancel callback drain")
+        check(deadlineCallbacks == 1 && expired == 0 && api.authenticated,"deadline cancellation cannot callback twice or expire session")
+        held=nil
+
+        func rejectedTransport(_ label: String, _ handler:@escaping MockProtocol.Handler) {
+            MockProtocol.handler=handler
+            var count=0, correct=false
+            let generation=api.generation
+            check(api.requestTraffic(now:{now}) { result in
+                if case .failure(let error)=result, case ClientError.transport=error { correct=true }
+                correct = correct && Thread.isMainThread
+                count += 1
+            },"\(label) admitted")
+            pumpUntil { count != 0 }
+            check(count == 1 && correct && api.requestsInFlight == 0 && api.generation == generation && expired == 0 && api.authenticated,"\(label) explicit main transport failure without expiry and clears owner")
+            positive(label)
+            check(count == 1,"\(label) callback remains exactly once")
+        }
+        rejectedTransport("network error") { _,p in p.fail() }
+        rejectedTransport("non-HTTP response") { req,p in
+            p.rawReply(URLResponse(url:req.url!,mimeType:"application/json",expectedContentLength:2,textEncodingName:nil),Data("{}".utf8))
+        }
+        rejectedTransport("empty HTTP body") { req,p in
+            p.rawReply(HTTPURLResponse(url:req.url!,statusCode:200,httpVersion:"HTTP/1.1",headerFields:nil)!,Data())
+        }
+        let body=try! JSONSerialization.data(withJSONObject:dto), limit=2*1024*1024
+        let boundary=body+Data(repeating:0x20,count:limit-body.count)
+        rejectedTransport("over 2MiB valid JSON body") { req,p in
+            p.rawReply(HTTPURLResponse(url:req.url!,statusCode:200,httpVersion:"HTTP/1.1",headerFields:nil)!,boundary+Data([0x20]))
+        }
+        var boundaryDone=false, boundaryValid=false
+        MockProtocol.handler={ req,p in p.rawReply(HTTPURLResponse(url:req.url!,statusCode:200,httpVersion:"HTTP/1.1",headerFields:nil)!,boundary) }
+        check(api.requestTraffic(now:{now}) { result in
+            if case .success(let rate)=result { boundaryValid=rate?.totalUpload == UInt64.max && rate?.totalDownload == 9007199254740993 && Thread.isMainThread }
+            boundaryDone=true
+        },"exact 2MiB valid JSON body admitted")
+        pumpUntil { boundaryDone }
+        check(boundaryValid && api.requestsInFlight == 0,"exact 2MiB valid JSON positive preserves precision")
+        rejectedTransport("non-JSON 401") { req,p in
+            p.rawReply(HTTPURLResponse(url:req.url!,statusCode:401,httpVersion:"HTTP/1.1",headerFields:nil)!,Data("not JSON".utf8))
+        }
+        var unauthorized=0, unauthorizedCorrect=false
+        MockProtocol.handler={ _,p in p.reply(401,[:]) }
+        check(api.requestTraffic(now:{now}) { result in
+            if case .failure(let error)=result, case ClientError.unauthenticated=error { unauthorizedCorrect=Thread.isMainThread }
+            unauthorized += 1
+        },"valid JSON 401 admitted")
+        pumpUntil { unauthorized != 0 }
+        check(unauthorized == 1 && unauthorizedCorrect && expired == 1 && !api.authenticated && api.requestsInFlight == 0,"valid JSON 401 expires once after JSON validation")
+        authenticate(api); positive("valid JSON 401 re-login")
+        check(unauthorized == 1 && expired == 1,"valid JSON 401 no duplicate expiration")
+        api.reset(); MockProtocol.handler=nil
+    }
+    static func trafficStrictRegressions() {
+        let api=mockClient(); authenticate(api)
+        let now=Date()
+        var original=fixture(now:now), snapshot=original["snapshot"] as! [String:Any]
+        snapshot["elapsed_ns"]="120000000000"
+        snapshot["rate"]=["start_ns":"60000000000","end_ns":"120000000000","upload_bytes":"6000","download_bytes":"47500"]
+        snapshot["history"]=[["start_ns":"0","end_ns":"60000000000","upload_bytes":"1234568","download_bytes":"50000"]]
+        original["snapshot"]=snapshot
+        func response(_ dto:[String:Any], _ label:String, valid:Bool) {
+            MockProtocol.handler={ _,p in p.reply(200,dto) }
+            var done=false, correct=false
+            check(api.requestTraffic(now:{now}) { result in
+                // A transport failure is NOT strict-parser rejection evidence.
+                switch result {
+                case .success(let rate):
+                    correct=Thread.isMainThread && (valid ? (rate?.totalUpload == UInt64.max && rate?.totalDownload == 9007199254740993) : rate == nil)
+                case .failure: correct=false
+                }
+                done=true
+            },"strict pipeline \(label) admitted")
+            pumpUntil { done }
+            check(correct && api.requestsInFlight == 0,"strict pipeline \(label) explicit success(\(valid ? "exact uint64" : "nil")) on main")
+        }
+        response(original,"valid history precision control",valid:true)
+        let negatives:[(String,(inout [String:Any])->Void)]=[
+            ("noncanonical total",{$0["upload_bytes"]="01"}),
+            ("negative total",{$0["upload_bytes"]="-1"}),
+            ("uint64 overflow",{$0["upload_bytes"]="18446744073709551616"}),
+            ("bad rate end",{var r=$0["rate"] as! [String:Any];r["end_ns"]="1";$0["rate"]=r}),
+            ("malformed history",{$0["history"]=[[:]]}),
+            ("history total exceeds cumulative",{$0["upload_bytes"]="1234567"}),
+            ("history subminute",{var h=$0["history"] as! [[String:Any]];h[0]["end_ns"]="1";$0["history"]=h}),
+            ("bad previous binding",{var h=$0["header"] as! [String:Any];h["previous_binding"]=["instance_id":"bad"];$0["header"]=h}),
+            ("stale",{$0["sampled_at"]=ISO8601DateFormatter().string(from:now.addingTimeInterval(-16))})]
+        for (label,mutate) in negatives {
+            var dto=original, s=dto["snapshot"] as! [String:Any]; mutate(&s); dto["snapshot"]=s
+            response(dto,label,valid:false)
+        }
+        response(original,"final same-route precision control",valid:true)
+        api.reset(); MockProtocol.handler=nil
+    }
     static func output() -> String { String(data:try! JSONSerialization.data(withJSONObject:["status":"PASS","checks":checks],options:[.prettyPrinted,.sortedKeys]),encoding:.utf8)! }
     static func main() {
         if CommandLine.arguments.contains("--integration") {
@@ -570,6 +774,8 @@ final class MockProtocol: URLProtocol {
         } else if CommandLine.arguments.contains("--known-failures") { checks.append(contentsOf:KnownFailureTests.run()); print(output())
         } else if CommandLine.arguments.contains("--initialization") { connectionInitialization(); print(output())
         } else if CommandLine.arguments.contains("--latency") { latency(); print(output())
-        } else { pollingCounts(); unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); latency(); batchLatency(); connectionInitialization(); print(output()) }
+        } else if CommandLine.arguments.contains("--traffic-regressions") { trafficTransportRegressions(); trafficStrictRegressions(); print(output())
+        } else if CommandLine.arguments.contains("--traffic-worker") { trafficWorker(); print(output())
+        } else { pollingCounts(); unit(); checks.append(contentsOf:KnownFailureTests.run()); freshnessComposition(); latency(); batchLatency(); connectionInitialization(); trafficWorker(); trafficTransportRegressions(); trafficStrictRegressions(); print(output()) }
     }
 }

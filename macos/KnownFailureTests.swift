@@ -201,7 +201,10 @@ struct KnownFailureTests {
             check(posts == 1,"\(kind) no automatic retry or STOP replay")
             resultKind="known"; model.refresh(); drain(model.api)
             check(model.uncertain == (kind != "known"),"\(kind) plain refresh cannot clear historical uncertainty")
+            let priorSummary=model.failureDiagnostic?.summary
+            check(priorSummary != nil && (kind != "known" || priorSummary!.contains("SYSTEM_PROXY_ACTIVE")),"\(kind) callback stores safe diagnostic across plain refresh")
             model.api.reset()
+            check(model.failureDiagnostic == nil,"\(kind) session generation clears diagnostic projection")
         }
         // The shared verdict must block Quit, never acknowledge STOP or issue readback/replay.
         let qapi=client(), quitModel=MenuModel(api:client(),connectivityMonitor:nil)
@@ -238,6 +241,18 @@ struct KnownFailureTests {
         held?.reply(200,[:])
         check(recorder.mainOwned && recorder.calls == ["response","data","finish"],"failure fixture direct client receives one main-owned response body finish")
         FailureProtocol.handler=nil
+        let safe=SafeFailureDiagnostic.parse(path:"/service/start",status:503,body:proxyFailure)
+        check(safe.summary.contains("SYSTEM_PROXY_ACTIVE") && safe.summary.contains("schema=1"),"safe diagnostic includes only validated reason and fixed schema")
+        var polluted=proxyFailure; polluted["secret"]="PRIVATE_SENTINEL /private/config node cookie"
+        let unsafe=SafeFailureDiagnostic.parse(path:"/service/start",status:503,body:polluted)
+        check(!unsafe.knownFailure && unsafe.reason == nil && !unsafe.summary.contains("PRIVATE_SENTINEL"),"polluted diagnostic never copies backend text or promotes ACK")
+        for value: Any in [true,2,"1",NSNull()] {
+            var ref=proxyFailure["startup_operation"] as! [String:Any];ref["timeline_schema"]=value
+            check(SafeFailureDiagnostic.reference(ref) == nil,"diagnostic rejects malformed schema \(value)")
+        }
+        var badRef=proxyFailure["startup_operation"] as! [String:Any];badRef["private"]="PRIVATE_SENTINEL"
+        check(SafeFailureDiagnostic.reference(badRef) == nil,"diagnostic reference rejects unknown fields")
+        check(unsafe.summary.contains("回执：未验证／未知") && unsafe.summary.contains("不追认"),"unknown diagnostic does not imply historical acknowledgement")
         return checks
     }
     static func selectionRecoveryTests(_ template: [String:Any]) {

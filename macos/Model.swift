@@ -34,7 +34,8 @@ func schemaOne(_ value: Any?) -> Bool {
     guard let n=value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return false }
     return n == 1
 }
-struct TrafficRate {
+// Immutable Foundation value fields only; safe to return from the traffic worker.
+struct TrafficRate: Sendable {
     let runtimeIdentity: String
     let sampledAt: Date
     let upload: UInt64, download: UInt64, duration: UInt64
@@ -150,6 +151,42 @@ func knownMutationFailureReason(path: String, status: Int, body: [String: Any]) 
           d["cleanup"] as? String == "VERIFIED", d["receipt"] as? String == "WRITTEN",
           d["job"] as? String == "UNLOADED", ["NOT_OBSERVED","NOT_TUN"].contains(d["tun"] as? String ?? "") else { return nil }
     return reason
+}
+
+// Diagnostic projection only; never consulted by mutation authority.
+struct SafeFailureDiagnostic {
+    let operation: String?
+    let reason: String?
+    let knownFailure: Bool
+    static func parse(path: String, status: Int, body: [String:Any]) -> SafeFailureDiagnostic {
+        let reason=knownMutationFailureReason(path:path,status:status,body:body)
+        return SafeFailureDiagnostic(operation:reference(body["startup_operation"]),reason:reason,knownFailure:reason != nil)
+    }
+    static func reference(_ value: Any?) -> String? {
+        guard let ref=value as? [String:Any], exact(ref,["timeline_schema","availability","operation_id"]),
+              schemaOne(ref["timeline_schema"]), ref["availability"] as? String == "AVAILABLE", hex(ref["operation_id"],32) else { return nil }
+        return ref["operation_id"] as? String
+    }
+    var explanation: String {
+        guard let reason=reason else { return "未取得已验证失败回执；结果须核实" }
+        let text: String
+        switch reason {
+        case "SYSTEM_PROXY_ACTIVE": text="系统代理仍启用，请先手动关闭"
+        case "CONFIG_COMPILE_FAILED": text="配置编译失败"
+        case "PREFLIGHT_REJECTED": text="助手预检未通过"
+        case let r where r.hasPrefix("DNS_"): text="DNS 状态或证据不可用"
+        case let r where r.hasPrefix("HTTPS_"): text="启动阶段 HTTPS 检查未通过"
+        case let r where r.hasPrefix("SNAPSHOT_"): text="系统快照检查或保存失败"
+        case let r where r.hasPrefix("SERVER_ROUTE_") || r.hasPrefix("PUBLIC_ROUTE_"): text="路由检查未通过"
+        case let r where r.hasPrefix("READINESS_") || r == "PROCESS_NOT_RUNNING" || r == "TUN_NOT_READY" || r == "PROCESS_AND_TUN_NOT_READY": text="本地运行就绪检查未通过"
+        case "STOP_FAILED": text="停止操作失败"
+        default: text="组件状态检查或准备失败"
+        }
+        return text+"（"+reason+"）"
+    }
+    var summary: String {
+        "AnyTLS 诊断 schema=1\n回执："+(knownFailure ? "已验证失败" : "未验证／未知")+"\n原因："+explanation+"\noperation_id="+(operation ?? "unavailable")+"\n当前状态刷新不追认原操作；不会自动重试"
+    }
 }
 
 enum MutationVerdict: Equatable { case serviceSucceeded, savedStopped, applied, reloadRequired, unchanged, rejected, unknown }

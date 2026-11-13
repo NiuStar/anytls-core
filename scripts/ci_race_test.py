@@ -203,7 +203,8 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(self.runner.run(root), 0)
             self.assertEqual((root / 'go-race.jsonl').read_bytes(), raw)
             self.assertEqual(json.loads((root / 'result.json').read_text())['command'], expected)
-            self.assertEqual(gate.validate(steps, 'macos-15', root, 'v2026-11-12-02'), 'FULL_RACE_PASS')
+            for version in ('v2026-11-12-02', 'v2026-11-13-01'):
+                self.assertEqual(gate.validate(steps, 'macos-15', root, version), 'FULL_RACE_PASS')
 
     def test_preflight_rejects_noncanonical_or_cgo_off_before_child(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:

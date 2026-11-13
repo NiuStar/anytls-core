@@ -1,20 +1,18 @@
 # anytls-core
 
-## App 0.5.5 / build 0.5.5.20261112.1（发布准备，最终提交资格待验证）
+## App 0.5.6 / build 0.5.6.20261113.1（本地发布候选，尚未发布）
 
-核心 `v2026-11-12-02`，macOS 13+，Apple Silicon／Intel 独立原生包。
-- START／RELOAD 新启动不逐节点查路由，不等待节点 TCP／TLS／HTTPS 检测；保留全部配置节点、静态规则出口、warm／host exclusions 与自动接口策略。
-- 完成只表示 `LOCAL_READY / INTERNET_UNVERIFIED`；进程、同一 TUN、DNS、配置／TLS、回滚和回执保护不变。新 baseline v2 仅核验公共物理接口及原始 DNS，旧 v0/v1 STOP 恢复核验仍按原范围。
-- Mac Studio ARM 工程候选真实启动已通过本地就绪验证；不是最终 0.5.5 附件资格，不证明互联网可用或原 Intel 场景已修复。历史 Focus 429 超时原因未证实；本次只修复测试入口的 run-loop 完成所有权。
-- 最终提交仍须通过 GitHub Apple Silicon／Intel 两套完整、未过滤的 race 及其他原生／打包门禁；0.5.3 的 Intel race 豁免不沿用。物理 Intel 手测由用户延至明日，Ubuntu 同样延后，均为 `DEFERRED_BY_USER_NOT_PASSED`。
-- 本版是用户批准的新不可变身份；CI race 每包累计时限显式为 `-timeout 20m`（旧默认 10 分钟），不是单测或业务时限。生产 3 秒及 Swift 5／90 秒边界、字节上限不变，无失败豁免；完整双 Mac race 仍必须通过。
-- ad-hoc 签名、未公证；本次发布准备不安装、不更新生产组件、不启停仍运行的 VPN。
+核心 `v2026-11-13-01`，macOS 13+，Apple Silicon／Intel 独立原生包。
+- 菜单及时反馈、白名单失败诊断与安全复制摘要；保留 UNKNOWN 的失败关闭、事务身份及显式用户控制。
+- 本地就绪 `LOCAL_READY / INTERNET_UNVERIFIED` 与带时效的外部 HTTPS 观察分开，不以固定端点失败断言选中节点失败；不增加 WAN 启动门禁，不自动重连／切换节点，不改配置或选择。
+- ARM 既有隔离测量中，1／20／200 节点的关闭菜单重复工作计数由 60 降至 0；主线程 17.426→0.050 ms，但端到端 17.827→19.345 ms，不是总耗时加速，不是 CPU／RSS／功耗测量。
+- 保留认证 ARM 前驱证据 1336 = 625 + 250 + 66 + 183 + 212；不是最终版本或 Intel 验收。最终提交仍须双架构 hosted CI 与新构建，0.5.3 Intel race 豁免不沿用，完整 `-race -count=1 -timeout=20m` 预算不变。
+- 物理 Intel 手测与 Ubuntu 验证为 `DEFERRED_BY_USER_NOT_PASSED`；hosted Intel 仍强制。ad-hoc 签名、未公证，不关闭 Gatekeeper。
+- 本轮不安装、更新、启停 App／核心／助手或 VPN。以后另行升级 helper／核心所需管理员密码仅在本机授权界面输入，不远程收集；现有 Mac Studio 工程候选不是本版公开产物。
 
-详见[0.5.5 发布说明与验收边界](docs/releases/v2026-11-12-02.md)。通过最终门禁后按芯片下载 `anytls-core-v2026-11-12-02-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-12-02-menubar-darwin-amd64.zip`；名称不证明附件已发布。
+详见[0.5.6 发布说明与验收边界](docs/releases/v2026-11-13-01.md)。最终门禁通过后按芯片下载 `anytls-core-v2026-11-13-01-menubar-darwin-arm64.zip` 或 `anytls-core-v2026-11-13-01-menubar-darwin-amd64.zip`；当前二进制未发布，公开下载待验收。
 
-0.5.4 的 `v2026-11-12-01` 标签保留为 race FAIL、二进制未发布；不移动标签、不改写旧说明、不复用旧附件资格。本版无新增产品功能。
-
-0.5.3 已于提交 `099df732e6766074cc97aef0f0f89d6cfb396613` 发布；下列旧标题和候选措辞仅为历史源码冻结记录，不代表当前发行状态。
+0.5.5 / `v2026-11-12-02` 为已发布前驱；旧 0.5.4 失败标签与历史发布说明保留，不移动、不改写，不复用旧附件资格。
 
 以下为历史源码冻结时的记录，不代表当前发行状态。
 
