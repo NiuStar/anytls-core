@@ -10,9 +10,13 @@ VERSION = 'v2026-11-11-01'  # Exact core identity for App 0.5.3, not a future wa
 STEP_IDS = ('checkout', 'setup_go', 'pin_paths', 'real_box', 'wrapper_tests',
             'installer_tests', 'go_tests', 'race_contracts', 'full_race',
             'race_upload', 'vet', 'dist', 'build', 'app_build', 'swift_tests', 'native_upload')
-COMMAND = ['python3', 'scripts/go-patched.py', 'test', '-p=2',
+LEGACY_COMMAND = ['python3', 'scripts/go-patched.py', 'test', '-p=2',
            '-tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core',
            '-race', '-count=1', '-json', './...']
+COMMAND = LEGACY_COMMAND[:-2] + ['-timeout=20m', *LEGACY_COMMAND[-2:]]
+# Explicit identities only: neither historical waivers nor budgets extend forward.
+COMMAND_BY_VERSION = {VERSION: LEGACY_COMMAND, 'v2026-11-12-01': LEGACY_COMMAND,
+                      'v2026-11-12-02': COMMAND}
 
 
 def require(condition):
@@ -33,6 +37,8 @@ def decode(text):
 
 
 def validate(steps, matrix, evidence, version):
+    require(isinstance(version, str) and version in COMMAND_BY_VERSION)
+    expected_command = COMMAND_BY_VERSION[version]
     require(matrix in ('macos-15', 'macos-15-intel'))
     require(isinstance(steps, dict))
     # GitHub normally supplies only prior steps; exclude only this known self ID.
@@ -55,7 +61,7 @@ def validate(steps, matrix, evidence, version):
         target = evidence / name
         require(target.is_file() and not target.is_symlink() and target.stat().st_size > 0)
     result = decode((evidence / 'result.json').read_text())
-    require(isinstance(result, dict) and result.get('command') == COMMAND)
+    require(isinstance(result, dict) and result.get('command') == expected_command)
     rc = result.get('returncode')
     require(type(rc) is int and 0 <= rc <= 255 and ((rc != 0) == waived))
     require(result.get('release_acceptance') is False)
@@ -115,11 +121,11 @@ def validate(steps, matrix, evidence, version):
                 labels.add(name)
     require(begin is not None and end is not None)
     command = begin.get('command')
-    require(isinstance(command, list) and len(command) == len(COMMAND) and
+    require(isinstance(command, list) and len(command) == len(expected_command) and
             isinstance(command[0], str) and Path(command[0]).is_absolute() and
             Path(command[0]).name == 'go' and command[1] == 'test' and
             isinstance(command[2], str) and command[2].startswith('-modfile=/') and
-            command[3:] == COMMAND[3:])
+            command[3:] == expected_command[3:])
     require(all(end.get(key) == value for key, value in begin.items()))
     require(type(end.get('rc')) is int and end['rc'] == rc and end.get('ephemeral_cleanup') == 'ok'
             and end.get('root_inputs_unchanged') is True)

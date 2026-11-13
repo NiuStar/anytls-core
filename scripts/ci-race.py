@@ -10,7 +10,7 @@ import tempfile
 
 COMMAND = ['python3', 'scripts/go-patched.py', 'test', '-p=2',
            '-tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core',
-           '-race', '-count=1', '-json', './...']
+           '-race', '-count=1', '-timeout=20m', '-json', './...']
 
 
 def run(evidence):

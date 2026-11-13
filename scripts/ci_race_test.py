@@ -132,10 +132,16 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn(old, text)
                 with self.assertRaises(ValueError):
                     validate_workflow(text.replace(old, new))
-        # Packaging/publish commands are byte-identical except their gate label.
+        # Packaging/publish commands retain every byte except the reviewed label
+        # and observer-only wait cap (not a Go test or production deadline).
         current = (ROOT / '.github/workflows/binary-release.yml').read_text()
+        self.assertEqual(current.count('        timeout-minutes: 62\n'), 1)
+        self.assertEqual(current.count('run: python3 scripts/release_ci_gate.py --seconds 3600 --interval 15'), 1)
         normalized = current.replace('Require exact tag push CI and both terminal-success Mac jobs with scoped Intel race audit',
                                      'Require exact tag push CI and all three terminal-success jobs')
+        normalized = normalized.replace('        timeout-minutes: 62\n', '        timeout-minutes: 32\n')
+        normalized = normalized.replace('run: python3 scripts/release_ci_gate.py --seconds 3600 --interval 15',
+                                        'run: python3 scripts/release_ci_gate.py --seconds 1800 --interval 15')
         self.assertEqual(hashlib.sha256(normalized.encode()).hexdigest(),
                          'fe817a33c33af8818bd6ce191849ffbf535ae3e0ed024ca2b1c6ecf71b255511')
 
@@ -174,7 +180,30 @@ class RunnerTests(unittest.TestCase):
     def test_exact_full_command(self):
         self.assertEqual(self.runner.COMMAND, ['python3', 'scripts/go-patched.py', 'test', '-p=2',
             '-tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core',
-            '-race', '-count=1', '-json', './...'])
+            '-race', '-count=1', '-timeout=20m', '-json', './...'])
+
+    def test_exact_budget_reaches_child_and_receipts_without_raw_rewrite(self):
+        import ci_waiver_gate as gate
+        from ci_waiver_gate_test import fixture
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
+            root = Path(td)
+            # Explicit synthetic wrapper bytes, not an executed native Go run.
+            steps, _ = fixture(root, command=self.runner.COMMAND)
+            raw = (root / 'go-race.jsonl').read_bytes()
+            expected = ['python3', 'scripts/go-patched.py', 'test', '-p=2',
+                '-tags=with_gvisor,with_utls,with_upstream_cleanup_patch,embedded_core',
+                '-race', '-count=1', '-timeout=20m', '-json', './...']
+            def child(argv, **kwargs):
+                self.assertEqual(argv, expected)
+                self.assertNotIn('timeout', kwargs)
+                self.assertEqual(kwargs['stderr'], subprocess.STDOUT)
+                kwargs['stdout'].write(raw)
+                return subprocess.CompletedProcess(argv, 0)
+            with patch.object(self.runner.subprocess, 'run', side_effect=child), patch('builtins.print'):
+                self.assertEqual(self.runner.run(root), 0)
+            self.assertEqual((root / 'go-race.jsonl').read_bytes(), raw)
+            self.assertEqual(json.loads((root / 'result.json').read_text())['command'], expected)
+            self.assertEqual(gate.validate(steps, 'macos-15', root, 'v2026-11-12-02'), 'FULL_RACE_PASS')
 
     def test_preflight_rejects_noncanonical_or_cgo_off_before_child(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:

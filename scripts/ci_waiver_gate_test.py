@@ -19,12 +19,14 @@ COMMAND = ['python3', 'scripts/go-patched.py', 'test', '-p=2',
 VERSION = 'v2026-11-11-01'
 
 
-def fixture(root, code=0):
+def fixture(root, code=0, command=None):
+    if command is None:
+        from ci_waiver_gate import COMMAND as command
     steps = {key: {'outputs': {}, 'outcome': 'success', 'conclusion': 'success'} for key in IDS}
     if code:
         steps['full_race']['outcome'] = 'failure'
-    command = ['/synthetic/go', 'test', '-modfile=/synthetic/build.mod', *COMMAND[3:]]
-    begin = {'command': command}
+    wrapped = ['/synthetic/go', 'test', '-modfile=/synthetic/build.mod', *command[3:]]
+    begin = {'command': wrapped}
     end = dict(begin, rc=code, ephemeral_cleanup='ok', root_inputs_unchanged=True)
     events = [{'Action': 'start', 'Package': 'fixture'},
               {'Action': 'run', 'Package': 'fixture', 'Test': 'TestSynthetic'},
@@ -34,7 +36,7 @@ def fixture(root, code=0):
     raw += ''.join(json.dumps(e) + '\n' for e in events)
     raw += 'PATCHED_GO_END ' + json.dumps(end) + '\n'
     (root / 'go-race.jsonl').write_text(raw)
-    result = {'command': COMMAND, 'returncode': code,
+    result = {'command': command, 'returncode': code,
               'counts': {'named_pass': 1, 'named_fail': 0, 'named_skip': 0,
                          'package_pass': 0 if code else 1, 'package_fail': 1 if code else 0},
               'safe_failed_tests': [], 'release_acceptance': False}
@@ -49,10 +51,55 @@ class AuditTests(unittest.TestCase):
         cls.audit = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.audit)
 
+    def test_exact_new_version_budget_and_closed_historical_identity(self):
+        new = COMMAND[:-2] + ['-timeout=20m', *COMMAND[-2:]]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
+            root = Path(td)
+            for version, command in [('v2026-11-11-01', COMMAND),
+                                     ('v2026-11-12-01', COMMAND),
+                                     ('v2026-11-12-02', new)]:
+                steps, _ = fixture(root, command=command)
+                for matrix in ('macos-15', 'macos-15-intel'):
+                    self.assertEqual(self.audit.validate(steps, matrix, root, version), 'FULL_RACE_PASS')
+            for command in (COMMAND, new):
+                steps, _ = fixture(root, command=command)
+                for version in ('', 'v2026-11-12-03', 'unknown'):
+                    with self.subTest(version=version, command=command), self.assertRaises(ValueError):
+                        self.audit.validate(steps, 'macos-15', root, version)
+
+    def test_new_version_rejects_missing_overridden_duplicate_or_filtered_budget(self):
+        new = COMMAND[:-2] + ['-timeout=20m', *COMMAND[-2:]]
+        variants = [COMMAND] + [[v.replace('20m', value) for v in new] for value in ('10m', '30m', '0')]
+        variants += [new[:-1] + [flag, './...'] for flag in
+                     ('-timeout=20m', '-timeout=30m', '-run=Subset', '-short', '-skip=Subset')]
+        variants += [new[:-1] + ['./internal/...'], new[:-1] + ['.', './...']]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
+            root = Path(td)
+            for mutant in variants:
+                for seam in ('both', 'result', 'raw'):
+                    with self.subTest(command=mutant, seam=seam):
+                        steps, result = fixture(root, command=mutant if seam != 'result' else new)
+                        if seam == 'result':
+                            result['command'] = mutant
+                            (root / 'result.json').write_text(json.dumps(result))
+                        if seam == 'raw':
+                            result['command'] = new
+                            (root / 'result.json').write_text(json.dumps(result))
+                        with self.assertRaises(ValueError):
+                            self.audit.validate(steps, 'macos-15', root, 'v2026-11-12-02')
+            for version, command in [('v2026-11-11-01', new), ('v2026-11-12-01', new)]:
+                steps, _ = fixture(root, command=command)
+                with self.assertRaises(ValueError):
+                    self.audit.validate(steps, 'macos-15', root, version)
+            steps, _ = fixture(root, 1, command=new)
+            for matrix in ('macos-15', 'macos-15-intel'):
+                with self.assertRaises(ValueError):
+                    self.audit.validate(steps, matrix, root, 'v2026-11-12-02')
+
     def test_intel_failure_is_waived_not_pass_and_raw_unchanged(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
-            steps, _ = fixture(root, 1)
+            steps, _ = fixture(root, 1, command=COMMAND)
             before = {p.name: p.read_bytes() for p in root.iterdir()}
             self.assertEqual(self.audit.validate(steps, 'macos-15-intel', root, VERSION),
                              'INTEL_RACE_FAIL_WAIVED_FOR_0_5_3')
@@ -75,7 +122,7 @@ class AuditTests(unittest.TestCase):
 
     def test_current_release_rejects_legacy_intel_waiver_through_actual_cli(self):
         current = (ROOT / 'VERSION').read_text().strip()
-        self.assertEqual(current, 'v2026-11-12-01')
+        self.assertEqual(current, 'v2026-11-12-02')
         self.assertEqual(self.audit.VERSION, 'v2026-11-11-01')
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
@@ -91,7 +138,7 @@ class AuditTests(unittest.TestCase):
     def test_every_required_step_failure_skip_pending_cancelled_blocks(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
-            steps, _ = fixture(root, 1)
+            steps, _ = fixture(root, 1, command=COMMAND)
             for key in IDS:
                 for state in ('failure', 'skipped', 'pending', 'cancelled', None):
                     if key == 'full_race' and state == 'failure':
@@ -110,7 +157,7 @@ class AuditTests(unittest.TestCase):
     def test_scope_inventory_and_context_schema(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
-            steps, _ = fixture(root, 1)
+            steps, _ = fixture(root, 1, command=COMMAND)
             for matrix, version in [('macos-15', VERSION), ('ubuntu-latest', VERSION),
                                     ('macos-15-intel', 'v2026-11-11-02'), ('macos-15-intel', '')]:
                 with self.subTest(matrix=matrix, version=version), self.assertRaises(ValueError):
@@ -147,7 +194,7 @@ class AuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
             for mutate in mutations:
-                steps, receipt = fixture(root, 1)
+                steps, receipt = fixture(root, 1, command=COMMAND)
                 mutate(receipt)
                 (root / 'result.json').write_text(json.dumps(receipt))
                 with self.assertRaises(ValueError):
@@ -171,7 +218,7 @@ class AuditTests(unittest.TestCase):
     def test_raw_truncation_no_execution_and_receipt_mismatch(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
-            steps, _ = fixture(root, 1)
+            steps, _ = fixture(root, 1, command=COMMAND)
             raw = (root / 'go-race.jsonl').read_text()
             lines = raw.splitlines(keepends=True)
             variants = [''.join(lines[1:]), ''.join(lines[:-1]), raw[:-1],
@@ -193,13 +240,13 @@ class AuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
             for marker in ('WARNING: DATA RACE', 'panic:', 'fatal error:'):
-                steps, _ = fixture(root)
+                steps, _ = fixture(root, command=COMMAND)
                 path = root / 'go-race.jsonl'
                 path.write_text(path.read_text().replace('PATCHED_GO_END ',
                     json.dumps({'Action': 'output', 'Package': 'fixture', 'Output': marker}) + '\nPATCHED_GO_END '))
                 with self.assertRaises(ValueError):
                     self.audit.validate(steps, 'macos-15-intel', root, VERSION)
-            steps, _ = fixture(root)
+            steps, _ = fixture(root, command=COMMAND)
             steps['full_race']['outcome'] = 'failure'
             receipt = json.loads((root / 'result.json').read_text())
             receipt['returncode'] = 1
@@ -208,7 +255,7 @@ class AuditTests(unittest.TestCase):
             path.write_text(path.read_text().replace('"rc": 0', '"rc": 1'))
             with self.assertRaises(ValueError):
                 self.audit.validate(steps, 'macos-15-intel', root, VERSION)
-            steps, _ = fixture(root, 1)
+            steps, _ = fixture(root, 1, command=COMMAND)
             steps['full_race']['outcome'] = 'success'
             with self.assertRaises(ValueError):
                 self.audit.validate(steps, 'macos-15-intel', root, VERSION)
@@ -216,7 +263,7 @@ class AuditTests(unittest.TestCase):
     def test_legitimate_nonjson_build_diagnostics_and_package_start(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as td:
             root = Path(td)
-            steps, _ = fixture(root, 1)
+            steps, _ = fixture(root, 1, command=COMMAND)
             path = root / 'go-race.jsonl'
             path.write_text(path.read_text().replace('PATCHED_GO_END ', '# synthetic compiler diagnostic\nPATCHED_GO_END '))
             self.assertEqual(self.audit.validate(steps, 'macos-15-intel', root, VERSION),

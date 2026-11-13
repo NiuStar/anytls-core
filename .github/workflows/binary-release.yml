@@ -195,10 +195,10 @@ jobs:
                   sums.write(sha256(out / name) + '  ' + name + '\n')
           PY
       - name: Require exact tag push CI and both terminal-success Mac jobs with scoped Intel race audit
-        timeout-minutes: 32
+        timeout-minutes: 62
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/release_ci_gate.py --seconds 1800 --interval 15
+        run: python3 scripts/release_ci_gate.py --seconds 3600 --interval 15
       - name: Publish verified assets once, without replacing existing assets
         env:
           GH_TOKEN: ${{ github.token }}

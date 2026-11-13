@@ -106,7 +106,7 @@ def verify_app(app, tag, arch='arm64'):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     expected = dict(CFBundleIdentifier='org.anytls.menubar.candidate',
                     CFBundleExecutable='AnyTLSMenuBar', CFBundlePackageType='APPL',
-                    CFBundleShortVersionString='0.5.4', CFBundleVersion='0.5.4.20261112.1',
+                    CFBundleShortVersionString='0.5.5', CFBundleVersion='0.5.5.20261112.1',
                     AnyTLSCoreVersion=tag, LSMinimumSystemVersion='13.0', LSUIElement=True)
     if any(info.get(key) != value for key, value in expected.items()):
         raise ValueError('unexpected app metadata')
@@ -266,8 +266,8 @@ def package(root, app, out, tag, arch='arm64'):
                     raise ValueError('missing core license material')
             location = 'https://github.com/NiuStar/anytls-core/releases/download/' + tag + '/' + source
             delivery.writestr('SOURCE-LOCATION.txt', location + '\n')
-            delivery.writestr('README.txt', 'AnyTLS unified windowless menu app 0.5.4\n' + {'arm64': 'Apple Silicon arm64', 'amd64': 'Intel x86_64'}[arch] + ' ONLY; macOS 13 or newer.\nAd-hoc signed; NOT Developer ID signed or notarized.\nNative administrator consent and production first-use/VPN end-to-end: NOT_RUN by packaging.\nNo credentials, Keychain data, configuration or helper installation is included.\nCorresponding source (full tracked Swift, tests, build tooling, Go dependencies and toolchain):\n' + location + '\n')
-            delivery.writestr('BUILD-INFO.json', json.dumps(dict(source_commit=commit, core_version=tag, app_version='0.5.4', app_build='0.5.4.20261112.1', architecture=arch, original_core_sha256=original_core_sha, signed_runtime_sha256=manifest['sha256'], corresponding_source=source, signing='ad-hoc', notarization='NOT_RUN', production_end_to_end='NOT_RUN'), sort_keys=True, indent=2) + '\n')
+            delivery.writestr('README.txt', 'AnyTLS unified windowless menu app 0.5.5\n' + {'arm64': 'Apple Silicon arm64', 'amd64': 'Intel x86_64'}[arch] + ' ONLY; macOS 13 or newer.\nAd-hoc signed; NOT Developer ID signed or notarized.\nNative administrator consent and production first-use/VPN end-to-end: NOT_RUN by packaging.\nNo credentials, Keychain data, configuration or helper installation is included.\nCorresponding source (full tracked Swift, tests, build tooling, Go dependencies and toolchain):\n' + location + '\n')
+            delivery.writestr('BUILD-INFO.json', json.dumps(dict(source_commit=commit, core_version=tag, app_version='0.5.5', app_build='0.5.5.20261112.1', architecture=arch, original_core_sha256=original_core_sha, signed_runtime_sha256=manifest['sha256'], corresponding_source=source, signing='ad-hoc', notarization='NOT_RUN', production_end_to_end='NOT_RUN'), sort_keys=True, indent=2) + '\n')
         extracted = work / 'extracted'
         extracted.mkdir()
         subprocess.run(['/usr/bin/ditto', '-x', '-k', str(archive), str(extracted)], check=True)
